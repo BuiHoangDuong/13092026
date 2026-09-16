@@ -22,6 +22,31 @@ pnpm lint
 does not touch a database, so this sequence is enough to compile and verify the workspace
 locally without any Postgres connection.
 
+## Railway deployment
+
+Both services share workspace packages, so keep their **Root Directory** at the repository
+root (`/`). Set the following build and start commands in each service's **Settings**:
+
+| Service | Build Command | Start Command |
+| --- | --- | --- |
+| Web | `pnpm --filter @cashback/web... build` | `pnpm --filter @cashback/web start` |
+| Worker | `pnpm --filter @cashback/worker... build` | `pnpm --filter @cashback/worker start` |
+
+The trailing `...` in each build filter includes all workspace dependencies
+and builds them before the app. This also runs `prisma generate` as part of the database
+package build. A filter without `...` only builds the app and fails on a fresh deployment
+because `@cashback/contracts`, `@cashback/db`, and `@cashback/core` export files from `dist`.
+Start commands intentionally select only the service itself.
+
+After deploying, check that the build log shows `contracts`, `db`, and `core` building before
+the selected app.
+
+For services already using Railway's legacy Config as Code, the matching files are
+`/infra/railway/web.toml` and `/infra/railway/worker.toml`. These nested files must be selected
+explicitly in the service settings and their values override dashboard commands. Merely
+committing them does not activate them. New services should configure commands in Settings;
+see [Railway's Config as Code documentation](https://docs.railway.com/config-as-code).
+
 ## Local/SIT setup (with a database)
 
 SIT does not run Postgres in local Docker. `web`/`worker` run on the host via `pnpm dev`

@@ -1,5 +1,5 @@
 [build]
-buildCommand = "pnpm build"
+buildCommand = "pnpm --filter @cashback/web... build"
 
 [deploy]
 startCommand = "pnpm --filter @cashback/web start"
