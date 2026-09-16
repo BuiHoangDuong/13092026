@@ -1,0 +1,20 @@
+{
+  "name": "@cashback/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" } },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src prisma/seed.ts",
+    "test": "node --test",
+    "db:generate": "node ../../scripts/with-root-env.mjs prisma generate",
+    "db:migrate": "node ../../scripts/with-root-env.mjs prisma migrate deploy",
+    "db:seed": "node ../../scripts/with-root-env.mjs tsx prisma/seed.ts"
+  },
+  "dependencies": { "@prisma/client": "6.19.0", "bcryptjs": "3.0.2" },
+  "devDependencies": { "prisma": "6.19.0", "tsx": "4.20.5" },
+  "prisma": { "seed": "tsx prisma/seed.ts" }
+}

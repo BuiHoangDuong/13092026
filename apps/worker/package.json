@@ -1,0 +1,16 @@
+{
+  "name": "@cashback/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node ../../scripts/with-root-env.mjs tsx watch src/index.ts",
+    "start": "node ../../scripts/with-root-env.mjs node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "node --test"
+  },
+  "dependencies": { "@cashback/core": "workspace:*", "@cashback/db": "workspace:*" },
+  "devDependencies": { "tsx": "4.20.5" }
+}

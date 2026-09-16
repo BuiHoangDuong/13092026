@@ -1,0 +1,13 @@
+node_modules/
+.turbo/
+.next/
+dist/
+.env
+.env.local
+coverage/
+packages/db/src/generated/
+packages/db/dist/
+infra/data/
+*.log
+*.tsbuildinfo
+$null

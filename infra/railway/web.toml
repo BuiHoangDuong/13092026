@@ -1,0 +1,7 @@
+[build]
+buildCommand = "pnpm build"
+
+[deploy]
+startCommand = "pnpm --filter @cashback/web start"
+healthcheckPath = "/api/health"
+restartPolicyType = "ON_FAILURE"

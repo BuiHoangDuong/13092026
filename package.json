@@ -1,0 +1,29 @@
+{
+  "name": "cashback-platform",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @cashback/db db:generate",
+    "db:migrate": "pnpm --filter @cashback/db db:migrate",
+    "db:seed": "pnpm --filter @cashback/db db:seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.35.0",
+    "@types/node": "24.3.1",
+    "dotenv": "16.6.1",
+    "eslint": "9.35.0",
+    "eslint-plugin-import-x": "4.16.1",
+    "globals": "16.3.0",
+    "turbo": "2.10.13",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.42.0"
+  }
+}

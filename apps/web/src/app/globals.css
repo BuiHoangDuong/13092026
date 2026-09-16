@@ -1,0 +1,101 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Public-site theme: dark marketplace-catalog style (reference: plati.market) —
+ * near-black background with a subtle blue tint, slightly lighter neutral-gray panels
+ * for cards and pill controls, vivid orange/amber as the single accent color for CTAs
+ * and highlights. Admin screens intentionally reuse the same tokens but stay visually
+ * plain (see .admin-* utility classes below) since admin UI is out of scope for the
+ * template refresh.
+ */
+:root {
+  --radius: 0.65rem;
+  --background: oklch(0.17 0.035 268);
+  --foreground: oklch(0.97 0.005 240);
+  --card: oklch(0.24 0.045 267);
+  --card-foreground: oklch(0.97 0.005 240);
+  --popover: oklch(0.24 0.045 267);
+  --popover-foreground: oklch(0.97 0.005 240);
+  --primary: oklch(0.72 0.18 50);
+  --primary-foreground: oklch(0.16 0.03 268);
+  --secondary: oklch(0.29 0.04 266);
+  --secondary-foreground: oklch(0.93 0.01 245);
+  --muted: oklch(0.26 0.04 267);
+  --muted-foreground: oklch(0.68 0.025 250);
+  --accent: oklch(0.34 0.05 262);
+  --accent-foreground: oklch(0.93 0.01 245);
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.98 0.005 25);
+  --border: oklch(0.34 0.04 265);
+  --input: oklch(0.34 0.04 265);
+  --ring: oklch(0.72 0.18 50);
+  --success: oklch(0.65 0.16 155);
+  --success-foreground: oklch(0.14 0.02 155);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+  }
+}
+
+/* ---- Minimal admin styling (kept plain on purpose; admin is not part of the template refresh) ---- */
+@layer components {
+  .admin-stack { @apply grid gap-6 mt-8; }
+  .admin-section { @apply rounded-lg border border-border bg-card p-5; }
+  .admin-section form { @apply grid grid-cols-2 gap-3 mt-4; }
+  .admin-section input,
+  .admin-section textarea,
+  .admin-section select {
+    @apply w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground;
+  }
+  .admin-section textarea { @apply min-h-24 resize-y; }
+  .admin-list { @apply flex flex-wrap gap-2; }
+  .admin-list button {
+    @apply rounded-full border border-input bg-muted px-3 py-1.5 text-sm text-muted-foreground cursor-pointer;
+  }
+  .notice {
+    @apply sticky top-3 z-10 rounded-md border border-primary/40 bg-secondary px-4 py-3 text-sm text-secondary-foreground;
+  }
+  .button {
+    @apply inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 cursor-pointer;
+  }
+  @media (max-width: 700px) {
+    .admin-section form { @apply grid-cols-1; }
+  }
+}

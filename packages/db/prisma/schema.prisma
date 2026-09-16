@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../dist/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PublishStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum PrincipalType {
+  CUSTOMER
+  ADMIN
+}
+
+enum UidLinkStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+}
+
+enum ReportType {
+  TRANSACTION
+  AGGREGATE
+}
+
+enum BatchStatus {
+  UPLOADED
+  PARSING
+  PREVIEW
+  COMMITTING
+  PUBLISHED
+  FAILED
+}
+
+enum WalletEntryType {
+  CREDIT
+  HOLD_RELEASE
+  WITHDRAWAL_RESERVE
+  WITHDRAWAL_RELEASE
+  WITHDRAWAL_SETTLE
+  ADJUSTMENT
+  REVERSAL
+  CLAWBACK
+}
+
+enum WithdrawalStatus {
+  REQUESTED
+  AUTO_APPROVED
+  UNDER_REVIEW
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+}
+
+enum ActorType {
+  CUSTOMER
+  ADMIN
+  SYSTEM
+}
+
+enum JobType {
+  PARSE
+  PUBLISH
+  ATTRIBUTE
+  RELEASE_HOLDS
+  SYNC
+}
+
+enum JobState {
+  PENDING
+  CLAIMED
+  DONE
+  FAILED
+}
+
+model Exchange {
+  id                  String         @id @default(cuid())
+  slug                String         @unique
+  name                String
+  status              PublishStatus  @default(DRAFT)
+  defaultCashbackRate Decimal?       @db.Decimal(6, 4)
+  i18n                Json?
+  offers              Offer[]
+  links               ReferralLink[]
+  guides              Guide[]
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+}
+
+model Offer {
+  id           String         @id @default(cuid())
+  seedKey      String?        @unique
+  exchangeId   String
+  exchange     Exchange       @relation(fields: [exchangeId], references: [id], onDelete: Cascade)
+  status       PublishStatus  @default(DRAFT)
+  cashbackRate Decimal        @db.Decimal(6, 4)
+  conditions   Json?
+  verifiedAt   DateTime?
+  i18n         Json?
+  links        ReferralLink[]
+
+  @@unique([id, exchangeId])
+  @@index([exchangeId, status])
+}
+
+model ReferralLink {
+  id          String       @id @default(cuid())
+  seedKey     String?      @unique
+  exchangeId  String
+  exchange    Exchange     @relation(fields: [exchangeId], references: [id], onDelete: Cascade)
+  offerId     String?
+  offer       Offer?       @relation(fields: [offerId, exchangeId], references: [id, exchangeId], onDelete: Restrict)
+  destination String
+  active      Boolean      @default(true)
+  clicks      ClickEvent[]
+  uidLinks    UidLink[]
+
+  @@index([exchangeId, active])
+}
+
+model Guide {
+  id         String        @id @default(cuid())
+  slug       String        @unique
+  exchangeId String?
+  exchange   Exchange?     @relation(fields: [exchangeId], references: [id], onDelete: SetNull)
+  status     PublishStatus @default(DRAFT)
+  i18n       Json?
+}
+
+model ClickEvent {
+  id        String       @id @default(cuid())
+  linkId    String
+  link      ReferralLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+
+  @@index([linkId, createdAt])
+}
+
+model AdminAccount {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+}
+
+model Customer {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  passwordHash String?
+  locale       String       @default("en")
+  uidLinks     UidLink[]
+  wallets      Wallet[]
+  withdrawals  Withdrawal[]
+  createdAt    DateTime     @default(now())
+}
+
+model Session {
+  id            String        @id @default(cuid())
+  principalType PrincipalType
+  subjectId     String
+  tokenHash     String        @unique
+  expiresAt     DateTime
+  createdAt     DateTime      @default(now())
+
+  @@index([principalType, subjectId])
+  @@index([expiresAt])
+}
+
+model UidLink {
+  id               String        @id @default(cuid())
+  customerId       String
+  customer         Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  exchangeId       String
+  uid              String
+  referralLinkId   String?
+  referralLink     ReferralLink? @relation(fields: [referralLinkId], references: [id], onDelete: SetNull)
+  status           UidLinkStatus @default(PENDING_VERIFICATION)
+  flaggedForReview Boolean       @default(false)
+  verifiedAt       DateTime?
+
+  @@index([exchangeId, uid])
+  @@index([customerId])
+}
+
+model ImportBatch {
+  id          String              @id @default(cuid())
+  exchangeId  String
+  rootAccount String
+  reportType  ReportType
+  periodStart DateTime
+  periodEnd   DateTime
+  sourceTz    String
+  sourceAsOf  DateTime?
+  fileRef     String
+  status      BatchStatus         @default(UPLOADED)
+  totals      Json?
+  createdAt   DateTime            @default(now())
+  rows        StagingRow[]
+  versions    CommissionVersion[]
+
+  @@index([exchangeId, createdAt])
+}
+
+model StagingRow {
+  id         String      @id @default(cuid())
+  batchId    String
+  batch      ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  raw        Json
+  normalized Json?
+  flags      Json?
+
+  @@index([batchId])
+}
+
+model CommissionRecord {
+  id                   String              @id @default(cuid())
+  exchangeId           String
+  uid                  String
+  asset                String
+  dedupKey             String
+  periodStart          DateTime
+  periodEnd            DateTime
+  reconciledAmount     Decimal             @default(0) @db.Decimal(30, 10)
+  activeVersionId      String?             @unique
+  activeVersion        CommissionVersion?  @relation("active_version", fields: [activeVersionId], references: [id])
+  attributedCustomerId String?
+  offerId              String?
+  cashbackRate         Decimal?            @db.Decimal(6, 4)
+  creditedCashback     Decimal             @default(0) @db.Decimal(30, 10)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  versions             CommissionVersion[] @relation("record_versions")
+
+  @@unique([exchangeId, dedupKey])
+  @@index([exchangeId, uid])
+}
+
+model CommissionVersion {
+  id           String            @id @default(cuid())
+  commissionId String
+  commission   CommissionRecord  @relation("record_versions", fields: [commissionId], references: [id], onDelete: Cascade)
+  batchId      String
+  batch        ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  amount       Decimal           @db.Decimal(30, 10)
+  superseded   Boolean           @default(false)
+  importedAt   DateTime          @default(now())
+  activeFor    CommissionRecord? @relation("active_version")
+
+  @@unique([commissionId, batchId])
+  @@index([commissionId, importedAt])
+}
+
+model Wallet {
+  id         String        @id @default(cuid())
+  customerId String
+  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  asset      String
+  pending    Decimal       @default(0) @db.Decimal(30, 10)
+  available  Decimal       @default(0) @db.Decimal(30, 10)
+  reserved   Decimal       @default(0) @db.Decimal(30, 10)
+  withdrawn  Decimal       @default(0) @db.Decimal(30, 10)
+  receivable Decimal       @default(0) @db.Decimal(30, 10)
+  entries    WalletEntry[]
+
+  @@unique([customerId, asset])
+}
+
+model WalletEntry {
+  id          String          @id @default(cuid())
+  walletId    String
+  wallet      Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type        WalletEntryType
+  amount      Decimal         @db.Decimal(30, 10)
+  sourceRef   String?
+  opKey       String?         @unique
+  availableAt DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@index([walletId, createdAt])
+}
+
+model Withdrawal {
+  id         String            @id @default(cuid())
+  customerId String
+  customer   Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  asset      String
+  amount     Decimal           @db.Decimal(30, 10)
+  network    String
+  address    String
+  status     WithdrawalStatus  @default(REQUESTED)
+  payoutRef  String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  events     WithdrawalEvent[]
+
+  @@index([status])
+  @@index([customerId, createdAt])
+}
+
+model WithdrawalEvent {
+  id           String            @id @default(cuid())
+  withdrawalId String
+  withdrawal   Withdrawal        @relation(fields: [withdrawalId], references: [id], onDelete: Cascade)
+  fromStatus   WithdrawalStatus?
+  toStatus     WithdrawalStatus
+  actorType    ActorType
+  actorId      String?
+  note         String?
+  reference    String?
+  createdAt    DateTime          @default(now())
+
+  @@index([withdrawalId, createdAt])
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  type        JobType
+  payload     Json
+  state       JobState  @default(PENDING)
+  attempts    Int       @default(0)
+  runAfter    DateTime  @default(now())
+  leaseUntil  DateTime?
+  heartbeatAt DateTime?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([state, runAfter])
+}
