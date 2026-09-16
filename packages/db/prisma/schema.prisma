@@ -84,6 +84,7 @@ model Exchange {
   id                  String         @id @default(cuid())
   slug                String         @unique
   name                String
+  logoUrl             String?        // Root-relative path to a repo asset in /exchange-logos/.
   status              PublishStatus  @default(DRAFT)
   defaultCashbackRate Decimal?       @db.Decimal(6, 4)
   i18n                Json?

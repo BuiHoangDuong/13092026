@@ -11,3 +11,4 @@ infra/data/
 *.log
 *.tsbuildinfo
 $null
+.kiro/skills

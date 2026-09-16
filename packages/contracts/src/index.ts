@@ -60,6 +60,7 @@ export type AdminGuideUpdate = z.infer<typeof adminGuideUpdateSchema>;
 
 export const exchangeSchema = z.object({
   id: z.string(), slug: z.string(), name: z.string(), status: publishStatusSchema,
+  logoUrl: z.string().regex(/^\/exchange-logos\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/).nullable(),
   defaultCashbackRate: decimalStringSchema.nullable(), locale: localeSchema,
   offers: z.array(z.object({ id: z.string(), cashbackRate: decimalStringSchema, conditions: z.unknown().nullable() }))
 });

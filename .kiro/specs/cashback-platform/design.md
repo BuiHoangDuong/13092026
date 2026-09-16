@@ -286,6 +286,14 @@ Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL
 - **Admin API** (`/api/admin/*`): admin-guarded; `Cache-Control: private, no-store`.
 - Route handlers are thin: validate with `contracts` zod schema → call `core` service →
   map result to response. No business logic in handlers.
+- **Exchange logo assets (static, in-repo):** logo files live at
+  `apps/web/public/exchange-logos/<slug>.png` and are served by Next.js from `public/` at
+  the site root. `Exchange.logoUrl` holds only the root-relative path to one of those files
+  (e.g. `/exchange-logos/binance.png`); the app never renders a logo from a third-party
+  host, so public pages carry no external image dependency. Offer tiles render the logo
+  when `logoUrl` is set and keep the existing generated colour placeholder when it is
+  `null`. Assets are baked into the build image, so adding or replacing a logo is a repo
+  change plus deploy, not a runtime upload (Req 1.1, 1.2).
 
 ### apps/worker
 - Boot connects to Postgres, starts a poll loop (~10s) that claims one job via
@@ -407,6 +415,8 @@ model Exchange {
   name                String
   status              PublishStatus @default(DRAFT)
   defaultCashbackRate Decimal? @db.Decimal(6,4) // fallback when offer has no rate
+  logoUrl             String?  // root-relative path to a repo-committed logo asset,
+                               // e.g. "/exchange-logos/binance.png"; never an external URL
   offers              Offer[]
   links               ReferralLink[]
   guides              Guide[]
@@ -804,6 +814,13 @@ most critical money/concurrency invariants, not an exhaustive suite.
 - **[PENDING]** default values: cashback rate, holding period, auto-approve threshold,
   supported assets/networks. (Rate *resolution rule* is decided; only default *values*
   remain.)
+- **[PENDING]** admin-managed exchange logos (upload/edit from the admin UI). MVP keeps
+  logos as repo-committed static assets and populates `Exchange.logoUrl` from the seed
+  script only; the admin content form does not expose the field. An exchange created purely
+  through the admin UI therefore has `logoUrl = null` and renders the colour placeholder
+  until a file and path are added in the repo. Req 10.4 (exchanges/offers/links as data,
+  no code change) still holds for those records; only the logo asset needs a repo change.
+  Revisit when runtime upload (volume or object storage) is in scope.
 - **Decided:** reversal-after-release policy = reduce pending → available → record
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
   credits (Req 8.7). Revisit if business prefers correction-only-before-holding.
@@ -819,3 +836,5 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-15 | design.md | Reversal policy + receivable/CLAWBACK (Property 12); CommissionVersion unique + activeVersion FK; interim credential + Session + PrincipalType; attribution FOR UPDATE + WalletEntry.opKey; withdrawal cancel + CANCELLED; rate source trust + same-exchange (Property 13); Guide.exchange relation; sửa thứ tự SQL claim job | Khắc phục review round 2 (#1–#7) | updated |
 | 2026-09-15 | design.md | Đổi mục "i18n" thành "Language & i18n": English là locale duy nhất được enable, `src/i18n/index.ts` là locale registry duy nhất (middleware/`<html lang>`/nav/`app/[locale]` đều suy ra từ đó), locale prefix không hợp lệ → 404, admin chỉ author locale đang enable; xoá ví dụ `/vi/...`; cập nhật bảng technology + repo layout + requirements mapping | Đồng bộ với quyết định English-only ở requirements Req 4 (v0.4) | updated |
 | 2026-09-15 | design.md | Thêm dòng "Styling (public site)": Tailwind CSS v4 + shadcn/ui (Radix), copy component vào `src/components/ui`; cập nhật repo layout với `components.json`, `postcss.config.mjs`, `src/lib/utils.ts` | Thay CSS thủ công bằng component kit có sẵn cho trang public (home/exchanges/guides); theme light blue/teal thân thiện-chuyên nghiệp; admin giữ nguyên đơn giản, không đổi | added |
+| 2026-09-16 | design.md | Thêm `Exchange.logoUrl String?` vào Data Models | Hiển thị logo thật của sàn trên offer tile thay cho placeholder màu | added |
+| 2026-09-16 | design.md | Siết `logoUrl` thành đường dẫn root-relative tới asset trong repo (`apps/web/public/exchange-logos/<slug>.png`), bỏ phương án URL ngoài; thêm mục "Exchange logo assets" trong Components/apps/web; thêm Open decision về admin-managed logo | Chốt lưu ảnh local trong repo thay vì hot-link ảnh online; admin không sửa logo qua form nên `logoUrl` chỉ do seed set | updated |

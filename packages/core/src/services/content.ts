@@ -10,11 +10,12 @@ export type PublicOffer = { id: string; cashbackRate: string; conditions: unknow
 export type PublicLink = { id: string; destination: string; offerId: string | null };
 export type PublicExchange = {
   id: string; slug: string; name: string; description: string; defaultCashbackRate: string | null;
+  logoUrl: string | null;
   offers: PublicOffer[]; links: PublicLink[];
 };
 export type PublicOfferCard = {
   offerId: string;
-  exchange: { id: string; slug: string; name: string; description: string };
+  exchange: { id: string; slug: string; name: string; description: string; logoUrl: string | null };
   cashbackRate: string;
   conditions: unknown;
   linkId: string | null;
@@ -38,6 +39,7 @@ export async function listPublishedExchanges(locale = "en"): Promise<PublicExcha
   return rows.map((row) => ({
     id: row.id,
     slug: row.slug,
+    logoUrl: row.logoUrl ?? null,
     name: localized(row.i18n, locale).name ?? row.name,
     description: localized(row.i18n, locale).description ?? "",
     defaultCashbackRate: row.defaultCashbackRate?.toString() ?? null,
@@ -64,7 +66,7 @@ function toOfferCard(exchange: PublicExchange, offer: PublicOffer): PublicOfferC
   const link = pickLinkForOffer(offer.id, exchange.links);
   return {
     offerId: offer.id,
-    exchange: { id: exchange.id, slug: exchange.slug, name: exchange.name, description: exchange.description },
+    exchange: { id: exchange.id, slug: exchange.slug, name: exchange.name, description: exchange.description, logoUrl: exchange.logoUrl },
     cashbackRate: offer.cashbackRate,
     conditions: offer.conditions,
     linkId: link?.id ?? null
@@ -110,6 +112,7 @@ export async function getPublishedExchange(slug: string, locale = "en"): Promise
   const text = localized(exchange.i18n, locale);
   return {
     id: exchange.id, slug: exchange.slug, name: text.name ?? exchange.name, description: text.description ?? "",
+    logoUrl: exchange.logoUrl ?? null,
     defaultCashbackRate: exchange.defaultCashbackRate?.toString() ?? null,
     offers: exchange.offers.map((offer) => ({ id: offer.id, cashbackRate: offer.cashbackRate.toString(), conditions: offer.conditions, verifiedAt: offer.verifiedAt })),
     links: exchange.links.map((link) => ({ id: link.id, destination: link.destination, offerId: link.offerId }))

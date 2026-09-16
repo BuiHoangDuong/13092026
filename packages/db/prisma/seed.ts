@@ -11,13 +11,14 @@ const exchanges = [
 
 async function main() {
   for (const item of exchanges) {
+    const logoUrl = `/exchange-logos/${item.slug}.png`;
     const exchangeI18n = {
       en: { name: item.name, description: `Earn cashback on ${item.name} trading fees.` }
     };
     const exchange = await prisma.exchange.upsert({
       where: { slug: item.slug },
-      update: { name: item.name, status: PublishStatus.PUBLISHED, defaultCashbackRate: item.rate, i18n: exchangeI18n },
-      create: { slug: item.slug, name: item.name, status: PublishStatus.PUBLISHED, defaultCashbackRate: item.rate,
+      update: { name: item.name, logoUrl, status: PublishStatus.PUBLISHED, defaultCashbackRate: item.rate, i18n: exchangeI18n },
+      create: { slug: item.slug, name: item.name, logoUrl, status: PublishStatus.PUBLISHED, defaultCashbackRate: item.rate,
         i18n: exchangeI18n }
     });
 

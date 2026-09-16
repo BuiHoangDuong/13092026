@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import { ArrowRight, ExternalLink } from "lucide-react";
 import {
@@ -40,8 +41,8 @@ function tileHue(seed: string): number {
 }
 
 /**
- * Marketplace-style square tile (reference: plati.market catalog grid): a colored logo
- * placeholder on top, exchange name below, cashback rate as a corner badge. Clicking the
+ * Marketplace-style square tile (reference: plati.market catalog grid): an exchange logo
+ * (or colored placeholder) on top, exchange name below, cashback rate as a corner badge. Clicking the
  * tile opens the exchange detail page rather than the referral link directly, matching the
  * reference site's "browse first" flow.
  */
@@ -52,10 +53,22 @@ function OfferCard({ card, locale }: { card: PublicOfferCard; locale: Locale }) 
   return (
     <Link href={localePath(locale, `/exchanges/${card.exchange.slug}`)} className="group flex flex-col">
       <div
-        className="relative flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-border transition-transform group-hover:scale-[1.02]"
-        style={{ background: `linear-gradient(155deg, oklch(0.4 0.12 ${hue}), oklch(0.24 0.08 ${hue}))` }}
+        className="relative flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-border bg-card transition-transform group-hover:scale-[1.02]"
+        style={card.exchange.logoUrl ? undefined : { background: `linear-gradient(155deg, oklch(0.4 0.12 ${hue}), oklch(0.24 0.08 ${hue}))` }}
       >
-        <span className="px-3 text-center text-xl font-bold text-white/95">{card.exchange.name}</span>
+        {card.exchange.logoUrl ? (
+          <div className="absolute inset-x-5 top-1/2 h-[18%] -translate-y-1/2">
+            <Image
+              src={card.exchange.logoUrl}
+              alt=""
+              fill
+              sizes="(min-width: 1152px) 130px, (min-width: 1024px) 12vw, (min-width: 768px) 19vw, (min-width: 640px) 26vw, 40vw"
+              className="object-contain"
+            />
+          </div>
+        ) : (
+          <span className="px-3 text-center text-xl font-bold text-white/95">{card.exchange.name}</span>
+        )}
         <Badge variant="success" className="absolute right-2 top-2 shadow-sm">
           {ratePercent}%
         </Badge>
