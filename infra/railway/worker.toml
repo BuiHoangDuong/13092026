@@ -1,6 +1,0 @@
-[build]
-buildCommand = "pnpm --filter @cashback/worker... build"
-
-[deploy]
-startCommand = "pnpm --filter @cashback/worker start"
-restartPolicyType = "ON_FAILURE"

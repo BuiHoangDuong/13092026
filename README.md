@@ -25,7 +25,11 @@ locally without any Postgres connection.
 ## Railway deployment
 
 Both services share workspace packages, so keep their **Root Directory** at the repository
-root (`/`). Set the following build and start commands in each service's **Settings**:
+root (`/`). Build and start commands are defined in code (Railway's Infrastructure as Code),
+not in the dashboard:
+
+- `.railway/railway.ts` — declares both services, their `buildCommand`/`start`, and which
+  Railway project/environment they belong to.
 
 | Service | Build Command | Start Command |
 | --- | --- | --- |
@@ -41,11 +45,12 @@ Start commands intentionally select only the service itself.
 After deploying, check that the build log shows `contracts`, `db`, and `core` building before
 the selected app.
 
-For services already using Railway's legacy Config as Code, the matching files are
-`/infra/railway/web.toml` and `/infra/railway/worker.toml`. These nested files must be selected
-explicitly in the service settings and their values override dashboard commands. Merely
-committing them does not activate them. New services should configure commands in Settings;
-see [Railway's Config as Code documentation](https://docs.railway.com/config-as-code).
+**Changing the config**: edit `.railway/railway.ts`, run `railway config plan` to preview the
+diff against the live project, then `railway config apply` to push it. Do not edit build/start
+commands directly in the Railway dashboard — `railway.ts` is the source of truth, and a later
+`railway config apply` (or drift check) would overwrite an out-of-band dashboard change.
+Railway's older `railway.json`/`railway.toml` Config as Code format is deprecated; this repo
+does not use it.
 
 ## Local/SIT setup (with a database)
 
