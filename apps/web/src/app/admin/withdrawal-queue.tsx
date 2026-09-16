@@ -1,0 +1,17 @@
+"use client";
+import { useCallback, useEffect, useState } from "react";
+import { withdrawalsResponseSchema, type WithdrawalsResponse } from "@cashback/contracts";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { defaultLocale, getMessages } from "@/i18n";
+export function WithdrawalQueue() {
+  const m=getMessages(defaultLocale).withdrawal;
+  const [page,setPage]=useState<WithdrawalsResponse|null>(null);const [cursor,setCursor]=useState<string|null>(null);const [error,setError]=useState("");const [busy,setBusy]=useState(false);
+  const load=useCallback(async()=>{try{const r=await fetch(`/api/admin/withdrawals${cursor?`?cursor=${encodeURIComponent(cursor)}`:""}`,{cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error?.message??m.unavailable);setPage(withdrawalsResponseSchema.parse(body));}catch(e){setError(e instanceof Error?e.message:m.unavailable);}},[cursor,m.unavailable]);
+  useEffect(()=>{void load();const timer=setInterval(()=>{if(document.visibilityState==="visible")void load();},30000);return()=>clearInterval(timer);},[load]);
+  async function decision(id:string,choice:"APPROVE"|"REJECT"|"MARK_PAID",form:HTMLFormElement){
+    const data=new FormData(form);if(!window.confirm(m.confirm.replace("{{action}}",m.actions[choice])))return;setBusy(true);setError("");
+    try{const r=await fetch(`/api/admin/withdrawals/${id}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:choice,note:data.get("note")||undefined,...(choice==="MARK_PAID"?{payoutRef:data.get("payoutRef")}: {})})});const body=await r.json();if(!r.ok)throw new Error(body.error?.message??m.unavailable);setCursor(null);if(!cursor)await load();}catch(e){setError(e instanceof Error?e.message:m.unavailable);}finally{setBusy(false);}
+  }
+  return <section className="mt-10 space-y-4 rounded-xl border border-border bg-card p-6"><h2 className="text-2xl font-semibold">{m.queue}</h2><p className="text-sm text-muted-foreground">{m.manualPayout}</p>{error&&<p role="alert" className="text-destructive">{error}</p>}{page?.withdrawals.map(w=><form key={w.id} className="space-y-3 rounded-lg border border-border p-4" onSubmit={e=>e.preventDefault()}><p className="font-semibold">{w.amount} {w.asset} · {m.statuses[w.status]} {w.isFirst&&` · ${m.first}`}</p><p className="break-all text-sm">{m.uid}: {w.uid} · {w.email}<br/>{w.network} · {w.address}</p><label className="block text-sm">{m.note}<Input name="note" maxLength={1000} disabled={busy}/></label>{["APPROVED","AUTO_APPROVED"].includes(w.status)&&<label className="block text-sm">{m.payoutRef}<Input name="payoutRef" maxLength={256} disabled={busy}/></label>}<div className="flex flex-wrap gap-2">{(["APPROVE","REJECT","MARK_PAID"] as const).filter(d=>d!=="APPROVE"||w.status==="UNDER_REVIEW").filter(d=>d!=="MARK_PAID"||["APPROVED","AUTO_APPROVED"].includes(w.status)).map(d=><Button key={d} type="button" variant={d==="REJECT"?"secondary":"default"} disabled={busy} onClick={e=>void decision(w.id,d,e.currentTarget.form!)}>{m.actions[d]}</Button>)}</div></form>)}{page&&!page.withdrawals.length&&<p>{m.empty}</p>}<div className="flex gap-3">{cursor&&<Button variant="secondary" onClick={()=>setCursor(null)}>{m.newest}</Button>}{page?.nextCursor&&<Button variant="secondary" onClick={()=>setCursor(page.nextCursor)}>{m.next}</Button>}</div></section>;
+}

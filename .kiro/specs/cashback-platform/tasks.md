@@ -1,8 +1,9 @@
 # Implementation Plan — Cashback Affiliate Platform
 
-- **Status:** Draft v1.3 (Phase 0 complete and English-only; Phase 1 import intake/preview shell verified)
+- **Status:** Draft v2.0 (UID-first re-key: no customer accounts; cashback lookup by
+  exchange + UID; email OTP via Resend + UID session; supersedes the Hybrid plan of v1.4)
 - **Last updated:** 2026-09-16
-- **Derives from:** `requirements.md` (Draft v0.4), `design.md` (Draft v0.5)
+- **Derives from:** `requirements.md` (Draft v0.6), `design.md` (Draft v0.7)
 
 ## Overview
 
@@ -24,11 +25,15 @@ implements. `[PENDING]` markers block only their own task, not the whole plan.
 
 ### Current status (2026-09-16)
 
-Phase 0 foundation is implemented and now **verified end to end against a real, hosted
+Phase 0 foundation is implemented and was **verified end to end against a real, hosted
 Postgres** (Railway test DB, no local Docker) — see Tasks 4.3–4.5. `pnpm build`, `pnpm typecheck`,
 `pnpm lint`, Prisma schema validation, migrate, seed, and a live smoke pass (public pages,
-`/api/exchanges`, `/go/:linkId` redirect + real `ClickEvent`, `/api/auth/register` + real
-`Customer`/`Session`) all pass.
+`/api/exchanges`, `/go/:linkId` redirect + real `ClickEvent`) all passed at that time.
+
+**v2.0 note:** that historical smoke run also exercised `/api/auth/register` against a real
+`Customer`/`Session` row. Both are removed in v0.6/v0.7 (Req 3, 5) — `Customer` no longer
+exists in the schema. Re-verification of the smoke path is required once Task 22 (re-key)
+lands, and it will exercise `UidAccount`/`EmailOtp`/`UidSession` instead.
 
 Done: monorepo scaffold + import-boundary lint, Prisma schema + migrations (incl. the partial unique index),
 idempotent seed with guides, shared contracts, local/Railway infra skeleton, root `.env` loading, SIT wired to a Railway test Postgres and
@@ -38,9 +43,24 @@ click recording, interim auth behind `AuthPort`, admin content services/API/form
 
 Task 5.5 (English-only enforcement) is done — see Phase 0 additions above.
 
-Open in Phase 1 scope: report parsing/publishing (Tasks 10.2–10.3 onward) and commit-time lease ownership check
-(9.3, intentionally paired with the first real publish handler). A real exchange report sample
-is still needed to finalize adapter columns and Open decision #11 (`dedupKey`).
+**Access model (superseded 2026-09-16, now UID-first):** the earlier Hybrid plan (anonymous
+boolean lookup + customer account + admin ownership approval, Tasks 14.3a/14.3b below) is
+replaced. There is no customer account. A visitor enters exchange + UID and sees real
+`pending`/`available` amounts (Req 14). Withdrawal requires binding an email via a 6-digit
+OTP sent through **Resend**, which opens a 30-minute session scoped to one UID account
+(Req 15, 16). A UID's first withdrawal always goes to admin review (Req 9.5). See
+design.md "Superseded" and requirements.md "Accepted risk — first claimant wins" for why,
+and what protection remains.
+
+Open next: **Task 22 (re-key to `UidAccount`)** must land before anything else in Phase 2 —
+it removes `Customer`/`UidLink`, so Tasks 14.3a/14.3b as originally written no longer apply
+(struck through below, replaced by Tasks 23–26). Then: Task 23 (lookup by exchange + UID),
+Task 24 (OTP + UID session via Resend), Task 25 (withdrawal — genuinely 0% today, since
+`Withdrawal`/`WithdrawalEvent` are Prisma declarations with no service or route behind
+them), Task 26 (cherry-pick UI components from the reference `cashback/` folder).
+
+Still open elsewhere: native Bybit export column mapping and Open decision #11 (`dedupKey`)
+need a real exchange report sample.
 
 **Note on local hosting:** the verified smoke run used `web` on the local host via `pnpm dev`
 and a dedicated Railway **test** Postgres reached over its public/proxy host; no local Docker
@@ -74,19 +94,24 @@ flowchart TD
   T9 --> T10[10 Import upload/parse/preview]
   T8 --> T10
   T10 --> T11[11 Commit publish - versioned]
-  T7 --> T12[12 UID linking + verification]
-  T11 --> T12
-  T11 --> T13[13 Attribution + cashback]
-  T12 --> T13
+  T11 --> T22[22 Re-key to UidAccount]
+  T13 --> T22
+  T22 --> T13[13 Attribution + cashback]
   T13 --> T14[14 Wallet + hold release]
-  T14 --> T15[15 Withdrawal flow - reserved]
+  T22 --> T23[23 Cashback lookup by exchange+UID]
+  T14 --> T23
+  T22 --> T24[24 Email OTP + UID session via Resend]
+  T23 --> T24
+  T14 --> T25[25 Withdrawal flow - reserved]
+  T24 --> T25
+  T25 --> T26[26 Cherry-pick UI from reference project]
   T6 --> T16[16 Admin analytics/dashboard]
   T11 --> T16
-  T15 --> T16
+  T25 --> T16
   T8 --> T17[17 Security hardening]
-  T15 --> T17
+  T25 --> T17
   T13 --> T18[18 Test overview]
-  T15 --> T18
+  T25 --> T18
   T43 --> T19[19 Prod hardening/observability]
   T17 --> T19
   T18 --> T19
@@ -104,16 +129,23 @@ flowchart TD
     { "wave": 4, "tasks": ["4.2", "6", "8"] },
     { "wave": 5, "tasks": ["4.3", "10"] },
     { "wave": 6, "tasks": ["4.4", "4.5", "11"] },
-    { "wave": 7, "tasks": ["12"] },
+    { "wave": 7, "tasks": ["22"] },
     { "wave": 8, "tasks": ["13"] },
     { "wave": 9, "tasks": ["14"] },
-    { "wave": 10, "tasks": ["15"] },
-    { "wave": 11, "tasks": ["16", "17", "18"] },
-    { "wave": 12, "tasks": ["19"] },
-    { "wave": 13, "tasks": ["20", "21"], "deferred": true }
+    { "wave": 10, "tasks": ["23"] },
+    { "wave": 11, "tasks": ["24"] },
+    { "wave": 12, "tasks": ["25"] },
+    { "wave": 13, "tasks": ["26", "16", "17", "18"] },
+    { "wave": 14, "tasks": ["19"] },
+    { "wave": 15, "tasks": ["20", "21"], "deferred": true }
   ]
 }
 ```
+
+> Tasks 12 and 14.3a/14.3b from the earlier Hybrid plan are struck through below (not
+> deleted, per spec governance) and replaced by Tasks 22–26. Task 13's body is amended
+> in place because rewriting `attributionService` against `UidAccount` is a small, local
+> change to already-shipped code, not a new task.
 
 ## Tasks
 
@@ -198,9 +230,14 @@ flowchart TD
 
 - [x] 7. Auth port + interim auth
   - [x] 7.1 Define `AuthPort` in `core` (`getSession`, `requireCustomer`, `requireAdmin`) with distinct customer/admin principals.
-    - _Requirements: 3.3, 3.4; Design: Components/Auth_
+    - **Amended by Task 22 (v0.6):** `requireCustomer` and the customer principal are
+      removed — end-user identity is a `UidSession` (Task 24), resolved by
+      `uidSessionService`, not `AuthPort`. `getSession`/`requireAdmin` are unchanged.
+    - _Requirements: 3.2, 3.3, 3.4; Design: Components/Auth_
   - [x] 7.2 Implement the interim auth provider behind the port (email+password with hashed `passwordHash` and a `Session` table of hashed tokens + expiry) and customer register/login/logout routes; server-side authz on all guarded routes. These interim tables are replaceable if a managed provider (open decision #13) is chosen without touching route handlers.
-    - _Requirements: 3.1, 3.2, 3.5; Design: Components/Auth_
+    - **Amended by Task 22:** customer register/login/logout routes are deleted; `Session`
+      becomes admin-only (`adminId` FK). Admin login/logout is unaffected.
+    - _Requirements: 3.1, 3.5; Design: Components/Auth_
 
 - [x] 8. Admin content management
   - [x] 8.1 Guard the admin area: admin-only session check on `/admin` routes, denying non-admin principals.
@@ -253,32 +290,207 @@ flowchart TD
   - _Requirements: 6.7, 6.8, 6.9, 7.5, 7.8; Design: Key flows/import, Data Models, Correctness Properties 1, 7, 9_
   - Bybit normalized v1 dedup keys are defined in `bybit-parser.ts` (root + transaction ID + asset, or root + UID + asset + exact UTC period). Partial overlaps and older reports are rejected; corrections use the original identity. Native export identity mapping still needs a real sample.
 
-- [x] 12. UID linking + verification (Bybit MVP)
-  - [x] 12.1 Implement `POST /api/me/uids` and `GET /api/me/uids`: create link in `PENDING_VERIFICATION` (optionally capturing referral link used), list customer's links; UID stored as opaque string.
-    - _Requirements: 5.1, 5.5; Design: Key flows/UID_
-  - [x] 12.2 Implement verification in the ATTRIBUTE job: verify a pending UID when it appears in published commissions and no other `VERIFIED` owner exists (relying on the partial unique index); store a conflicting claim as `REJECTED` + `flaggedForReview`; re-evaluate pending links when new UIDs appear.
-    - Ownership approval with admin/evidence note is also required: report membership alone must not award a claimant money. Both approval and publication enqueue attribution; verified ownership remains unique and competing claims are rejected/flagged.
-    - _Requirements: 5.2, 5.3, 5.4, 5.6; Design: Key flows/UID, Correctness Properties 3, 4_
+- [x] ~~12. UID linking + verification (Bybit MVP)~~ **SUPERSEDED by Task 22 (v0.6/v0.7)**
+  - ~~12.1 `POST/GET /api/me/uids`, `UidLink(PENDING_VERIFICATION)`.~~ Removed: there is no
+    customer to link a UID to. A `UidAccount` is created directly by attribution (Task 22).
+  - ~~12.2 Admin-approved ownership verification via `ownershipApprovedAt` + partial unique
+    index.~~ Removed: the operator accepted first-claimant-wins instead (Open decision #21).
+    The code this task shipped (`createUidLink`, `approveUidOwnership`,
+    `verifyApprovedUids`, the UID-review UI in `bybit-operations.tsx`) is deleted by Task 22,
+    not migrated — there is nothing in the new model for it to do.
+  - Kept here, struck through, per spec governance (§4): the requirement numbers this task
+    cited (5.1–5.6) no longer exist in this form; see Requirement 5 in requirements.md v0.6.
 
 - [x] 13. Attribution + cashback engine (rate resolution + delta, concurrency-safe)
-  - Implement `attributionService` + `cashbackEngine`: serialize publish/attribution/UID/ledger writes with a transaction-scoped Postgres advisory lock for the low-volume MVP, attribute it to the verified customer (keep unattributed when no link); resolve the rate by precedence (offer of the UID's referral link **only when corroborated by system-verified report data**, else exchange default), assert `UidLink.exchangeId = ReferralLink.exchangeId = Offer.exchangeId` (else fall back to default), and snapshot `offerId`/`cashbackRate` onto the record; compute `target = reconciledAmount × rate` and apply only `delta = target − creditedCashback` — positive delta offsets any `receivable` then CREDITs `pending` (with `availableAt`), negative delta reduces `pending` then `available` then records the remainder as `receivable` via CLAWBACK. Write every wallet movement with a unique `opKey` (e.g. `attr:{commissionVersionId}`) so retries/racing workers cannot double-apply; update `creditedCashback`.
-  - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.7, 7.8, 8.2, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 2, 4, 11, 12, 13_
+  - Implement `attributionService` + `cashbackEngine`: serialize publish/attribution/ledger writes with a transaction-scoped Postgres advisory lock for the low-volume MVP; resolve the rate by precedence (offer of the reported referral link **only when corroborated by system-verified report data**, else exchange default), assert `ReferralLink.exchangeId = Offer.exchangeId = commission.exchangeId` (else fall back to default), and snapshot `offerId`/`cashbackRate` onto the record; compute `target = reconciledAmount × rate` and apply only `delta = target − creditedCashback` — positive delta offsets any `receivable` then CREDITs `pending` (with `availableAt`), negative delta reduces `pending` then `available` then records the remainder as `receivable` via CLAWBACK. Write every wallet movement with a unique `opKey` (e.g. `attr:{commissionVersionId}`) so retries/racing workers cannot double-apply; update `creditedCashback`.
+  - **Amended by Task 22 (v0.6/v0.7):** attribution no longer looks up a `UidLink`. It
+    upserts a `UidAccount` by `(exchangeId, uid)` unconditionally — cashback accrues with
+    no claimant action, no email, no session (Req 5.3, 5.5; Property 4). This is a small
+    change to the existing transaction (replace the `UidLink` lookup with a `UidAccount`
+    upsert); the rate resolution, delta math, and `opKey` idempotency are unchanged.
+  - _Requirements: 5.3, 7.1, 7.2, 7.3, 7.4, 7.7, 7.8, 8.2, 8.4, 8.7; Design: Key flows/UID accounts, Key flows/attribution, Cashback engine, Correctness Properties 2, 3, 4, 11, 12, 13_
 
-### Phase 2 — Wallet & withdrawals
+- [x] 22. Re-key identity from `Customer`/`UidLink` to `UidAccount` (UID-first migration)
+  - **This must land before Tasks 23–26.** It is the structural change the rest of Phase 2
+    depends on; Task 13's attribution amendment above is part of this task's scope.
+  - **Verified:** migration on an empty isolated schema and populated legacy fixture;
+    balances, pending lots, audit and admin session preserved; ambiguous allocation
+    rejects atomically. Rewritten Bybit integration passes credit/release idempotency,
+    rate snapshots, corrections/receivable offset, overlap rejection, atomic publish
+    rollback and lease fencing. Build, lint and parser tests pass.
+  - **Schema:** drop `Customer` and `UidLink` (and the partial unique index
+    `uidlink_verified_owner`); add `UidAccount` (`@@unique([exchangeId, uid])`),
+    `EmailOtp`, `UidSession`, `RateLimitCounter`; change `Session` to admin-only
+    (`adminId` FK, drop `principalType`/`subjectId`); re-point `Wallet.customerId` →
+    `Wallet.uidAccountId`, `Withdrawal.customerId` → `Withdrawal.uidAccountId` (+ new
+    `email`, `isFirst` columns), `CommissionRecord.attributedCustomerId` →
+    `attributedUidAccountId`; drop `PrincipalType`, `UidLinkStatus` enums; change
+    `ActorType.CUSTOMER` → `ActorType.CLAIMANT`.
+  - **Core:** rewrite `packages/core/src/services/cashback.ts` — delete `createUidLink`,
+    `approveUidOwnership`, `listPendingUidLinks`, `verifyApprovedUids`; replace with a
+    `upsertUidAccount(exchangeId, uid)` used by attribution (Task 13's amendment).
+    `getWallet`/`listUidLinks`-equivalent reads move to Task 23/25's services.
+  - **Web:** delete `apps/web/src/app/login/*`, `/api/auth/{register,login,logout}` (keep
+    only the admin variants under `/api/admin/auth/*`), `apps/web/src/lib/customer-api.ts`,
+    `apps/web/src/app/api/me/*`, `apps/web/src/components/cashback-panel.tsx` +
+    `cashback-dashboard.tsx`, and the UID-ownership-review block in
+    `apps/web/src/app/admin/bybit-operations.tsx`.
+  - **Tests:** `scripts/test-bybit-integration.mjs` currently creates `Customer` rows,
+    calls `core.createUidLink`/`core.approveUidOwnership`, and asserts against
+    `/api/me/wallet`/`/api/me/uids` with a session cookie from `core.createSession`. All of
+    that must be rewritten against `UidAccount` (attribution creates it directly) before
+    this task can be marked done — it is the project's only end-to-end proof that money
+    logic works, so it cannot be left broken partway through the migration.
+  - Verify: `pnpm typecheck`/`build` clean with `Customer`/`UidLink` gone from the
+    codebase (a lingering reference is a build error, not a lint warning); the rewritten
+    integration test's existing assertions (idempotent credit, corrections/receivable
+    offset, overlap rejection, lease fencing) still pass against `UidAccount`.
+  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6; Design: Key flows/UID accounts, Data Models (`UidAccount`), Correctness Properties 3, 4_
 
-- [-] 14. Wallet balances + hold release and home cashback panel
-  - [x] 14.1 Implement `walletService` (pending/available/reserved/withdrawn per customer+asset) and `GET /api/me/wallet` returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
+### Phase 2 — Lookup, wallet, withdrawals
+
+- [-] 14. Wallet balances + hold release
+  - [x] 14.1 Implement `walletService` and a wallet read returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
+    - **Amended by Task 22:** the read moves from `GET /api/me/wallet` (session-scoped
+      customer) to `GET /api/uid/wallet` (session-scoped `UidAccount`, Task 24). The
+      balance/history logic itself (`walletService` internals) is unchanged.
     - _Requirements: 8.1, 8.5, 8.6; Design: Cashback engine, Data Models_
   - [x] 14.2 Implement `RELEASE_HOLDS` job (scheduler tick) moving cleared CREDITs `pending→available`; implement the reversal policy (reduce `pending` then `available`, remainder to `receivable` via CLAWBACK) so no balance goes negative, and expose `receivable` in the wallet.
     - _Requirements: 8.3, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 5, 12_
+  - [x] ~~14.3 Customer experience: sign-in/register form, private "Your cashback" panel...~~
+    **SUPERSEDED by Task 22.** What landed here (`login-form.tsx`, `cashback-panel.tsx`,
+    `cashback-dashboard.tsx`, the UID-link form, admin ownership-review UI in
+    `bybit-operations.tsx`) is deleted, not migrated — v0.6/v0.7 has no customer session to
+    build a panel around. Kept struck through per spec governance (§4).
+  - [x] ~~14.3a Anonymous quick-lookup widget (boolean, Requirement 1.6–1.8)~~
+    **SUPERSEDED by Task 23.** The Hybrid design (boolean-only response, register CTA) is
+    replaced by a lookup that returns real `pending`/`available` amounts with no account
+    step. `LookupAttempt` is renamed/generalized to `RateLimitCounter` (Task 22).
+  - [x] ~~14.3b Account UX gaps (username, `/me/uids` route, no-reset-password notice)~~
+    **SUPERSEDED.** There is no username, no `/me/uids`, no sign-in screen — see Task 22
+    for the removal and Task 25 for the withdrawal UI that replaces this scope.
+  - Verification: parser/money unit tests and isolated PostgreSQL integration cover migration, idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection, and expired-owner rollback. Deployment/live Bybit data validation remain outside these completed code tasks. Account-isolation checks specifically (Customer A cannot read Customer B) are superseded by Task 25's UID-session isolation checks.
 
-  - [ ] 14.3 Customer experience: sign-in/register form, private `Your cashback` panel before the home hero/grid, Bybit UID form/status, per-asset balances/freshness, paginated wallet history, and visible-tab polling. Admin gets upload/preview/publish and ownership-review UI. Real HTTP/UI verification pending.
-  - Verification: parser/money unit tests and isolated PostgreSQL integration cover migration, UID ownership, idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection, account isolation and expired-owner rollback. Deployment/live Bybit data validation remain outside these completed code tasks.
+- [x] 23. Cashback lookup by exchange + UID (Requirement 14)
+  - **Verified:** isolated HTTP test checks strict amount-only response, private cache,
+    missing-input rejection before database access, IP budget/429/Retry-After,
+    no account/wallet/OTP/session writes, real-zero distinction and home placement.
+    Production requires a valid IP header overwritten by trusted ingress.
+  - Add `lookupService` in `core`: consume the per-IP budget first (`RateLimitCounter`,
+    scope `lookup:ip`), then read the `UidAccount`'s wallets for `(exchangeId, uid)` and
+    return `pending`/`available` per asset plus `lastImportAt`/`sourceAsOf`. Read-only — it
+    MUST NOT create a `UidAccount`, `Wallet`, or any session (Req 14.4, 14.5).
+  - Reject a request missing either `exchangeId` or `uid` before querying anything —
+    a UID without an exchange is never resolved (Req 14.1).
+  - Add `POST /api/lookup` returning the balances above and nothing else: no bound email
+    (in any form), payout address, withdrawal record, movement history, or
+    `reserved`/`withdrawn`/`receivable` (Req 14.3). Over budget → 429 + `Retry-After`
+    without querying the wallet. Unknown UID and known-zero-balance UID use the same
+    response shape with an explicit `hasData` flag (Req 14.6, mirrors Req 8.5's "no data"
+    vs zero distinction). Response `Cache-Control: private, no-store`.
+    - Add the lookup form on the home page above the offer grid: exchange select + UID
+    input, rendering balances inline on success. Extract all new copy into
+    `apps/web/src/i18n/messages/en.ts` (Req 4.2).
+  - Verify: funded UID → response contains exactly `pending`/`available`/freshness, and a
+    test asserts the response body contains none of `email`, `address`, `reserved`,
+    `withdrawn`, `receivable`, or a history array; missing `uid` or `exchangeId` → 400
+    without a query; N+1 requests from one IP within the window → 429; row counts for
+    `UidAccount`/`Wallet` unchanged after a lookup.
+  - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6; Design: Key flows/Cashback lookup by exchange + UID, core services (`lookupService`), Data Models (`RateLimitCounter`), Correctness Properties 14, 15_
 
-- [ ] 15. Withdrawal flow (reserved balance + cancel + event audit)
-  - Implement `withdrawalService` + `POST /api/me/withdrawals`, `POST /api/me/withdrawals/:id/cancel`, `GET /api/me/withdrawals`, and `POST /api/admin/withdrawals/:id/decision`.
-  - Enforce amount `<= available` and reject the request while `receivable > 0`; validate network+address; on REQUESTED write `WITHDRAWAL_RESERVE` (available→reserved); auto-approve at/below threshold else route to review; on PAID write `WITHDRAWAL_SETTLE` (reserved→withdrawn) with payout ref; on reject/cancel write `WITHDRAWAL_RELEASE` (reserved→available). Customer cancel is allowed only before `PAID`; block withdrawing `pending`. Persist a `WithdrawalEvent` for every transition (from/to status, actor, time, note/reference).
-  - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10; Design: Key flows/withdrawal, Data Models, Correctness Properties 5, 6, 10, 12_
+- [x] 24. Email OTP binding & UID session via Resend (Requirement 15, 16)
+  - **Verified:** isolated Next HTTP + core tests cover hashed/single-use OTP,
+    binding, mismatched-email rejection, cooldown/day cap, five failed guesses,
+    expiry, failed provider acceptance and 30-minute UID-session isolation from
+    other UID scopes/admin sessions. Captured output contains no plaintext OTP.
+    Real Resend credentials and verified sender domain remain deployment setup.
+  - Add the `resend` package and `emailPort` interface (`sendOtp`); implement
+    `resendEmailAdapter` calling it. `EMAIL_FROM` must be on a Resend-**verified** domain —
+    the shared `resend.dev` testing domain only delivers to the account owner, so it cannot
+    reach a real claimant (Req 16.2).
+  - Add `otpService`: generate a 6-digit code with `crypto.randomInt(100000, 1_000_000)`,
+    hash it with the `bcryptjs` already used for admin credentials, store `EmailOtp`
+    (`expiresAt` = now + `OTP_TTL_MINUTES`, proposed 5). Send order: check per-UID cooldown
+    + daily cap (`RateLimitCounter` scope `otp:uid`) and per-IP limit (scope `otp:ip`) →
+    if `UidAccount.boundEmail` is set, target only it (mismatched submission is rejected
+    *without* sending anywhere and *without* revealing the bound address, Req 15.2) → call
+    `emailPort.sendOtp` → record `providerAccepted`/`providerMessageId`. If Resend errors or
+    times out, do not mark the OTP sent and return a retryable error (Req 16.3).
+  - Add `POST /api/otp/verify`: compare the hash, check `expiresAt`/`consumedAt`/
+    `failedAttempts` (invalidate at `OTP_MAX_ATTEMPTS`, proposed 5, Req 15.5), consume the
+    OTP, bind the email if unbound, issue a `UidSession` (hashed token, 30-minute expiry)
+    scoped to exactly that `UidAccount` (Req 15.3).
+  - Add `uidSessionService`: every `/api/uid/*` handler resolves its principal through this
+    service from the session cookie, never from a request parameter (Req 15.10); an
+    expired session or one presented against a different UID is rejected (Req 15.11).
+  - Verify: OTP plaintext never appears in a log line or API response body (grep the test
+    output, don't just assert the field is absent); 5 wrong guesses invalidate the code
+    even before the TTL elapses; a UID session for account A returns 401/403 against
+    account B's wallet; resending before the cooldown elapses is rejected; a simulated
+    Resend failure leaves the `EmailOtp` row unmarked-as-sent.
+  - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7, 15.8, 15.10, 15.11, 16.1, 16.2, 16.3, 16.4, 16.5, 16.6; Design: Key flows/Email OTP binding & UID session, core services (`otpService`, `uidSessionService`, `emailPort`), Data Models (`EmailOtp`, `UidSession`), Correctness Properties 16, 17_
+
+- [-] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
+- [-] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
+  - **Largely implemented.** Service, API routes, and core UI all exist. What remains is
+    the env-var documentation (25.8) and integration test coverage (25.9), and Task 26 (UI upgrade).
+  - [x] 25.1 `withdrawalService` in `packages/core/src/services/withdrawals.ts`: `requestWithdrawal`
+    (amounts/receivable/address validation, `isFirst` detection, auto-approve vs UNDER_REVIEW,
+    `WITHDRAWAL_RESERVE` wallet entry, two `WithdrawalEvent` rows), `cancelWithdrawal`,
+    `decideWithdrawal` (APPROVE/REJECT/MARK_PAID with `payoutRef` guard), `listWithdrawals`
+    (cursor-paginated, both claimant and admin views), `validPayoutAddress` (EVM + TRON checksum),
+    `payoutRoutes` + `threshold` from env vars.
+  - [x] 25.2 `withdrawalCreateSchema`, `withdrawalDecisionSchema`, `payoutRoutesSchema`,
+    `withdrawalSchema`, `withdrawalsResponseSchema`, `PayoutRoutes` in `packages/contracts`.
+  - [x] 25.3 API routes — `GET`+`POST /api/uid/withdrawals`, `POST /api/uid/withdrawals/[id]/cancel`,
+    `GET /api/admin/withdrawals`, `POST /api/admin/withdrawals/[id]/decision` — all wired with correct
+    session guards (`uidPrincipal` / `withAdmin`) and same-origin checks.
+  - [x] 25.4 `WithdrawalFlow` client component (`apps/web/src/app/withdraw/`): OTP auth → wallet display
+    → withdrawal request form → history with per-withdrawal cancel; visible-tab polling; cursor
+    pagination on both wallet history and withdrawal history.
+  - [x] 25.5 `WithdrawalQueue` admin component + `POST /api/admin/withdrawals/[id]/decision`:
+    decision form with note/payoutRef inputs, per-withdrawal action buttons filtered by current status,
+    `window.confirm()` guard, cursor pagination.
+  - [x] 25.6 i18n strings for all new copy in `apps/web/src/i18n/messages/en.ts`; no inline strings in the components.
+  - [x] 25.7 `WithdrawalQueue` wired into admin page; `WithdrawalFlow` accessible at `/withdraw`.
+  - [x] 25.8 Document withdrawal env vars in `.env.example`:
+    `WITHDRAWAL_ROUTES` (JSON, e.g. `{"USDT":["TRON","ETHEREUM"]}`),
+    `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` (JSON, e.g. `{"USDT":"100.00"}`).
+    Already present in `.env.example` with clear comments — confirmed.
+  - [ ] 25.9 Integration test coverage for the core acceptance criteria:
+    first withdrawal → `UNDER_REVIEW` regardless of amount; second (same amount) → `AUTO_APPROVED`;
+    two concurrent requests against the same available balance cannot both reserve it; cancel after
+    `PAID` is rejected; every transition has a matching `WithdrawalEvent`.
+    Add as a new section in `scripts/test-bybit-integration.mjs` after the existing lease-fencing checks.
+  - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11; Design: Key flows/withdrawal, Data Models, Correctness Properties 6, 10, 12_
+
+- [ ] 26. Cherry-pick UI components from the reference project (`cashback/`)
+  - The `cashback/` folder (a local, gitignored copy of `satnaing/shadcn-admin`, MIT
+    licensed) is a **Vite SPA with no backend** — its OTP form's "verify" handler is a
+    `setTimeout` + toast, not a real check. Copy component *files* only; every verify/send
+    call in this task is Task 24's real implementation, never the reference project's stub.
+  - Copy `src/components/ui/input-otp.tsx` (and the `input-otp` npm dependency) into
+    `apps/web/src/components/ui/`; wire it into the OTP-verify step of Task 24's withdrawal
+    UI in place of a plain text input.
+  - Copy `src/components/data-table/*` (6 files: `bulk-actions`, `column-header`,
+    `faceted-filter`, `index`, `pagination`, `toolbar`, `view-options`) into
+    `apps/web/src/components/data-table/`; use it for the admin withdrawal queue (Task 25)
+    and the admin import-batch list, both currently plain `<ul>`/`<table>` markup.
+  - Copy `src/components/confirm-dialog.tsx` for admin approve/reject/mark-paid actions
+    (hard-to-reverse operations that currently have no confirmation step).
+  - Add the missing `ui/*` primitives actually consumed by the above: `table`, `tabs`,
+    `sheet`, `skeleton`, `sonner`, `alert-dialog`, `select`, `checkbox`, `switch`,
+    `textarea`, `tooltip`, `popover`, `dropdown-menu`, `alert` — only the ones a copied
+    component imports, not the full set speculatively.
+  - **Do not copy:** TanStack Router (`routes/`, `routeTree.gen.ts` — conflicts with Next's
+    App Router), Clerk (conflicts with `AuthPort` and doesn't model a `UidSession`),
+    `vite.config.ts`/`netlify.toml`/`index.html`, or any submit handler from
+    `src/features/*` (they're fake — see above). The public site must stay SSR
+    (Req 1.1, 1.5); this task's components are for the admin/withdrawal areas only.
+  - Verify: `pnpm lint`/`typecheck`/`build` clean after each copied file; the admin
+    withdrawal queue paginates via `data-table` instead of loading all rows; approving a
+    withdrawal requires confirming a dialog first.
+  - _Requirements: none directly (tooling/UX only); Design: Components/apps/web_
 
 - [ ] 16. Admin analytics & operations dashboard
   - Implement `GET /api/admin/analytics` (click metrics by link/exchange/time from internal data), `GET /api/admin/accounts/:id/activity` (paginated, per UID/account), and `GET /api/admin/sync-status`; 30s polling when tab visible, 5s while a batch processes; admin/private responses set `Cache-Control: private, no-store`; no secrets/raw reports leaked; views for attributed vs unattributed commission and the withdrawal queue.
@@ -287,13 +499,17 @@ flowchart TD
 ### Phase 3 — Hardening
 
 - [ ] 17. Security hardening
-  - Server-side authz on every non-public route; customer scope from session only; private bucket credentials limited to web(write)/worker(read); secrets only in env/secret store (no public-prefixed); Postgres reachable only from web/worker; ensure admin/customer APIs require auth before shipping.
-  - _Requirements: 3.3, 6.2; Design: Security_
+  - Server-side authz on every non-public route; the acting `UidAccount` derived from the
+    `UidSession` only, never a request parameter; private bucket credentials limited to
+    web(write)/worker(read); secrets only in env/secret store (no public-prefixed,
+    including `RESEND_API_KEY`); Postgres reachable only from web/worker; ensure admin and
+    `/api/uid/*` write routes require the matching session type before shipping.
+  - _Requirements: 3.3, 6.2, 15.10; Design: Security_
 
 - [-] 18. Lightweight test overview + critical invariant checks
   - Keep testing light: a thin smoke check that the app boots and key paths respond (public browse → get link → redirect records a click; admin login; seed import runs).
-  - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two customers verifying the same UID (one VERIFIED, one REJECTED/flagged); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; two concurrent withdrawals cannot both reserve the same balance. No exhaustive suite.
-  - _Requirements: 5.3, 6.8, 6.9, 7.8, 9.3; Design: Testing Strategy, Correctness Properties 1-11_
+  - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two publish runs racing to attribute the same (exchange, UID) → exactly one `UidAccount` (Property 3); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; two concurrent withdrawals cannot both reserve the same balance; a UID account's first withdrawal is always `UNDER_REVIEW`. No exhaustive suite.
+  - _Requirements: 5.1, 6.8, 6.9, 7.8, 9.1, 9.5; Design: Testing Strategy, Correctness Properties 1-17_
 
 - [ ] 19. Production hardening & observability (Railway)
   - Building on the Phase 0 Railway skeleton (Task 4.2): add observability (web health, oldest job age, worker heartbeat, import error rate), alerts, ensure migrations run once per deploy with reproducible builds, and verify DB backup/restore.
@@ -313,16 +529,24 @@ flowchart TD
 
 - **[PENDING] dedup key** (Open decision #11): finalize `CommissionRecord.dedupKey`
   composition per adapter in Task 11 once a real report sample exists.
-- **[PENDING] auth provider** (Open decision #13): Task 7 ships interim email+password
-  behind `AuthPort`; swap provider without changing dependents.
-- **[PENDING] customer UID visibility** (Open decision #12): baseline own-data-only in
-  Tasks 12/14; widen only if confirmed.
+- **[PENDING] admin auth provider** (Open decision #13, narrowed to admin-only in v0.6):
+  Task 7 ships interim email+password behind `AuthPort`; swap provider without changing
+  dependents.
+- **Resolved (Open decision #12):** anyone entering exchange + UID sees that UID's
+  `pending`/`available` (Task 23); everything else needs a `UidSession` (Task 24).
 - **[PENDING] default values**: cashback rate (Task 13), holding period (Task 14),
-  withdrawal auto-approve threshold + supported assets/networks (Task 15). The rate
-  *resolution rule* is decided; only default *values* remain.
+  withdrawal auto-approve threshold + supported assets/networks (Task 25), lookup
+  rate-limit window (Task 23), OTP TTL/attempts/cooldown/daily-cap (Task 24). The
+  *resolution rules* are decided; only default *values* remain.
+- **Resolved (Open decision #20): Resend** (Task 24). Remaining prerequisites are
+  operational — verify a domain, confirm quota fits volume — not design.
+- **Accepted (Open decision #21): first-claimant-wins.** Lookup shows real amounts with no
+  way to verify the true UID owner; the operator accepted this trade-off. Task 25's
+  mandatory first-withdrawal review is the compensating control, not a fix. See
+  requirements.md "Accepted risk — first claimant wins".
 - **Decided (revisitable):** reversal-after-release policy = reduce pending → available →
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
-  credits (Req 8.7; Tasks 13/14/15).
+  credits (Req 8.7; Tasks 13/14/25).
 - **[PENDING] compliance/KYC** (Open decision #19): keep payout identity isolated
   (Tasks 15/17) so KYC/retention can be added later.
 - Verify build/typecheck/tests on local/SIT before pushing and deploying to Railway.
@@ -347,4 +571,7 @@ flowchart TD
 | 2026-09-15 | tasks.md | Hoàn thành Task 5.5 (English-only enforcement): registry chỉ `en`, xoá catalog/route/seed/admin field tiếng Việt, middleware suy locale từ registry; verify build/typecheck/lint qua Next build (13/13 route, không còn `/vi*`) | Khép English-only theo requirements v0.4 và design v0.5 | updated |
 | 2026-09-15 | tasks.md | Review độc lập 8.2–8.4: xác nhận đạt tiêu chí (401/400/409, no-store, same-exchange, publish/unpublish, seedKey không lộ ra admin input); thêm Task 8.5 cho 3 defect còn lại (P2003 → 500, same-exchange check-then-write không transaction, nhóm minor query/pagination/403/select); đổi Task 8 về `[-]` | Ghi nhận đúng phần đã xong và phần còn nợ thay vì đánh done toàn bộ | updated |
 | 2026-09-16 | tasks.md | Hoàn thành 8.5 bằng composite FK + migration, Prisma error-code mapping, per-entity cursor pagination, 403 và UI fixes; hoàn thành 10.1/10.4 với private upload, atomic batch/job và preview API; verify live rồi dọn probe | Khép defect Phase 0 và triển khai phần import không phụ thuộc report adapter/dedupKey | updated |
+| 2026-09-16 | tasks.md | (v1.4, superseded bởi v2.0) Tách Task 14.3 thành 14.3a (widget quick lookup boolean) và 14.3b (username, `/me/uids`) theo mô hình Hybrid | Ghi lại để không đề xuất lại như ý mới | removed |
+| 2026-09-16 | tasks.md | Ghi rõ Task 15 mới ở mức 0%: `Withdrawal`/`WithdrawalEvent` chỉ là khai báo Prisma, chưa có `withdrawalService` hay route `/api/me/withdrawals*`, `/api/admin/withdrawals*` | Sửa nhận định sai rằng API rút tiền đã xong; đây là phần chạm tiền thật nên không được tính là đã có | updated |
+| 2026-09-16 | tasks.md | **Chuyển sang UID-first (v2.0).** Đánh Task 12 và 14.3a/14.3b là superseded (strikethrough, không xoá); sửa Task 13 để attribution upsert `UidAccount` thay vì tra `UidLink`; sửa Task 14.1/14.3 theo model mới; thêm Task 22 (re-key Customer/UidLink → UidAccount, xoá route/service/UI cũ, viết lại `scripts/test-bybit-integration.mjs`), Task 23 (lookup trả amount thật theo exchange+UID), Task 24 (OTP qua Resend + UidSession 30 phút), Task 25 (withdrawal flow — thay Task 15 cũ, thêm rule lệnh rút đầu luôn UNDER_REVIEW), Task 26 (cherry-pick UI từ `cashback/` — input-otp, data-table, confirm-dialog; liệt kê rõ không lấy TanStack Router/Clerk/vite config vì đó chỉ là stub UI không có backend thật); cập nhật Task Dependency Graph, Task 17/18, Notes | Đồng bộ toàn bộ tasks.md với requirements v0.6 và design v0.7 (UID-first, Resend OTP, first-claimant-wins) | added |
 | 2026-09-16 | tasks.md | Thêm Task 5.6 (5.6.1–5.6.6): hiển thị logo sàn trên offer tile bằng asset PNG lưu trong repo tại `apps/web/public/exchange-logos/`, hoàn tất mapping `logoUrl` còn dở trong `core`, bỏ `logoUrl` khỏi `adminExchangeCreateSchema`, set `logoUrl` trong seed, và thứ tự deploy (push → migrate → reseed) | Triển khai `Exchange.logoUrl` vừa chốt ở design v0.5 theo hướng ảnh local, không hot-link URL online | added |

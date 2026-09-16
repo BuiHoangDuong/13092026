@@ -80,14 +80,12 @@ export async function parseImportJob(lease: JobLease, batchId: string) {
   return withJobLease(lease, async tx => {
     await lockCashback(tx);
     const totals: Record<string, string> = {};
-    let unmappedRows = 0;
+    const unmappedRows = 0;
     for (const row of parsed) {
       if (!row.normalized) continue;
       const issue = await conflict(tx, batch, row.normalized);
       if (issue) row.flags.push(issue);
-      const { uid, asset, amount } = row.normalized;
-      const link = await tx.uidLink.findFirst({ where: { exchangeId: batch.exchangeId, uid, status: "VERIFIED" } });
-      if (!link) unmappedRows++;
+      const { asset, amount } = row.normalized;
       totals[asset] = new Prisma.Decimal(totals[asset] ?? 0).plus(amount).toFixed(10);
     }
     // Mixing aggregate and transaction rows within one file can double-count even on an empty DB.

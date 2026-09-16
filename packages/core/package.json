@@ -21,6 +21,7 @@
     "@cashback/contracts": "workspace:*",
     "@cashback/db": "workspace:*",
     "bcryptjs": "3.0.2",
-    "csv-parse": "7.0.2"
+    "csv-parse": "7.0.2",
+    "resend": "6.28.0"
   }
 }

@@ -1,8 +1,8 @@
 # Design — Cashback Affiliate Platform
 
-- **Status:** Draft v0.5
-- **Last updated:** 2026-09-15
-- **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.4), `architecture.html` v0.4 (context only)
+- **Status:** Draft v0.7 (UID-first: no customer accounts; email OTP + UID session)
+- **Last updated:** 2026-09-16
+- **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.6), `architecture.html` v0.4 (context only)
 - **Audience:** implementers and AI coding agents (Kiro / Claude / Codex)
 
 > This document turns the requirements into a concrete technical design: component
@@ -20,8 +20,9 @@
 The platform is a TypeScript monorepo with two runtime apps sharing a PostgreSQL
 database:
 
-- **`apps/web`** — Next.js 15 (App Router). Serves the public site, customer area, and
-  admin area. Contains all HTTP route handlers (`/api/*`, `/go/:linkId`).
+- **`apps/web`** — Next.js 15 (App Router). Serves the public site, the UID-session area
+  (lookup/OTP/withdraw), and admin area. Contains all HTTP route handlers (`/api/*`,
+  `/go/:linkId`).
 - **`apps/worker`** — long-running Node.js process. Parses reports, attributes
   commission, releases holds, and runs (future) scheduled sync jobs.
 
@@ -90,7 +91,7 @@ apps/
     src/app/
       (public)/                 # home, /exchanges, /exchanges/[slug], /guides
       [locale]/                 # same public pages under a non-default locale prefix
-      (customer)/               # /me/wallet, /me/uids, /me/withdrawals
+      (uid)/                    # /uid/wallet, /uid/withdrawals (UidSession-guarded)
       (admin)/                  # /admin/... (guarded)
       api/                      # route handlers -> core services
       go/[linkId]/route.ts      # redirect + click tracking
@@ -160,20 +161,95 @@ supersedes**) and only the delta flows to cashback. Prior versions are retained 
 (`dedupKey` composition is **[PENDING]** — Open decision #11, finalized against a real
 sample.)
 
-#### UID linking & verification (Req 5)
-1. Customer submits (exchange, UID) → `UidLink(PENDING_VERIFICATION)`.
-2. On each publish, the `ATTRIBUTE` job checks pending links: if the UID appears in a
-   published commission for that exchange, ownership has been approved by an admin,
-   and there is no other `VERIFIED` owner, set
-   `VERIFIED`. If a `VERIFIED` owner already exists, store the second request as
-   `REJECTED` and set `flaggedForReview` for admin.
-3. Uniqueness of ownership is enforced at the DB level by a **partial unique index** on
-   `(exchangeId, uid) WHERE status = 'VERIFIED'`, so a second pending/rejected claim can
-   still be stored (it is not blocked by a full unique constraint).
-4. Only `VERIFIED` links receive attribution.
-5. The Bybit MVP records `ownershipApprovedAt` and an admin/evidence note. Approval
-   enqueues attribution so reports imported before a claim can be reconciled later.
-   Entering somebody else's UID does not grant access to their balances.
+#### Cashback lookup by exchange + UID (Req 14)
+
+```mermaid
+flowchart LR
+  V[Visitor: exchange + UID] --> V2{Both present?}
+  V2 -- no --> E400[400; a UID alone is never resolved]
+  V2 -- yes --> RL{Per-IP rate limit ok?}
+  RL -- no --> R429[429 + Retry-After, no lookup performed]
+  RL -- yes --> Q[Read-only: UidAccount wallets for exchange+UID]
+  Q -- found --> Y[pending + available per asset, lastImportAt, sourceAsOf]
+  Q -- none --> N[no-data result, same shape]
+```
+
+- **Exchange is mandatory.** The lookup key is the pair; the same UID string on two
+  exchanges is two different subjects (Req 14.1). A request missing either half is rejected
+  before any query runs.
+- **Amounts are returned** (`pending`, `available` per asset) plus freshness timestamps.
+  This is the accepted-risk decision recorded in requirements: it makes per-UID value
+  visible to anyone who can guess a UID.
+- **Withheld even so:** bound email (in any form, including masked), payout addresses,
+  withdrawal records, wallet movement history, and the `reserved`/`withdrawn`/`receivable`
+  buckets (Req 14.3). Those require a UID session.
+- **Read-only.** No writes to `UidAccount`, `Wallet`, `EmailOtp`, or `UidSession` (Req 14.5),
+  so a lookup can never squat or claim a UID. `UidAccount` rows are created only by the
+  ATTRIBUTE job (Req 5.3).
+- **Rate limited per IP** in Postgres (`RateLimitCounter`), not in process memory: Railway
+  may run more than one web instance, and an in-memory counter would reset on every deploy.
+  Redis stays out per Req 12.6.
+- "No data" uses the same response shape whether the UID is unknown or known-with-zero
+  (Req 14.6), and is distinguishable from a real zero balance via an explicit flag rather
+  than by inference from the numbers.
+
+#### UID accounts (Req 5)
+1. A `UidAccount` is the unit of cashback ownership, unique per `(exchangeId, uid)`.
+2. The `ATTRIBUTE` job creates the `UidAccount` on demand when a published commission
+   references a UID that has no account yet (Req 5.3), then credits its wallet. No claimant
+   action, email, or session is needed for cashback to accrue (Req 7.2).
+3. UID is an opaque string, always scoped by exchange (Req 5.2).
+4. Ownership is **not** established here. It is asserted only at withdrawal, by binding an
+   email via OTP (Req 15). Until then a `UidAccount` has `boundEmail = null` and simply
+   holds a balance.
+5. Because there is no ownership proof, the effective rule is first-claimant-wins — see
+   requirements "Accepted risk". The design compensates only with rate limits, mandatory
+   admin review of first withdrawals, OTP limits, and the holding period.
+
+#### Email OTP binding & UID session (Req 15)
+
+```mermaid
+sequenceDiagram
+  participant C as Claimant (browser)
+  participant API as web /api/otp/*
+  participant DB as PostgreSQL
+  participant R as Resend
+
+  C->>API: POST /api/otp/request { exchangeId, uid, email }
+  API->>DB: load UidAccount
+  alt boundEmail exists and email != boundEmail
+    API-->>C: 400 email does not match the one registered for this UID
+  else allowed
+    API->>DB: check per-UID cooldown + daily cap + per-IP limit
+    API->>DB: insert EmailOtp (hash, expiresAt, attempts=0)
+    API->>R: send 6-digit code to the target address
+    R-->>API: accepted + message id
+    API->>DB: record accepted + providerMessageId
+    API-->>C: 202 (no OTP in response)
+  end
+  C->>API: POST /api/otp/verify { exchangeId, uid, code }
+  API->>DB: compare hash, check expiry/consumed/attempts
+  API->>DB: consume OTP, bind email if unbound, insert UidSession (30 min)
+  API-->>C: set UID session cookie (scoped to this UidAccount)
+```
+
+- **Send target rule (Req 15.2):** if a bound email exists, the OTP goes only to it. A
+  mismatched submission is rejected *without* sending anything to the submitted address, and
+  the error never reveals the bound address — otherwise the endpoint becomes an oracle for
+  discovering which email owns a UID.
+- **OTP storage:** hash only, never the plaintext, never logged, never in a response
+  (Req 15.8). Single-use with a short TTL (proposed 5 min) and a wrong-attempt cap (proposed
+  5) after which the OTP is invalidated (Req 15.4–15.5). 6 digits is only ~10⁶ codes, so the
+  attempt cap — not the TTL — is what makes guessing infeasible.
+- **Quota protection (Req 15.6–15.7, 16.4):** per-UID cooldown + daily send cap, plus an
+  independent per-IP limit. Resend's free plan allows 100 sends/day, so an unmetered resend
+  button would let one actor exhaust the daily quota and block real withdrawals.
+- **UID session:** hashed token stored server-side, 30-minute expiry, scoped to exactly one
+  `UidAccount`. Every withdrawal/history action derives the UID account **from the session**,
+  never from a request parameter (Req 15.10). Presenting a session against a different UID
+  is rejected (Req 15.11).
+- **Binding is not authorisation:** a bound email lets you request a withdrawal; the first
+  withdrawal per UID still goes to admin review regardless of amount (Req 9.5, 15.9).
 
 #### Bybit MVP implementation (2026-09-16)
 - Normalized Bybit CSV v1 is the first adapter. Native export mapping and XLSX remain
@@ -197,9 +273,8 @@ sample.)
 
 ```mermaid
 flowchart LR
-  LOCK[Lock CommissionRecord: SELECT ... FOR UPDATE] --> ATTR{Verified UidLink?}
-  ATTR -- no --> UNATTR[Keep unattributed]
-  ATTR -- yes --> RATE[Resolve rate: corroborated offer of referral link, else exchange default; assert same exchange; snapshot offerId + rate]
+  LOCK[Lock CommissionRecord: SELECT ... FOR UPDATE] --> ATTR[Upsert UidAccount for exchangeId+uid]
+  ATTR --> RATE[Resolve rate: corroborated offer of referral link, else exchange default; assert same exchange; snapshot offerId + rate]
   RATE --> TARGET[target = reconciledAmount x rate]
   TARGET --> DELTA[delta = target - creditedCashback]
   DELTA --> ENTRY[opKey = attr:versionId; delta > 0: offset receivable then CREDIT to pending; delta < 0: REVERSAL pending then available then CLAWBACK to receivable]
@@ -227,28 +302,33 @@ crediting `pending`.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> REQUESTED: customer requests (amount <= available, no receivable)
-  REQUESTED --> AUTO_APPROVED: amount <= threshold
+  [*] --> REQUESTED: UID session requests (amount <= available, no receivable)
+  REQUESTED --> UNDER_REVIEW: first withdrawal for this UID (always)
+  REQUESTED --> AUTO_APPROVED: not first AND amount <= threshold
   REQUESTED --> UNDER_REVIEW: amount > threshold
   UNDER_REVIEW --> APPROVED: admin approves
   UNDER_REVIEW --> REJECTED: admin rejects
   AUTO_APPROVED --> PAID: admin marks paid (manual payout MVP)
   APPROVED --> PAID
-  REQUESTED --> CANCELLED: customer cancels
-  UNDER_REVIEW --> CANCELLED: customer cancels
-  AUTO_APPROVED --> CANCELLED: customer cancels (before payout)
-  APPROVED --> CANCELLED: customer cancels (before payout)
+  REQUESTED --> CANCELLED: claimant cancels
+  UNDER_REVIEW --> CANCELLED: claimant cancels
+  AUTO_APPROVED --> CANCELLED: claimant cancels (before payout)
+  APPROVED --> CANCELLED: claimant cancels (before payout)
   REJECTED --> [*]
   CANCELLED --> [*]
   PAID --> [*]
 ```
 
-Reserved-balance model with full audit:
+Reserved-balance model with full audit. Every transition below requires a valid UID session
+for that UID account (Req 9.1); admin transitions require an admin session.
 - **REQUESTED** (only if `receivable = 0`) → `WITHDRAWAL_RESERVE` entry:
-  `available -= amount`, `reserved += amount` (Req 9.1, 9.3, 9.10).
+  `available -= amount`, `reserved += amount` (Req 9.2, 9.4, 9.11).
+- **First withdrawal per UID always routes to `UNDER_REVIEW`** regardless of amount
+  (Req 9.5). The auto-approval threshold applies only from the second withdrawal onward.
+  This is the last human checkpoint before money leaves, given there is no ownership proof.
 - **REJECTED / CANCELLED** → `WITHDRAWAL_RELEASE` entry: `reserved -= amount`,
-  `available += amount` (Req 9.6, 9.9). Cancel is customer-initiated and allowed only
-  before `PAID`.
+  `available += amount` (Req 9.7, 9.10). Cancel is claimant-initiated (via the UID session)
+  and allowed only before `PAID`.
 - **PAID** → `WITHDRAWAL_SETTLE` entry: `reserved -= amount`, `withdrawn += amount`
   (Req 9.5).
 - Every transition writes a `WithdrawalEvent` (fromStatus, toStatus, actor, time,
@@ -289,8 +369,22 @@ per deploy; builds reproducible.
 
 Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL_SECONDS`,
 `SYNC_INTERVAL_MINUTES` (sync disabled), `HOLDING_PERIOD_HOURS`,
-`WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, plus auth provider vars
-**[PENDING]**.
+`WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, plus admin auth provider vars
+**[PENDING]**, and for Req 15/16: `RESEND_API_KEY`, `EMAIL_FROM` (must be an address on a
+Resend-verified domain — the shared `resend.dev` testing domain only delivers to the
+account owner, per Resend's own docs), `OTP_TTL_MINUTES` (proposed 5),
+`OTP_MAX_ATTEMPTS` (proposed 5), `OTP_RESEND_COOLDOWN_SECONDS`, `OTP_DAILY_CAP_PER_UID`,
+`LOOKUP_RATE_PER_MINUTE`, `UID_SESSION_MINUTES` (proposed 30).
+
+**Resend send path (Req 16):** OTP send happens **in-request**, not via the job queue —
+the claimant is waiting on the code, and a queued send would add worker-poll latency on
+top of email delivery latency. If Resend's API errors or times out, `otpService` does not
+create the `EmailOtp` row as sent and returns a retryable error; it never leaves a
+withdrawal in a state that implies delivery succeeded (Req 16.3). Resend's free plan caps
+at 100 sends/day and 3,000/month, reset at 00:00 UTC — this is the operational reason the
+per-UID cooldown/cap and per-IP limit in Req 15.6–15.7 exist: without them, one actor
+spamming OTP requests exhausts the day's quota and blocks real withdrawals for everyone
+until the reset.
 
 ## Components and Interfaces
 
@@ -303,8 +397,8 @@ Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL
   insert must not be an unawaited/dropped promise (which can be lost on process exit);
   recording failure still returns the redirect. Unknown/inactive link → safe fallback,
   no open redirect (Req 2.1, 2.2, 2.3, 2.4).
-- **Customer API** (`/api/me/*`): session-guarded; scopes every query to the session's
-  customer id; never trusts client-sent UID/account id (Req 3.3).
+- **UID API** (`/api/uid/*`): `UidSession`-guarded; scopes every query to the session's
+  `uidAccountId`; never trusts a client-sent UID/account id (Req 3.3, 15.10).
 - **Admin API** (`/api/admin/*`): admin-guarded; `Cache-Control: private, no-store`.
 - Route handlers are thin: validate with `contracts` zod schema → call `core` service →
   map result to response. No business logic in handlers.
@@ -329,19 +423,38 @@ Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL
 - `contentService` — read/write exchanges, offers, links (incl. link↔offer binding and
   exchange default rate), guides.
 - `clickService` — record click (best-effort), aggregate analytics.
+- `lookupService` — cashback lookup by exchange + UID: consume the per-IP rate-limit budget
+  (`RateLimitCounter`, scope `lookup:ip`), then read the `UidAccount`'s wallets and return
+  `pending`/`available` per asset plus freshness timestamps. Read-only; never creates a
+  `UidAccount`, `Wallet`, or session (Req 14).
+- `otpService` — generates a 6-digit code with `crypto.randomInt(100000, 1000000)`, hashes
+  it with the `bcryptjs` already used for admin credentials, and enforces send order:
+  check per-UID cooldown + daily cap (`RateLimitCounter` scope `otp:uid`) and per-IP limit
+  (scope `otp:ip`) → if a bound email exists, target only it → create `EmailOtp` → call
+  `emailPort.sendOtp` → record `providerAccepted`/`providerMessageId`. Verification compares
+  the hash, checks `expiresAt`/`consumedAt`/`failedAttempts`, consumes the OTP, binds the
+  email if unbound, and issues a `UidSession` (Req 15).
+- `uidSessionService` — issues/verifies/expires hashed session tokens scoped to one
+  `UidAccount`; every `/api/uid/*` handler resolves its principal through this service, never
+  from a request parameter (Req 15.10).
+- `emailPort` — a narrow interface (`sendOtp({ to, code }): Promise<{ accepted: boolean;
+  messageId?: string }>`) so `otpService` does not depend on the Resend SDK directly. The
+  only implementation is `resendEmailAdapter`, calling the official `resend` package. Kept
+  behind a port for the same reason as `AuthPort`: swapping providers later should not touch
+  callers.
 - `importService` — create batch, enqueue parse, preview, commit (enqueue publish).
 - `parserRegistry` — resolve adapter by (exchange, reportType, format).
 - `commissionService` — upsert commission identity + version (unique per commission+batch),
   recompute reconciled amount.
-- `attributionService` — lock the commission (`FOR UPDATE`), map commission → UidLink →
-  customer, resolve + snapshot rate (system-corroborated, same exchange).
+- `attributionService` — lock the commission (`FOR UPDATE`), upsert the `UidAccount` for
+  (exchangeId, uid), resolve + snapshot rate (system-corroborated, same exchange).
 - `cashbackEngine` — compute target cashback, apply signed delta (credit/reversal/clawback,
   receivable offset) with a unique op key, release holds.
 - `walletService` — balances (pending/available/reserved/withdrawn/receivable), typed
   entries, reservations.
-- `withdrawalService` — request/reserve (blocked while receivable > 0), threshold decision,
-  approve/reject/settle, customer cancel, events.
-- `uidLinkService` — link request, verification against published commissions.
+- `withdrawalService` — request/reserve (blocked while receivable > 0), first-withdrawal
+  detection (always `UNDER_REVIEW`), threshold decision from the second withdrawal onward,
+  approve/reject/settle, claimant cancel, events.
 - All services take a transaction/context object so they compose atomically.
 
 ### API contracts (shape summary)
@@ -354,29 +467,33 @@ decimal string with an `asset`. Errors use a consistent envelope
 |----------|--------|------|-------|
 | `/api/exchanges` | GET | public | published exchanges + offers |
 | `/go/:linkId` | GET | public | 302 redirect; records click (best-effort) |
-| `/api/auth/*` | POST | public→session | register/login/logout (interim) **[PENDING provider]** |
-| `/api/me/wallet` | GET | customer | balances (incl. reserved, receivable) + as-of + history |
-| `/api/me/uids` | GET/POST | customer | list / submit link request |
-| `/api/me/withdrawals` | GET/POST | customer | history / request |
-| `/api/me/withdrawals/:id/cancel` | POST | customer | cancel a not-yet-paid withdrawal |
+| `/api/lookup` | POST | public | `{ exchangeId, uid }` → `pending`/`available` per asset + freshness; IP rate-limited, 429 + `Retry-After` when exceeded |
+| `/api/otp/request` | POST | public (rate-limited) | send OTP for a withdrawal; targets the bound email if one exists |
+| `/api/otp/verify` | POST | public (rate-limited) | verify OTP → bind email + issue 30-min `UidSession` cookie |
+| `/api/admin/auth/*` | POST | public→admin session | admin login/logout (interim) **[PENDING provider]** |
+| `/api/uid/wallet` | GET | UID session | balances (incl. reserved, receivable) + as-of + history, scoped to the session's UID |
+| `/api/uid/withdrawals` | GET/POST | UID session | history / request |
+| `/api/uid/withdrawals/:id/cancel` | POST | UID session | cancel a not-yet-paid withdrawal |
 | `/api/admin/imports` | POST | admin | 202 + batchId |
 | `/api/admin/imports/:id` | GET | admin | status/preview/errors |
 | `/api/admin/imports/:id/commit` | POST | admin | idempotent |
-| `/api/admin/accounts/:id/activity` | GET | admin | per UID/account, paginated |
+| `/api/admin/uid-accounts/:id/activity` | GET | admin | per UID account, paginated |
 | `/api/admin/analytics` | GET | admin | click metrics |
 | `/api/admin/sync-status` | GET | admin | last success, as-of; no secrets |
 | `/api/admin/withdrawals/:id/decision` | POST | admin | approve/reject/mark-paid |
 
-### Auth (abstraction for [PENDING] open decision #13)
-- Define an `AuthPort` in `core` with `getSession(req)`, `requireCustomer`,
-  `requireAdmin`. Route handlers depend on the port, not a concrete provider.
-- **Interim implementation (until a provider is chosen):** email + password with
-  server sessions. Credentials are stored as a `passwordHash` on `Customer` /
-  `AdminAccount`; sessions live in a `Session` table (principal type, subject id, hashed
-  token, expiry). These fields are **interim** and are replaced (dropped/migrated) if a
-  managed provider (Auth0/Clerk/Supabase) is adopted; the rest of the design is unaffected
-  because everything depends on `AuthPort`.
-- Admin and customer sessions are distinct principals (Req 3.4).
+### Auth (v0.6: admin only)
+- Define an `AuthPort` in `core` with `getSession(req)` and `requireAdmin`. Route handlers
+  depend on the port, not a concrete provider. There is no `requireCustomer` — end-user
+  identity is a `UidSession`, resolved by `uidSessionService`, not `AuthPort` (Req 3.2).
+- **Interim implementation (until a provider is chosen):** email + password with server
+  sessions. Credentials are stored as a `passwordHash` on `AdminAccount`; admin sessions
+  live in the `Session` table (hashed token, expiry). These fields are **interim** and are
+  replaced (dropped/migrated) if a managed provider (Auth0/Clerk/Supabase) is adopted; the
+  rest of the design is unaffected because everything depends on `AuthPort`.
+- An admin `Session` and a `UidSession` are structurally different tables with no shared
+  code path: an admin session cannot be presented to a `/api/uid/*` route and a `UidSession`
+  cannot be presented to a `/api/admin/*` route (Req 3.4).
 
 ### Language & i18n (Req 4)
 - **English is the only enabled locale.** No other language is served (Req 4.1).
@@ -401,10 +518,10 @@ decimal string with an `asset`. Errors use a consistent envelope
 
 ### Cashback engine details
 - **Rate resolution** (Req 7.3): precedence (1) the `cashbackRate` of the offer bound to
-  the UID's referral link **only when that link is corroborated by system-verified report
-  data** (e.g., a referral code / sub-ID present in the report), else (2)
-  `Exchange.defaultCashbackRate`. A customer-supplied link/offer is never trusted for rate
-  selection. The engine asserts `UidLink.exchangeId = ReferralLink.exchangeId =
+  the referral link reported alongside the commission **only when corroborated by
+  system-verified report data** (e.g., a referral code / sub-ID present in the report),
+  else (2) `Exchange.defaultCashbackRate`. A client-supplied link/offer is never trusted for
+  rate selection. The engine asserts `UidAccount.exchangeId = ReferralLink.exchangeId =
   Offer.exchangeId`; on mismatch it falls back to the exchange default. The resolved
   `offerId` and `cashbackRate` are **snapshotted** onto the `CommissionRecord` at
   attribution time, so later offer/exchange rate edits do not change already-credited
@@ -468,7 +585,9 @@ model ReferralLink {
   destination String
   active      Boolean  @default(true)
   clicks      ClickEvent[]
-  uidLinks    UidLink[]
+  // No relation to UidAccount: which referral link corroborated a commission is recorded
+  // on CommissionVersion.referralLinkId (report-reported, per import row), not tracked
+  // per UID account (v0.6 — UidAccount is never client-linked to a referral link).
 }
 
 model Guide {
@@ -493,48 +612,89 @@ model AdminAccount {
   id           String @id @default(cuid())
   email        String @unique
   passwordHash String? // interim auth; replaced if a managed provider is chosen
+  sessions     Session[]
 }
 
-model Customer {
+/// The unit of cashback ownership (Req 5.1). No password, no username, no login.
+/// Created by the ATTRIBUTE job on demand (Req 5.3), never by a lookup (Req 14.5).
+model UidAccount {
   id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String?  // interim auth; replaced if a managed provider is chosen
-  locale       String   @default("en")
-  uidLinks     UidLink[]
+  exchangeId   String
+  exchange     Exchange @relation(fields: [exchangeId], references: [id])
+  uid          String   // opaque string, always scoped by exchange (Req 5.2)
+  boundEmail   String?  // null until the first successful OTP (Req 15.3)
+  emailBoundAt DateTime?
   wallets      Wallet[]
+  withdrawals  Withdrawal[]
+  otps         EmailOtp[]
+  sessions     UidSession[]
   createdAt    DateTime @default(now())
+  @@unique([exchangeId, uid]) // one UID account per (exchange, UID)
+  @@index([boundEmail])       // one email may hold several UID accounts
 }
 
+/// A 6-digit code proving control of an email. Hash only; the plaintext is never stored,
+/// logged, or returned (Req 15.8).
+model EmailOtp {
+  id                String     @id @default(cuid())
+  uidAccountId      String
+  uidAccount        UidAccount @relation(fields: [uidAccountId], references: [id])
+  email             String   // address this code was sent to
+  codeHash          String   // bcrypt hash of the 6 digits
+  expiresAt         DateTime // now + OTP_TTL_MINUTES (proposed 5)
+  consumedAt        DateTime?
+  failedAttempts    Int      @default(0) // invalidate at OTP_MAX_ATTEMPTS (proposed 5)
+  providerAccepted  Boolean  @default(false) // Resend accepted the send (Req 16.6)
+  providerMessageId String?
+  createdAt         DateTime @default(now())
+  @@index([uidAccountId, createdAt]) // supports cooldown + daily-cap checks
+  @@index([expiresAt])               // supports pruning
+}
+
+/// Short-lived, scoped to exactly ONE UidAccount (Req 15.3, 15.10). Grants no admin
+/// capability. Stored hashed like an admin Session.
+model UidSession {
+  id           String     @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount @relation(fields: [uidAccountId], references: [id])
+  tokenHash    String   @unique
+  expiresAt    DateTime // now + 30 minutes
+  createdAt    DateTime @default(now())
+  @@index([uidAccountId])
+}
+
+/// Counter windows backing the lookup and OTP-send rate limits (Req 14.4, 15.6-15.7).
+/// `scope` distinguishes limiter kinds (e.g. "lookup:ip", "otp:ip", "otp:uid"). `subjectHash`
+/// is a hash: raw IPs are never persisted. Holds no lookup result, so this is a rate-limit
+/// ledger, not a search history.
+model RateLimitCounter {
+  id          String   @id @default(cuid())
+  scope       String
+  subjectHash String
+  windowStart DateTime
+  count       Int      @default(0)
+  @@unique([scope, subjectHash, windowStart])
+  @@index([windowStart]) // supports pruning old windows
+}
+
+/// Admin-only server session (v0.6). End-user identity uses `UidSession` instead —
+/// see the UID-first models above. Kept separate so an admin session can never be
+/// mistaken for withdrawal rights over a UID (Req 3.4).
 model Session {
-  id            String   @id @default(cuid())
-  principalType PrincipalType
-  subjectId     String   // Customer.id or AdminAccount.id
-  tokenHash     String   @unique
-  expiresAt     DateTime
-  createdAt     DateTime @default(now())
-  @@index([principalType, subjectId])
-}
-
-model UidLink {
-  id               String   @id @default(cuid())
-  customerId       String
-  customer         Customer @relation(fields: [customerId], references: [id])
-  exchangeId       String
-  uid              String
-  referralLinkId   String?
-  referralLink     ReferralLink? @relation(fields: [referralLinkId], references: [id])
-  status           UidLinkStatus @default(PENDING_VERIFICATION)
-  flaggedForReview Boolean @default(false)
-  verifiedAt       DateTime?
-  // NOTE: a full @@unique([exchangeId, uid]) would block storing a second (rejected)
-  // claim. Ownership uniqueness is enforced by a PARTIAL unique index added in the
-  // migration:  CREATE UNIQUE INDEX uidlink_verified_owner
-  //   ON "UidLink" ("exchangeId","uid") WHERE status = 'VERIFIED';
-  @@index([exchangeId, uid])
-  @@index([customerId])
+  id        String   @id @default(cuid())
+  adminId   String
+  admin     AdminAccount @relation(fields: [adminId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([adminId])
 }
 
 // ---------- Import & commission (versioned) ----------
+// NOTE (v0.6): `UidLink` and its partial unique index `uidlink_verified_owner` are removed.
+// The unit of cashback identity is now `UidAccount` (defined above, alongside the other
+// UID-first models), unique per (exchangeId, uid) with no verification status — see
+// "UID accounts (Req 5)" under Key flows.
 model ImportBatch {
   id          String   @id @default(cuid())
   exchangeId  String
@@ -571,7 +731,7 @@ model CommissionRecord {
   reconciledAmount     Decimal  @db.Decimal(30,10) @default(0) // current authoritative amount
   activeVersionId      String?  @unique
   activeVersion        CommissionVersion? @relation("active_version", fields: [activeVersionId], references: [id])
-  attributedCustomerId String?
+  attributedUidAccountId String? // set by ATTRIBUTE; the account is created on demand (Req 5.3)
   offerId              String?  // snapshot resolved at attribution
   cashbackRate         Decimal? @db.Decimal(6,4) // snapshot resolved at attribution
   creditedCashback     Decimal  @db.Decimal(30,10) @default(0) // cashback already applied to wallet
@@ -598,17 +758,17 @@ model CommissionVersion {
 
 // ---------- Wallet & payout ----------
 model Wallet {
-  id         String @id @default(cuid())
-  customerId String
-  customer   Customer @relation(fields: [customerId], references: [id])
-  asset      String
-  pending    Decimal @db.Decimal(30,10) @default(0)
-  available  Decimal @db.Decimal(30,10) @default(0)
-  reserved   Decimal @db.Decimal(30,10) @default(0)
-  withdrawn  Decimal @db.Decimal(30,10) @default(0)
-  receivable Decimal @db.Decimal(30,10) @default(0) // uncovered clawback owed by customer
-  entries    WalletEntry[]
-  @@unique([customerId, asset])
+  id           String @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount @relation(fields: [uidAccountId], references: [id])
+  asset        String
+  pending      Decimal @db.Decimal(30,10) @default(0)
+  available    Decimal @db.Decimal(30,10) @default(0)
+  reserved     Decimal @db.Decimal(30,10) @default(0)
+  withdrawn    Decimal @db.Decimal(30,10) @default(0)
+  receivable   Decimal @db.Decimal(30,10) @default(0) // uncovered clawback owed by the UID account
+  entries      WalletEntry[]
+  @@unique([uidAccountId, asset])
 }
 
 model WalletEntry {
@@ -625,18 +785,22 @@ model WalletEntry {
 }
 
 model Withdrawal {
-  id          String   @id @default(cuid())
-  customerId  String
-  asset       String
-  amount      Decimal  @db.Decimal(30,10)
-  network     String
-  address     String
-  status      WithdrawalStatus @default(REQUESTED)
-  payoutRef   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  events      WithdrawalEvent[]
+  id           String   @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount @relation(fields: [uidAccountId], references: [id])
+  asset        String
+  amount       Decimal  @db.Decimal(30,10)
+  network      String
+  address      String
+  email        String   // the bound email used for this withdrawal's OTP (Req 9.9)
+  isFirst      Boolean  // true routes unconditionally to UNDER_REVIEW (Req 9.5, 15.9)
+  status       WithdrawalStatus @default(REQUESTED)
+  payoutRef    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  events       WithdrawalEvent[]
   @@index([status])
+  @@index([uidAccountId])
 }
 
 model WithdrawalEvent {
@@ -646,7 +810,7 @@ model WithdrawalEvent {
   fromStatus   WithdrawalStatus?
   toStatus     WithdrawalStatus
   actorType    ActorType
-  actorId      String?  // admin id when actorType = ADMIN, customer id when CUSTOMER
+  actorId      String?  // admin id when actorType = ADMIN, uidAccount id when CLAIMANT
   note         String?
   reference    String?  // payout reference when settled
   createdAt    DateTime @default(now())
@@ -671,13 +835,11 @@ model Job {
 
 Enums:
 `PublishStatus{DRAFT,PUBLISHED}`,
-`PrincipalType{CUSTOMER,ADMIN}`,
-`UidLinkStatus{PENDING_VERIFICATION,VERIFIED,REJECTED}`,
 `ReportType{TRANSACTION,AGGREGATE}`,
 `BatchStatus{UPLOADED,PARSING,PREVIEW,COMMITTING,PUBLISHED,FAILED}`,
 `WalletEntryType{CREDIT,HOLD_RELEASE,WITHDRAWAL_RESERVE,WITHDRAWAL_RELEASE,WITHDRAWAL_SETTLE,ADJUSTMENT,REVERSAL,CLAWBACK}`,
 `WithdrawalStatus{REQUESTED,AUTO_APPROVED,UNDER_REVIEW,APPROVED,PAID,REJECTED,CANCELLED}`,
-`ActorType{CUSTOMER,ADMIN,SYSTEM}`,
+`ActorType{CLAIMANT,ADMIN,SYSTEM}`,
 `JobType{PARSE,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}`,
 `JobState{PENDING,CLAIMED,DONE,FAILED}`.
 
@@ -699,24 +861,31 @@ movement carries a unique `opKey`, so concurrent or retried runs apply no duplic
 CREDIT/REVERSAL.
 **Validates: Requirements 7.6, 7.8, 8.2**
 
-### Property 3: Single UID owner
-A given (exchange, UID) is `VERIFIED` for at most one customer, enforced by a partial
-unique index on `status = VERIFIED`; a conflicting claim is stored `REJECTED` and flagged.
-**Validates: Requirements 5.3**
+### Property 3: One UID account per (exchange, UID)
+At most one `UidAccount` row exists per (exchange, UID), enforced by `@@unique([exchangeId,
+uid])`. There is no verification status and no partial index: uniqueness is unconditional,
+because ownership is no longer adjudicated at link time (v0.6 — see "Accepted risk").
+**Validates: Requirements 5.1, 5.2**
 
-### Property 4: No unverified attribution
-Only `VERIFIED` UID links receive cashback.
-**Validates: Requirements 5.4, 7.1, 7.2**
+### Property 4: Attribution needs no claimant action
+A `UidAccount` accrues cashback purely from published commissions matching its
+(exchange, UID); it can hold a positive balance with `boundEmail = null` and no session ever
+issued. No claimant action, email, or session is a precondition for crediting `pending`
+(only for withdrawing it — Property 6).
+**Validates: Requirements 5.3, 5.5, 7.1, 7.2**
 
 ### Property 5: Balance conservation & non-negativity
 For each wallet+asset, `pending`, `available`, `reserved` never go negative and
 `receivable >= 0`; every bucket equals the signed sum of its `WalletEntry` movements.
 **Validates: Requirements 8.1, 8.4, 8.7, 9.3**
 
-### Property 6: Only-available is withdrawable
-A withdrawal amount is `<= available` at request time (and only when `receivable = 0`) and
-is moved into `reserved` so it cannot be double-requested.
-**Validates: Requirements 9.1, 9.3, 9.7, 9.10**
+### Property 6: Only-available is withdrawable, and only through a valid UID session
+A withdrawal amount is `<= available` at request time (and only when `receivable = 0`),
+requires a `UidSession` valid for that exact `UidAccount`, and is moved into `reserved` so
+it cannot be double-requested. A UID's **first** withdrawal is always `UNDER_REVIEW`
+regardless of amount; the auto-approval threshold applies only from the second withdrawal
+onward.
+**Validates: Requirements 9.1, 9.2, 9.4, 9.5, 9.8, 9.11**
 
 ### Property 7: Atomic batches
 A failed publish leaves no partially-published data readable by the dashboard.
@@ -733,9 +902,9 @@ computed.
 **Validates: Requirements 7.5, 7.8**
 
 ### Property 10: Withdrawal auditability
-Every withdrawal status transition (including customer cancel) is persisted as a
+Every withdrawal status transition (including claimant cancel) is persisted as a
 `WithdrawalEvent` (from/to status, actor, time, reference).
-**Validates: Requirements 9.8, 9.9**
+**Validates: Requirements 9.9, 9.10**
 
 ### Property 11: Rate-snapshot immutability
 Credited cashback uses the `offerId`/`cashbackRate` snapshotted at attribution; later
@@ -750,9 +919,37 @@ credits offset it before increasing `pending`.
 
 ### Property 13: Rate source integrity
 The snapshot rate derives only from a system-corroborated referral link/offer with a
-matching exchange; a customer-supplied link/offer never raises the rate, and mismatches
+matching exchange; a client-supplied link/offer never raises the rate, and mismatches
 fall back to the exchange default.
 **Validates: Requirements 7.3**
+
+### Property 14: Lookup discloses balances only, never identity or history
+For any (exchange, UID), the lookup response carries only `pending`/`available` per asset
+and freshness timestamps. It never includes a bound email (in any form), payout address,
+withdrawal record, wallet movement history, or the `reserved`/`withdrawn`/`receivable`
+buckets — those require a `UidSession` for that exact `UidAccount`. The endpoint performs
+no writes, so a lookup can never create or claim a `UidAccount` (Req 14.3, 14.5).
+**Validates: Requirements 14.2, 14.3, 14.5**
+
+### Property 15: Rate limits survive restarts and multiple instances
+Lookup and OTP-send budgets are stored in Postgres (`RateLimitCounter`), so they are shared
+across web instances and are not reset by a deploy or process restart. Exceeding a budget
+yields a rejection, not a computed answer or a sent email.
+**Validates: Requirements 14.4, 15.6, 15.7**
+
+### Property 16: OTP is hashed, single-use, time-boxed, and attempt-limited
+`EmailOtp.codeHash` never stores the plaintext; the plaintext never appears in a log or API
+response. An OTP is accepted at most once (`consumedAt` set atomically with the check), is
+rejected once `expiresAt` has passed, and is invalidated after `OTP_MAX_ATTEMPTS` wrong
+guesses — whichever comes first blocks further use of that code.
+**Validates: Requirements 15.4, 15.5, 15.8**
+
+### Property 17: A UID session is scoped to exactly one UID account
+Every `/api/uid/*` handler derives its target `UidAccount` from the session's
+`uidAccountId`, never from a request parameter. Presenting a valid session against a
+different UID, or an expired/consumed session, is rejected outright — it does not fall back
+to any other identifier.
+**Validates: Requirements 15.3, 15.10, 15.11**
 
 ## Error Handling
 - API: consistent error envelope; 4xx for validation/authz, 202 for accepted imports,
@@ -775,8 +972,9 @@ most critical money/concurrency invariants, not an exhaustive suite.
 - **Smoke:** app boots; public browse → get link → redirect records a click; admin login;
   seed import runs.
 - **Critical invariant checks (targeted integration/concurrency):**
-  - Two customers verifying the same UID → exactly one ends `VERIFIED`, the other
-    `REJECTED`/flagged (Property 3).
+  - Two publish runs racing to attribute the same (exchange, UID) → exactly one
+    `UidAccount` row exists (Property 3); it accrues cashback with `boundEmail = null`
+    (Property 4).
   - ATTRIBUTE re-run, and two ATTRIBUTE workers racing the same commission → no duplicate
     credit (Properties 2, 8; `FOR UPDATE` + unique `opKey`).
   - Publish failing mid-transaction → no partially-published data (Property 7).
@@ -784,24 +982,48 @@ most critical money/concurrency invariants, not an exhaustive suite.
     (Property 6).
   - Downward correction after cashback was withdrawn → uncovered remainder becomes
     `receivable`, new withdrawal blocked, next credit offsets it (Property 12).
-  - Customer cancel of a not-yet-paid withdrawal → reserved released, event recorded
+  - Claimant cancel of a not-yet-paid withdrawal → reserved released, event recorded
     (Property 10).
+  - Lookup on a funded UID returns `pending`/`available` and freshness only — no email,
+    address, history, or `reserved`/`withdrawn`/`receivable` field anywhere in the body —
+    and writes no rows; exceeding the per-IP budget returns 429 without querying the wallet
+    (Properties 14, 15).
+  - A wrong OTP guess increments `failedAttempts`; the `OTP_MAX_ATTEMPTS`-th wrong guess
+    invalidates the code even if the TTL has not elapsed; a consumed or expired OTP is
+    rejected on reuse (Property 16).
+  - A `UidSession` for UID A rejects every request scoped to UID B; an expired session is
+    rejected even against its own UID (Property 17).
+  - A UID account's first withdrawal is routed to `UNDER_REVIEW` even when the amount is
+    far below the auto-approval threshold; its second withdrawal, same amount, auto-approves
+    (Property 6).
 - Run these on local/SIT before deploying to Railway; broaden coverage later only if the
   money logic grows.
 
 ## Security (Req 6.2)
-- Server-side authorization on every non-public route; customer scope derived from
-  session only.
+- Server-side authorization on every non-public route; the acting `UidAccount` is derived
+  from the `UidSession` only, never from a request parameter.
 - Private report files in a private bucket; only web (write) and worker (read) have
   credentials.
-- Secrets in env/secret store; never in client bundles; no public-prefixed secret vars.
-- Interim credentials: store only a password hash; session tokens stored hashed with an
-  expiry.
+- Secrets in env/secret store; never in client bundles; no public-prefixed secret vars,
+  including `RESEND_API_KEY`.
+- Admin credentials: store only a password hash; admin session tokens stored hashed with
+  an expiry. `UidSession` tokens are stored hashed the same way, with a 30-minute expiry.
 - Postgres reachable only from web/worker services (Railway private networking / local
   compose network).
 - Financial state changes are append-only auditable (WalletEntry, WithdrawalEvent).
-- **Exposure note:** admin and customer APIs MUST require auth before shipping; public
-  endpoints are limited to content reads and the redirect.
+- Lookup is the only anonymous endpoint that touches money data. It is read-only, per-IP
+  rate limited from Postgres, and constrained to `pending`/`available` amounts and
+  freshness — never email, address, history, or `reserved`/`withdrawn`/`receivable`
+  (Req 14.3).
+- **Exposure note:** admin APIs and every `/api/uid/*` write MUST require the matching
+  session type before shipping; the only intentionally anonymous endpoints are content
+  reads, the redirect, the amount-only lookup, and `/api/otp/*` (which are self-rate-limited).
+- **Accepted exposure (do not silently tighten or loosen further without revisiting):**
+  lookup discloses real per-UID amounts, and there is no ownership proof at withdrawal
+  time — see requirements.md "Accepted risk — first claimant wins". The only compensating
+  controls are per-IP rate limiting on lookup and OTP send (Req 14.4, 15.6-15.7), mandatory
+  admin review of every first withdrawal (Req 9.5, 15.9), OTP attempt/TTL limits
+  (Req 15.4-15.5), and the holding period (Req 8.3).
 
 ## Requirements mapping
 
@@ -809,13 +1031,16 @@ most critical money/concurrency invariants, not an exhaustive suite.
 |-------------|-----------------|
 | R1 Public discovery | Components/apps/web, API contracts |
 | R2 Redirect/tracking | Components/apps/web (best-effort click), Key flows, API contracts |
-| R3 Customer auth | Components/apps/web, Auth (interim + Session) |
+| R3 Admin auth & principal separation | Components/apps/web, Auth (interim + admin `Session`) |
 | R4 Language/i18n | Components/Language & i18n |
-| R5 UID linking | Key flows (UID), Data Models (partial unique) |
+| R5 UID accounts | Key flows (UID accounts), Data Models (`UidAccount`), Properties 3-4 |
 | R6 Import pipeline | Key flows (import), Data Models (versioned), Job queue |
 | R7 Attribution/cashback | Key flows (attribution), Cashback engine (rate trust + delta + concurrency) |
 | R8 Wallet | Key flows (attribution), Cashback engine, Data Models (reserved + receivable) |
-| R9 Withdrawal | Key flows (withdrawal + cancel), Data Models (WithdrawalEvent) |
+| R9 Withdrawal | Key flows (withdrawal + cancel), Data Models (WithdrawalEvent), Property 6 |
+| R14 Cashback lookup | Key flows (Cashback lookup by exchange + UID), core services (`lookupService`), Data Models (`RateLimitCounter`), Properties 14-15 |
+| R15 Email OTP + UID session | Key flows (Email OTP binding & UID session), core services (`otpService`, `uidSessionService`), Data Models (`EmailOtp`, `UidSession`), Properties 6, 15-17 |
+| R16 Outbound email (Resend) | Components/core services (`emailPort`), Environments & deployment (Resend send path) |
 | R10 Admin content | Components/apps/web, core services |
 | R11 Admin analytics | Components/apps/web, API contracts |
 | R12 Worker/jobs | Components/apps/worker, Job queue |
@@ -829,13 +1054,34 @@ most critical money/concurrency invariants, not an exhaustive suite.
 > answers), not Requirement N.
 
 - **[PENDING]** dedup key composition per adapter (Open decision #11) — needs real sample.
-- **[PENDING]** auth provider (Open decision #13) — abstracted via AuthPort; interim
-  email+password + Session ships until a provider is chosen (Components/Auth).
-- **[PENDING]** customer UID-detail visibility (Open decision #12) — baseline own-data-only.
+- **[PENDING]** admin auth provider (Open decision #13, narrowed in v0.6) — abstracted via
+  `AuthPort`; interim email+password + `Session` ships until a provider is chosen
+  (Components/Auth). End-user auth is out of scope for this decision — see Req 15.
+- **Resolved (v0.6, Open decision #12):** anyone entering exchange + UID sees that UID's
+  `pending`/`available`; everything else (history, email, address) needs a `UidSession`.
 - **[PENDING]** compliance/KYC for payouts (Open decision #19) — payout identity kept isolated.
 - **[PENDING]** default values: cashback rate, holding period, auto-approve threshold,
-  supported assets/networks. (Rate *resolution rule* is decided; only default *values*
-  remain.)
+  supported assets/networks, lookup rate-limit window (proposed 5/min + 30/hour per IP),
+  OTP tuning (TTL, max attempts, cooldown, daily cap). (Resolution *rules* are decided; only
+  default *values* remain.)
+- **Resolved (v0.6, Open decision #20): Resend.** The only remaining prerequisites are
+  operational: verify an operator-owned domain (SPF/DKIM) — the shared `resend.dev` testing
+  domain only delivers to the account owner — and confirm the free-tier quota (100/day,
+  3,000/month) covers expected withdrawal volume. See "Resend send path" under Environments
+  & deployment.
+- **Accepted (v0.6, Open decision #21): first-claimant-wins.** Lookup shows real amounts
+  for any (exchange, UID) and there is no way to verify the true owner from affiliate report
+  data alone, so ownership is effectively whoever binds an email first. The operator
+  accepted this trade-off for a frictionless flow. Mandatory admin review of every first
+  withdrawal (Req 9.5) is a velocity/sanity check, not proof of ownership — see
+  requirements.md "Accepted risk — first claimant wins" for the full reasoning and the
+  compensating controls. Revisit only if losses appear or an exchange-side ownership proof
+  becomes available.
+- **Superseded (v0.5 → v0.6):** the earlier "Hybrid" design — anonymous lookup returned a
+  boolean only, and cashback still required a registered customer account with admin-
+  confirmed UID ownership before attribution. Replaced because the operator chose speed of
+  access (real amounts, no account) over that anti-fraud posture. Kept here, not deleted
+  silently, per spec governance.
 - **[PENDING]** admin-managed exchange logos (upload/edit from the admin UI). MVP keeps
   logos as repo-committed static assets and populates `Exchange.logoUrl` from the seed
   script only; the admin content form does not expose the field. An exchange created purely
@@ -860,3 +1106,11 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-15 | design.md | Thêm dòng "Styling (public site)": Tailwind CSS v4 + shadcn/ui (Radix), copy component vào `src/components/ui`; cập nhật repo layout với `components.json`, `postcss.config.mjs`, `src/lib/utils.ts` | Thay CSS thủ công bằng component kit có sẵn cho trang public (home/exchanges/guides); theme light blue/teal thân thiện-chuyên nghiệp; admin giữ nguyên đơn giản, không đổi | added |
 | 2026-09-16 | design.md | Thêm `Exchange.logoUrl String?` vào Data Models | Hiển thị logo thật của sàn trên offer tile thay cho placeholder màu | added |
 | 2026-09-16 | design.md | Siết `logoUrl` thành đường dẫn root-relative tới asset trong repo (`apps/web/public/exchange-logos/<slug>.png`), bỏ phương án URL ngoài; thêm mục "Exchange logo assets" trong Components/apps/web; thêm Open decision về admin-managed logo | Chốt lưu ảnh local trong repo thay vì hot-link ảnh online; admin không sửa logo qua form nên `logoUrl` chỉ do seed set | updated |
+| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) Luồng "Anonymous quick lookup" trả boolean + `LookupAttempt` + `POST /api/lookup` theo mô hình Hybrid (customer account + admin ownership) | Ghi lại để không đề xuất lại như ý mới | removed |
+| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) `Customer.username` cho plan Hybrid | Model Customer bị xoá ở v0.6 | removed |
+| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) Open decision #20 ghi "chưa chọn provider" + mục "Rejected: UID-first/no-account + OTP" | Ở v0.6 UID-first + Resend chính là hướng được chọn, không còn là phương án bị bác | removed |
+| 2026-09-16 | design.md | **Chuyển sang UID-first (v0.6/v0.7).** Xoá `Customer`, `UidLink`, `LookupAttempt`, đổi `Session` thành admin-only; thêm `UidAccount`, `EmailOtp`, `UidSession`, `RateLimitCounter`; đổi FK của `Wallet`/`Withdrawal`/`CommissionRecord` sang `uidAccountId`/`attributedUidAccountId`; thêm cột `Withdrawal.email`/`isFirst` | Đồng bộ data model với requirements v0.6 (Req 5, 7, 8, 9) | updated |
+| 2026-09-16 | design.md | Viết lại luồng "UID accounts" (bỏ admin ownership approval) và "Cashback lookup by exchange + UID" (trả `pending`/`available` thật, không còn boolean); thêm luồng "Email OTP binding & UID session" với sequence diagram | Hiện thực Req 5, 14, 15 đã chốt: search UID → withdraw → nhận OTP → session 30 phút | added |
+| 2026-09-16 | design.md | Thêm `lookupService`, `otpService`, `uidSessionService`, `emailPort` (+ `resendEmailAdapter`) vào core services; thêm mục "Resend send path" (gửi in-request, không qua job queue; lý do quota 100/ngày) và các env var OTP/Resend mới vào Environments & deployment | Hiện thực Req 15/16 với Resend theo lựa chọn của operator | added |
+| 2026-09-16 | design.md | Viết lại Property 3 (one UID account per pair, bỏ partial unique index), Property 4 (attribution không cần claimant), Property 6 (thêm điều kiện UidSession + first-withdrawal luôn UNDER_REVIEW), Property 14 (lookup chỉ trả balance, không trả identity/history); thêm Property 16 (OTP hashed/single-use/attempt-limited), Property 17 (UidSession scope đúng 1 UID) | Các property cũ mô tả hành vi đã bị thay thế; property mới khoá lại đúng bất biến của Req 5/9/14/15 | updated |
+| 2026-09-16 | design.md | Cập nhật API surface (`/api/lookup`, `/api/otp/*`, `/api/admin/auth/*`, `/api/uid/*`), mục Auth thành "v0.6: admin only", Security (accepted exposure), Requirements mapping, Open design decisions (#12 resolved, #13 narrowed, #20 resolved: Resend, #21 accepted: first-claimant-wins, mục Superseded cho Hybrid) | Đồng bộ toàn bộ design với quyết định UID-first + Resend | updated |

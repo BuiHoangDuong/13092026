@@ -13,17 +13,6 @@ enum PublishStatus {
   PUBLISHED
 }
 
-enum PrincipalType {
-  CUSTOMER
-  ADMIN
-}
-
-enum UidLinkStatus {
-  PENDING_VERIFICATION
-  VERIFIED
-  REJECTED
-}
-
 enum ReportType {
   TRANSACTION
   AGGREGATE
@@ -60,7 +49,7 @@ enum WithdrawalStatus {
 }
 
 enum ActorType {
-  CUSTOMER
+  CLAIMANT
   ADMIN
   SYSTEM
 }
@@ -84,10 +73,11 @@ model Exchange {
   id                  String         @id @default(cuid())
   slug                String         @unique
   name                String
-  logoUrl             String?        // Root-relative path to a repo asset in /exchange-logos/.
+  logoUrl             String? // Root-relative path to a repo asset in /exchange-logos/.
   status              PublishStatus  @default(DRAFT)
   defaultCashbackRate Decimal?       @db.Decimal(6, 4)
   i18n                Json?
+  uidAccounts         UidAccount[]
   offers              Offer[]
   links               ReferralLink[]
   guides              Guide[]
@@ -121,7 +111,6 @@ model ReferralLink {
   destination String
   active      Boolean      @default(true)
   clicks      ClickEvent[]
-  uidLinks    UidLink[]
 
   @@index([exchangeId, active])
 }
@@ -145,71 +134,98 @@ model ClickEvent {
 }
 
 model AdminAccount {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String    @id @default(cuid())
+  email        String    @unique
   passwordHash String?
-  createdAt    DateTime @default(now())
+  sessions     Session[]
+  createdAt    DateTime  @default(now())
 }
 
-model Customer {
-  id           String       @id @default(cuid())
-  email        String       @unique
-  passwordHash String?
-  locale       String       @default("en")
-  uidLinks     UidLink[]
+model UidAccount {
+  id           String             @id @default(cuid())
+  exchangeId   String
+  exchange     Exchange           @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
+  uid          String
+  boundEmail   String?
+  emailBoundAt DateTime?
   wallets      Wallet[]
   withdrawals  Withdrawal[]
-  createdAt    DateTime     @default(now())
+  otps         EmailOtp[]
+  sessions     UidSession[]
+  commissions  CommissionRecord[]
+  createdAt    DateTime           @default(now())
+
+  @@unique([exchangeId, uid])
+  @@index([boundEmail])
 }
 
-model Session {
-  id            String        @id @default(cuid())
-  principalType PrincipalType
-  subjectId     String
-  tokenHash     String        @unique
-  expiresAt     DateTime
-  createdAt     DateTime      @default(now())
+model EmailOtp {
+  id                String     @id @default(cuid())
+  uidAccountId      String
+  uidAccount        UidAccount @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  email             String
+  codeHash          String
+  expiresAt         DateTime
+  consumedAt        DateTime?
+  failedAttempts    Int        @default(0)
+  providerAccepted  Boolean    @default(false)
+  providerMessageId String?
+  createdAt         DateTime   @default(now())
 
-  @@index([principalType, subjectId])
+  @@index([uidAccountId, createdAt])
   @@index([expiresAt])
 }
 
-model UidLink {
-  id               String        @id @default(cuid())
-  customerId       String
-  customer         Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  exchangeId       String
-  uid              String
-  referralLinkId   String?
-  referralLink     ReferralLink? @relation(fields: [referralLinkId], references: [id], onDelete: SetNull)
-  status           UidLinkStatus @default(PENDING_VERIFICATION)
-  flaggedForReview Boolean       @default(false)
-  verifiedAt       DateTime?
-  ownershipApprovedAt DateTime?
-  ownershipNote    String?
-  createdAt        DateTime      @default(now())
+model UidSession {
+  id           String     @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  tokenHash    String     @unique
+  expiresAt    DateTime
+  createdAt    DateTime   @default(now())
 
-  @@index([exchangeId, uid])
-  @@index([customerId])
+  @@index([uidAccountId])
+}
+
+model RateLimitCounter {
+  id          String   @id @default(cuid())
+  scope       String
+  subjectHash String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@unique([scope, subjectHash, windowStart])
+  @@index([windowStart])
+}
+
+model Session {
+  id        String       @id @default(cuid())
+  adminId   String
+  admin     AdminAccount @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash String       @unique
+  expiresAt DateTime
+  createdAt DateTime     @default(now())
+
+  @@index([adminId])
 }
 
 model ImportBatch {
-  id          String              @id @default(cuid())
-  exchangeId  String
-  rootAccount String
-  reportType  ReportType
-  periodStart DateTime
-  periodEnd   DateTime
-  sourceTz    String
-  sourceAsOf  DateTime?
-  fileRef     String
+  id           String              @id @default(cuid())
+  exchangeId   String
+  rootAccount  String
+  reportType   ReportType
+  periodStart  DateTime
+  periodEnd    DateTime
+  sourceTz     String
+  sourceAsOf   DateTime?
+  fileRef      String
   originalFile Bytes?
-  publishedAt DateTime?
-  status      BatchStatus         @default(UPLOADED)
-  totals      Json?
-  createdAt   DateTime            @default(now())
-  rows        StagingRow[]
-  versions    CommissionVersion[]
+  publishedAt  DateTime?
+  status       BatchStatus         @default(UPLOADED)
+  totals       Json?
+  createdAt    DateTime            @default(now())
+  rows         StagingRow[]
+  versions     CommissionVersion[]
 
   @@index([exchangeId, createdAt])
 }
@@ -226,96 +242,100 @@ model StagingRow {
 }
 
 model CommissionRecord {
-  id                   String              @id @default(cuid())
-  exchangeId           String
-  uid                  String
-  asset                String
-  dedupKey             String
-  reportType           ReportType?
-  rootAccount          String?
-  periodStart          DateTime
-  periodEnd            DateTime
-  reconciledAmount     Decimal             @default(0) @db.Decimal(30, 10)
-  activeVersionId      String?             @unique
-  activeVersion        CommissionVersion?  @relation("active_version", fields: [activeVersionId], references: [id])
-  attributedCustomerId String?
-  offerId              String?
-  cashbackRate         Decimal?            @db.Decimal(6, 4)
-  creditedCashback     Decimal             @default(0) @db.Decimal(30, 10)
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  versions             CommissionVersion[] @relation("record_versions")
+  id                     String              @id @default(cuid())
+  exchangeId             String
+  uid                    String
+  asset                  String
+  dedupKey               String
+  reportType             ReportType?
+  rootAccount            String?
+  periodStart            DateTime
+  periodEnd              DateTime
+  reconciledAmount       Decimal             @default(0) @db.Decimal(30, 10)
+  activeVersionId        String?             @unique
+  activeVersion          CommissionVersion?  @relation("active_version", fields: [activeVersionId], references: [id])
+  attributedUidAccountId String?
+  attributedUidAccount   UidAccount?         @relation(fields: [attributedUidAccountId], references: [id], onDelete: Restrict)
+  offerId                String?
+  cashbackRate           Decimal?            @db.Decimal(6, 4)
+  creditedCashback       Decimal             @default(0) @db.Decimal(30, 10)
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  versions               CommissionVersion[] @relation("record_versions")
 
   @@unique([exchangeId, dedupKey])
   @@index([exchangeId, uid])
 }
 
 model CommissionVersion {
-  id           String            @id @default(cuid())
-  commissionId String
-  commission   CommissionRecord  @relation("record_versions", fields: [commissionId], references: [id], onDelete: Cascade)
-  batchId      String
-  batch        ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  amount       Decimal           @db.Decimal(30, 10)
+  id             String            @id @default(cuid())
+  commissionId   String
+  commission     CommissionRecord  @relation("record_versions", fields: [commissionId], references: [id], onDelete: Cascade)
+  batchId        String
+  batch          ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  amount         Decimal           @db.Decimal(30, 10)
   referralLinkId String?
-  superseded   Boolean           @default(false)
-  importedAt   DateTime          @default(now())
-  activeFor    CommissionRecord? @relation("active_version")
+  superseded     Boolean           @default(false)
+  importedAt     DateTime          @default(now())
+  activeFor      CommissionRecord? @relation("active_version")
 
   @@unique([commissionId, batchId])
   @@index([commissionId, importedAt])
 }
 
 model Wallet {
-  id         String        @id @default(cuid())
-  customerId String
-  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  asset      String
-  pending    Decimal       @default(0) @db.Decimal(30, 10)
-  available  Decimal       @default(0) @db.Decimal(30, 10)
-  reserved   Decimal       @default(0) @db.Decimal(30, 10)
-  withdrawn  Decimal       @default(0) @db.Decimal(30, 10)
-  receivable Decimal       @default(0) @db.Decimal(30, 10)
-  entries    WalletEntry[]
+  id           String        @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount    @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  asset        String
+  pending      Decimal       @default(0) @db.Decimal(30, 10)
+  available    Decimal       @default(0) @db.Decimal(30, 10)
+  reserved     Decimal       @default(0) @db.Decimal(30, 10)
+  withdrawn    Decimal       @default(0) @db.Decimal(30, 10)
+  receivable   Decimal       @default(0) @db.Decimal(30, 10)
+  entries      WalletEntry[]
 
-  @@unique([customerId, asset])
+  @@unique([uidAccountId, asset])
 }
 
 model WalletEntry {
-  id          String          @id @default(cuid())
-  walletId    String
-  wallet      Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  type        WalletEntryType
-  amount      Decimal         @db.Decimal(30, 10)
-  sourceRef   String?
-  opKey       String?         @unique
-  availableAt DateTime?
-  remainingPending Decimal    @default(0) @db.Decimal(30, 10)
-  balanceChanges Json?
-  createdAt   DateTime        @default(now())
+  id               String          @id @default(cuid())
+  walletId         String
+  wallet           Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  type             WalletEntryType
+  amount           Decimal         @db.Decimal(30, 10)
+  sourceRef        String?
+  opKey            String?         @unique
+  availableAt      DateTime?
+  remainingPending Decimal         @default(0) @db.Decimal(30, 10)
+  balanceChanges   Json?
+  createdAt        DateTime        @default(now())
 
   @@index([walletId, createdAt])
 }
 
 model Withdrawal {
-  id         String            @id @default(cuid())
-  customerId String
-  customer   Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  asset      String
-  amount     Decimal           @db.Decimal(30, 10)
-  network    String
-  address    String
-  status     WithdrawalStatus  @default(REQUESTED)
-  payoutRef  String?
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @updatedAt
-  events     WithdrawalEvent[]
+  email        String
+  isFirst      Boolean           @default(false)
+  id           String            @id @default(cuid())
+  uidAccountId String
+  uidAccount   UidAccount        @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  asset        String
+  amount       Decimal           @db.Decimal(30, 10)
+  network      String
+  address      String
+  status       WithdrawalStatus  @default(REQUESTED)
+  payoutRef    String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  events       WithdrawalEvent[]
 
   @@index([status])
-  @@index([customerId, createdAt])
+  @@index([uidAccountId, createdAt])
 }
 
 model WithdrawalEvent {
+  email        String?
   id           String            @id @default(cuid())
   withdrawalId String
   withdrawal   Withdrawal        @relation(fields: [withdrawalId], references: [id], onDelete: Cascade)

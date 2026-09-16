@@ -69,19 +69,6 @@ export const exchangesResponseSchema = z.object({ exchanges: z.array(exchangeSch
 export const registerSchema = z.object({ email: z.email(), password: z.string().min(10).max(200), locale: localeSchema.optional() });
 export const loginSchema = z.object({ email: z.email(), password: z.string().min(1).max(200) });
 
-export const uidLinkCreateSchema = z.object({
-  exchangeId: z.string().min(1), uid: z.string().trim().min(1).max(128), referralLinkId: z.string().optional()
-});
-export const uidApprovalSchema = z.object({
-  note: z.string().trim().min(10).max(1000)
-});
-export const uidLinksResponseSchema = z.object({ links: z.array(z.object({
-  id: z.string(), exchangeId: z.string(), exchangeName: z.string(), uid: z.string(),
-  status: z.enum(["PENDING_VERIFICATION", "VERIFIED", "REJECTED"]),
-  ownershipApproved: z.boolean(), verifiedAt: z.iso.datetime().nullable()
-})) });
-export type UidLinksResponse = z.infer<typeof uidLinksResponseSchema>;
-
 export const walletResponseSchema = z.object({
   balances: z.array(z.object({
     asset: assetSchema,
@@ -103,14 +90,33 @@ export const walletResponseSchema = z.object({
   nextCursor: z.string().nullable()
 });
 export type WalletResponse = z.infer<typeof walletResponseSchema>;
+export const lookupRequestSchema = z.object({ exchangeId: z.string().trim().min(1).max(128), uid: z.string().trim().min(1).max(128) }).strict();
+export const lookupResponseSchema = z.object({
+  balances: z.array(z.object({ asset: assetSchema, pending: decimalStringSchema, available: decimalStringSchema }).strict()),
+  hasData: z.boolean(), lastImportAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable()
+}).strict();
+export type LookupResponse = z.infer<typeof lookupResponseSchema>;
+export const otpRequestSchema = lookupRequestSchema.extend({ email: z.email().max(254).transform(v => v.trim().toLowerCase()) });
+export const otpVerifySchema = z.object({ otpId: z.string().min(1).max(128), code: z.string().regex(/^\d{6}$/) }).strict();
 
 export const withdrawalCreateSchema = z.object({
-  asset: assetSchema, amount: decimalStringSchema.refine((v) => !v.startsWith("-") && v !== "0"),
+  asset: assetSchema, amount: z.string().regex(/^\d{1,20}(?:\.\d{1,10})?$/),
   network: z.string().trim().min(1).max(32), address: z.string().trim().min(8).max(256)
-});
+}).strict();
 export const withdrawalDecisionSchema = z.object({
-  decision: z.enum(["APPROVE", "REJECT", "MARK_PAID"]), note: z.string().max(1000).optional(), payoutRef: z.string().max(256).optional()
+  decision: z.enum(["APPROVE", "REJECT", "MARK_PAID"]), note: z.string().trim().max(1000).optional(), payoutRef: z.string().trim().min(1).max(256).optional()
+}).strict().refine(v => v.decision !== "MARK_PAID" || Boolean(v.payoutRef), "Payout reference is required");
+export const payoutNetworkSchema = z.enum(["ETHEREUM", "BSC", "ARBITRUM", "OPTIMISM", "BASE", "TRON"]);
+export const payoutRoutesSchema = z.record(z.string().regex(/^[A-Z0-9]{1,16}$/), z.array(payoutNetworkSchema).min(1));
+export type PayoutRoutes = z.infer<typeof payoutRoutesSchema>;
+export const withdrawalSchema = z.object({
+  id: z.string(), uidAccountId: z.string(), uid: z.string(), exchangeId: z.string(), email: z.string(),
+  asset: assetSchema, amount: decimalStringSchema, network: z.string(), address: z.string(), isFirst: z.boolean(),
+  status: z.enum(["REQUESTED", "UNDER_REVIEW", "AUTO_APPROVED", "APPROVED", "PAID", "REJECTED", "CANCELLED"]),
+  payoutRef: z.string().nullable(), createdAt: z.iso.datetime(), updatedAt: z.iso.datetime()
 });
+export const withdrawalsResponseSchema = z.object({ withdrawals: z.array(withdrawalSchema), nextCursor: z.string().nullable() });
+export type WithdrawalsResponse = z.infer<typeof withdrawalsResponseSchema>;
 
 export const importMetadataSchema = z.object({
   exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),

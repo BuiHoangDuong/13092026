@@ -3,12 +3,13 @@ import { redirect } from "next/navigation";
 import { sessionToken } from "@/lib/auth";
 import { AdminContentManager } from "./admin-content-manager";
 import { BybitOperations } from "./bybit-operations";
+import { WithdrawalQueue } from "./withdrawal-queue";
 import { db } from "@cashback/db";
 
 export const dynamic = "force-dynamic";
 export default async function AdminPage() {
   const principal = await auth.getSession(await sessionToken());
-  if (!principal || principal.type !== "ADMIN") redirect("/login");
+  if (!principal || principal.type !== "ADMIN") redirect("/admin/login");
   const bybit = await db.exchange.findFirst({ where: { slug: "bybit", status: "PUBLISHED" }, select: { id: true } });
   return (
     <main className="mx-auto max-w-6xl px-6 py-16">
@@ -18,6 +19,7 @@ export default async function AdminPage() {
         Create, edit, publish, or unpublish exchanges, offers, referral links, and guides.
       </p>
       <BybitOperations exchangeId={bybit?.id ?? null} />
+      <WithdrawalQueue />
       <AdminContentManager />
     </main>
   );

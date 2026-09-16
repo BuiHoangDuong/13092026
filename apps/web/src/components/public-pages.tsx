@@ -16,7 +16,7 @@ import { marketingStatsPlaceholder } from "../content/marketing-stats";
 import { generateLedgerDemoRows } from "../content/ledger-demo";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
-import { CashbackPanel } from "./cashback-panel";
+import { CashbackLookup } from "./cashback-lookup";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
 function conditionsText(conditions: unknown, fallback: string): string {
@@ -141,7 +141,7 @@ export async function HomeContent({ locale }: { locale: Locale }) {
   }
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
-      <CashbackPanel locale={locale} />
+      <CashbackLookup locale={locale} exchanges={[...new Map(cards.map(card => [card.exchange.id, { id: card.exchange.id, name: card.exchange.name }])).values()]} />
       <Eyebrow>{messages.home.eyebrow}</Eyebrow>
       <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-foreground sm:text-6xl">{messages.home.title}</h1>
       <p className="mt-6 max-w-xl text-lg text-muted-foreground">{messages.home.lead}</p>

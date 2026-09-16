@@ -12,3 +12,4 @@ infra/data/
 *.tsbuildinfo
 $null
 .kiro/skills
+cashback/

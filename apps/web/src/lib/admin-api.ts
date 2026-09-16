@@ -1,5 +1,5 @@
 import { ZodError, type ZodType } from "zod";
-import { auth } from "@cashback/core";
+import { auth, PublicAccessError, type Principal } from "@cashback/core";
 import { NextResponse } from "next/server";
 import { sessionToken } from "./auth";
 
@@ -19,18 +19,16 @@ export function adminListOptions(request: Request) {
   return { cursor: params.get("cursor") ?? undefined, limit: Number.isFinite(parsedLimit) ? parsedLimit : 50 };
 }
 
-export async function withAdmin(handler: () => Promise<Response>): Promise<Response> {
+export async function withAdmin(handler: (principal: Principal) => Promise<Response>): Promise<Response> {
   try {
-    await auth.requireAdmin(await sessionToken());
-    return await handler();
+    const principal = await auth.requireAdmin(await sessionToken());
+    return await handler(principal);
   } catch (error) {
+    if (error instanceof PublicAccessError) return adminJson({ error: { code: error.code, message: error.message } }, { status: error.status });
     if (error instanceof ZodError || error instanceof SyntaxError) {
       return adminJson({ error: { code: "VALIDATION_ERROR", message: "Invalid request", details: error instanceof ZodError ? error.issues : undefined } }, { status: 400 });
     }
     const domainCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
-    if (domainCode && ["INVALID_UID_LINK", "UID_NOT_FOUND", "UID_CONFLICT"].includes(domainCode)) {
-      return adminJson({ error: { code: domainCode, message: error instanceof Error ? error.message : "UID operation failed" } }, { status: domainCode === "UID_NOT_FOUND" ? 404 : domainCode === "UID_CONFLICT" ? 409 : 400 });
-    }
     if (domainCode && ["CONTENT_NOT_FOUND", "CONTENT_CONFLICT", "OFFER_EXCHANGE_MISMATCH", "INVALID_REFERENCE"].includes(domainCode)) {
       const status = domainCode === "CONTENT_NOT_FOUND" ? 404 : domainCode === "INVALID_REFERENCE" ? 400 : 409;
       const message = error instanceof Error ? error.message : "Content operation failed";
