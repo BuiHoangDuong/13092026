@@ -72,6 +72,15 @@ export const loginSchema = z.object({ email: z.email(), password: z.string().min
 export const uidLinkCreateSchema = z.object({
   exchangeId: z.string().min(1), uid: z.string().trim().min(1).max(128), referralLinkId: z.string().optional()
 });
+export const uidApprovalSchema = z.object({
+  note: z.string().trim().min(10).max(1000)
+});
+export const uidLinksResponseSchema = z.object({ links: z.array(z.object({
+  id: z.string(), exchangeId: z.string(), exchangeName: z.string(), uid: z.string(),
+  status: z.enum(["PENDING_VERIFICATION", "VERIFIED", "REJECTED"]),
+  ownershipApproved: z.boolean(), verifiedAt: z.iso.datetime().nullable()
+})) });
+export type UidLinksResponse = z.infer<typeof uidLinksResponseSchema>;
 
 export const walletResponseSchema = z.object({
   balances: z.array(z.object({
@@ -84,8 +93,16 @@ export const walletResponseSchema = z.object({
   })),
   lastImportAt: z.iso.datetime().nullable(),
   sourceAsOf: z.iso.datetime().nullable(),
-  hasData: z.boolean()
+  hasData: z.boolean(),
+  history: z.array(z.object({
+    id: z.string(), asset: assetSchema,
+    type: z.enum(["CREDIT", "HOLD_RELEASE", "WITHDRAWAL_RESERVE", "WITHDRAWAL_RELEASE", "WITHDRAWAL_SETTLE", "ADJUSTMENT", "REVERSAL", "CLAWBACK"]),
+    amount: decimalStringSchema,
+    createdAt: z.iso.datetime(), availableAt: z.iso.datetime().nullable()
+  })),
+  nextCursor: z.string().nullable()
 });
+export type WalletResponse = z.infer<typeof walletResponseSchema>;
 
 export const withdrawalCreateSchema = z.object({
   asset: assetSchema, amount: decimalStringSchema.refine((v) => !v.startsWith("-") && v !== "0"),
@@ -97,7 +114,8 @@ export const withdrawalDecisionSchema = z.object({
 
 export const importMetadataSchema = z.object({
   exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),
-  periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string().trim().min(1).max(100)
+  periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string().trim().min(1).max(100),
+  sourceAsOf: z.iso.datetime().optional()
 });
 export type ImportMetadata = z.infer<typeof importMetadataSchema>;
 export const importAcceptedSchema = z.object({ batchId: z.string(), status: z.literal("UPLOADED") });

@@ -1,5 +1,5 @@
 import { importMetadataSchema } from "@cashback/contracts";
-import { createImportBatch } from "@cashback/core";
+import { createImportBatch, listImportBatches } from "@cashback/core";
 import { adminJson, withAdmin } from "@/lib/admin-api";
 
 const allowedTypes = new Map([
@@ -7,6 +7,8 @@ const allowedTypes = new Map([
   ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"]
 ] as const);
 type AllowedMime = "text/csv" | "application/csv" | "application/vnd.ms-excel" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+export const GET = () => withAdmin(async () => adminJson({ batches: await listImportBatches() }));
 
 export const POST = (request: Request) => withAdmin(async () => {
   const form = await request.formData();

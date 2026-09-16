@@ -163,13 +163,35 @@ sample.)
 #### UID linking & verification (Req 5)
 1. Customer submits (exchange, UID) → `UidLink(PENDING_VERIFICATION)`.
 2. On each publish, the `ATTRIBUTE` job checks pending links: if the UID appears in a
-   published commission for that exchange and there is no other `VERIFIED` owner, set
+   published commission for that exchange, ownership has been approved by an admin,
+   and there is no other `VERIFIED` owner, set
    `VERIFIED`. If a `VERIFIED` owner already exists, store the second request as
    `REJECTED` and set `flaggedForReview` for admin.
 3. Uniqueness of ownership is enforced at the DB level by a **partial unique index** on
    `(exchangeId, uid) WHERE status = 'VERIFIED'`, so a second pending/rejected claim can
    still be stored (it is not blocked by a full unique constraint).
 4. Only `VERIFIED` links receive attribution.
+5. The Bybit MVP records `ownershipApprovedAt` and an admin/evidence note. Approval
+   enqueues attribution so reports imported before a claim can be reconciled later.
+   Entering somebody else's UID does not grant access to their balances.
+
+#### Bybit MVP implementation (2026-09-16)
+- Normalized Bybit CSV v1 is the first adapter. Native export mapping and XLSX remain
+  pending a real sample. UTC, explicit per-currency commissions, strict headers and
+  bounded rows; transaction IDs fall back to aggregate period identities when absent.
+- New originals are stored privately in `ImportBatch.originalFile` (bounded BYTEA)
+  rather than container-local disk, so web and worker share durable input. Object
+  storage remains the longer-term storage design. See `apps/web/docs/bybit-cashback.md`.
+- Publish, UID ownership and ledger mutations use a transaction-scoped Postgres
+  advisory lock for the low-volume MVP. Jobs carry a unique per-claim `lockedBy`
+  token; business changes and DONE commit atomically only while the lease is valid.
+- `WalletEntry.remainingPending` prevents reversed credits from being released;
+  immutable `balanceChanges` records the per-bucket deltas. Missing holding-period
+  configuration keeps funds pending. Report freshness reflects applied ledger
+  versions, not merely an uploaded or not-yet-attributed report.
+- The private **Your cashback** panel precedes the home hero/grid and shares data
+  with `/me/wallet`. It handles guests, unlinked UIDs, pending review/report, no data,
+  real zero balances and service errors separately. Poll only while visible.
 
 #### Attribution → cashback → wallet (Req 7, 8)
 

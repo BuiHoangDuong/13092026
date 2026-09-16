@@ -185,6 +185,9 @@ model UidLink {
   status           UidLinkStatus @default(PENDING_VERIFICATION)
   flaggedForReview Boolean       @default(false)
   verifiedAt       DateTime?
+  ownershipApprovedAt DateTime?
+  ownershipNote    String?
+  createdAt        DateTime      @default(now())
 
   @@index([exchangeId, uid])
   @@index([customerId])
@@ -200,6 +203,8 @@ model ImportBatch {
   sourceTz    String
   sourceAsOf  DateTime?
   fileRef     String
+  originalFile Bytes?
+  publishedAt DateTime?
   status      BatchStatus         @default(UPLOADED)
   totals      Json?
   createdAt   DateTime            @default(now())
@@ -226,6 +231,8 @@ model CommissionRecord {
   uid                  String
   asset                String
   dedupKey             String
+  reportType           ReportType?
+  rootAccount          String?
   periodStart          DateTime
   periodEnd            DateTime
   reconciledAmount     Decimal             @default(0) @db.Decimal(30, 10)
@@ -250,6 +257,7 @@ model CommissionVersion {
   batchId      String
   batch        ImportBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
   amount       Decimal           @db.Decimal(30, 10)
+  referralLinkId String?
   superseded   Boolean           @default(false)
   importedAt   DateTime          @default(now())
   activeFor    CommissionRecord? @relation("active_version")
@@ -282,6 +290,8 @@ model WalletEntry {
   sourceRef   String?
   opKey       String?         @unique
   availableAt DateTime?
+  remainingPending Decimal    @default(0) @db.Decimal(30, 10)
+  balanceChanges Json?
   createdAt   DateTime        @default(now())
 
   @@index([walletId, createdAt])
@@ -329,6 +339,7 @@ model Job {
   runAfter    DateTime  @default(now())
   leaseUntil  DateTime?
   heartbeatAt DateTime?
+  lockedBy    String?
   lastError   String?
   createdAt   DateTime  @default(now())
 

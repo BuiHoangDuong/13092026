@@ -77,9 +77,10 @@ The workspace scripts load the root `.env` automatically (`scripts/with-root-env
 Existing process/shell variables take precedence, so Railway-provided secrets continue to
 override local `.env` values.
 
-The web app runs at `http://localhost:3000`. Object storage for imported reports is a local
-directory by default; MinIO (`http://localhost:9001` console) is only needed once Task 10
-wires up real file storage and you opt into the optional `docker-compose.yml`.
+The web app runs at `http://localhost:3000`. Bybit CSV reports are stored privately
+in Postgres so the web and worker can run in separate containers. See
+[Bybit cashback setup and CSV format](apps/web/docs/bybit-cashback.md) for the
+import/approval workflow, holding-period configuration, and isolated integration test.
 
 ## Verification
 

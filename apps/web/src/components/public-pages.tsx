@@ -16,6 +16,7 @@ import { marketingStatsPlaceholder } from "../content/marketing-stats";
 import { generateLedgerDemoRows } from "../content/ledger-demo";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
+import { CashbackPanel } from "./cashback-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
 function conditionsText(conditions: unknown, fallback: string): string {
@@ -27,7 +28,7 @@ function conditionsText(conditions: unknown, fallback: string): string {
   return fallback;
 }
 
-/** $100 fee -> $X back at the given rate, e.g. rate 0.4 -> "$40 back". Purely illustrative. */
+/** $100 affiliate commission -> $X cashback. This is not the customer's trading fee. */
 function exampleBack(rate: string): number {
   return Math.round(100 * Number(rate) * 100) / 100;
 }
@@ -139,7 +140,8 @@ export async function HomeContent({ locale }: { locale: Locale }) {
     /* DB may not be bootstrapped during build. */
   }
   return (
-    <main className="mx-auto max-w-6xl px-6 py-16">
+    <main className="mx-auto max-w-6xl px-6 py-10">
+      <CashbackPanel locale={locale} />
       <Eyebrow>{messages.home.eyebrow}</Eyebrow>
       <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-foreground sm:text-6xl">{messages.home.title}</h1>
       <p className="mt-6 max-w-xl text-lg text-muted-foreground">{messages.home.lead}</p>

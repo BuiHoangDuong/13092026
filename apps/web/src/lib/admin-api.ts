@@ -28,6 +28,9 @@ export async function withAdmin(handler: () => Promise<Response>): Promise<Respo
       return adminJson({ error: { code: "VALIDATION_ERROR", message: "Invalid request", details: error instanceof ZodError ? error.issues : undefined } }, { status: 400 });
     }
     const domainCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+    if (domainCode && ["INVALID_UID_LINK", "UID_NOT_FOUND", "UID_CONFLICT"].includes(domainCode)) {
+      return adminJson({ error: { code: domainCode, message: error instanceof Error ? error.message : "UID operation failed" } }, { status: domainCode === "UID_NOT_FOUND" ? 404 : domainCode === "UID_CONFLICT" ? 409 : 400 });
+    }
     if (domainCode && ["CONTENT_NOT_FOUND", "CONTENT_CONFLICT", "OFFER_EXCHANGE_MISMATCH", "INVALID_REFERENCE"].includes(domainCode)) {
       const status = domainCode === "CONTENT_NOT_FOUND" ? 404 : domainCode === "INVALID_REFERENCE" ? 400 : 409;
       const message = error instanceof Error ? error.message : "Content operation failed";

@@ -224,51 +224,56 @@ flowchart TD
 
 ### Phase 1 — Import pipeline, UID linking, attribution
 
-- [-] 9. Worker runtime + Postgres job queue (foundation landed early in Phase 0)
+- [x] 9. Worker runtime + Postgres job queue (foundation landed early in Phase 0)
   - [x] 9.1 Build the worker boot + poll loop claiming jobs with the correct PostgreSQL clause order (`... ORDER BY "runAfter" LIMIT 1 FOR UPDATE SKIP LOCKED`), lease, and heartbeat.
     - _Requirements: 12.1, 12.2; Design: Job queue design_
   - [x] 9.2 Add lease reaper (requeue expired) and retry policy (transient→backoff capped; exhausted attempts→FAILED, no infinite retry).
     - _Requirements: 12.3, 12.5; Design: Job queue design, Error Handling_
-  - [ ] 9.3 Enforce lease ownership at commit time: before writing a job's results, re-verify this worker still holds the lease (and fail the commit if it was reclaimed), plus add jitter to the retry backoff.
-    - The claim/reap/heartbeat path exists; the commit-time ownership check lands with the first real job handler (Task 10.3/11).
-    - Current state: the DONE transition guards on `state = CLAIMED`, which blocks a double-complete but does **not** prove *this* worker still owns the lease — there is no worker identity on `Job`. Add a `lockedBy` (worker id) column, set it at claim time, and scope every result write to `{ id, lockedBy: thisWorker }`.
+  - [x] 9.3 Enforce lease ownership at commit time: before writing a job's results, re-verify this worker still holds the lease (and fail the commit if it was reclaimed), plus add jitter to the retry backoff.
+    - Implemented per-claim `lockedBy` tokens, guarded heartbeat/failure writes, and atomic business-result + DONE commits fenced with `clock_timestamp()`. Expired/reclaimed owners roll back; retries include jitter; exhausted leases fail. Worker ticks no longer overlap. Verified against isolated PostgreSQL.
     - _Requirements: 12.3, 12.5; Design: Job queue design, Correctness Properties 8_
 
 - [-] 10. Report import: upload → parse → preview
   - [x] 10.1 Implement `POST /api/admin/imports`: authz, file type/size check, store original in private storage, create `ImportBatch` + PARSE job, return 202 + batchId (no in-request parsing).
-    - Multipart API accepts only non-empty CSV/XLSX within `IMPORT_MAX_BYTES`, validates typed metadata, writes the original under non-public `IMPORT_STORAGE_LOCAL_DIR`, then atomically creates `ImportBatch` + PARSE job. A failed DB transaction removes the stored file. Live probe returned 202 and created exactly one PARSE job; probe DB/file data was removed afterward.
+    - Bybit MVP accepts normalized CSV v1 (bounded by `IMPORT_MAX_BYTES` and 10 MiB), stores the original privately as database bytes, and creates the batch/job atomically. This replaces container-local storage for new uploads so separate Railway web/worker services share durable input. Unsupported exchange/XLSX uploads return a clear validation error.
     - _Requirements: 6.1, 6.2; Design: Key flows/import_
-  - [ ] 10.2 Implement `parserRegistry` + a first CSV/XLSX adapter interface distinguishing TRANSACTION vs AGGREGATE reports; no formula/macro execution; fall back to aggregate when transaction identity keys are missing.
+  - [-] 10.2 Implement `parserRegistry` + a first CSV/XLSX adapter interface distinguishing TRANSACTION vs AGGREGATE reports; no formula/macro execution; fall back to aggregate when transaction identity keys are missing.
+    - Done: `parserRegistry.bybit`, strict normalized CSV v1, transaction/aggregate identity, opaque UID and decimal parsing, no formula execution. Pending: native Bybit export mapping (needs a real sample), XLSX adapter. See `apps/web/docs/bybit-cashback.md`.
     - _Requirements: 6.4, 6.10, 6.11; Design: Components/core services_
-  - [ ] 10.3 Implement PARSE job: normalize (UID string, UTC timestamps + source tz, decimals), flag error/duplicate/unmapped/conflict rows into `StagingRow`, compute totals, set batch to PREVIEW.
+  - [x] 10.3 Implement PARSE job: normalize (UID string, UTC timestamps + source tz, decimals), flag error/duplicate/unmapped/conflict rows into `StagingRow`, compute totals, set batch to PREVIEW.
+    - Implemented for Bybit CSV v1 / UTC: invalid/duplicate/conflicting rows block publish; per-currency totals and unmapped-UID counts appear in preview. Unknown headers or malformed files produce FAILED with an actionable error.
     - _Requirements: 6.3; Design: Key flows/import_
   - [x] 10.4 Implement `GET /api/admin/imports/:id` returning status, preview counts, error rows, reconciliation info.
     - Admin-only endpoint returns batch lifecycle/source fields, totals, total/flagged row counts, and up to 100 flagged preview rows under private/no-store caching. Live probe returned 200 for the newly uploaded `UPLOADED` batch with zero rows before parsing.
     - _Requirements: 6.6; Design: Components/API contracts_
 
-- [ ] 11. Report commit: versioned publish (idempotent + atomic)
+- [x] 11. Report commit: versioned publish (idempotent + atomic)
   - Implement `POST /api/admin/imports/:id/commit` (creates PUBLISH job) and the PUBLISH job in `commissionService`: per row, upsert the `CommissionRecord` identity by `(exchangeId, dedupKey)`, upsert a `CommissionVersion` keyed by the unique `(commissionId, batchId)`, mark prior version superseded, set `activeVersion`, and recompute `reconciledAmount` (default rule: latest version supersedes). Commit the whole batch atomically, then enqueue ATTRIBUTE.
   - Re-committing the same batch, or two publish workers racing the same batch, upserts the same version and changes no reconciled amount; a mid-failure leaves no partial published data.
   - _Requirements: 6.7, 6.8, 6.9, 7.5, 7.8; Design: Key flows/import, Data Models, Correctness Properties 1, 7, 9_
-  - _Note: `dedupKey` composition is [PENDING] Open decision #11 (needs real sample)._
+  - Bybit normalized v1 dedup keys are defined in `bybit-parser.ts` (root + transaction ID + asset, or root + UID + asset + exact UTC period). Partial overlaps and older reports are rejected; corrections use the original identity. Native export identity mapping still needs a real sample.
 
-- [ ] 12. UID linking + verification
-  - [ ] 12.1 Implement `POST /api/me/uids` and `GET /api/me/uids`: create link in `PENDING_VERIFICATION` (optionally capturing referral link used), list customer's links; UID stored as opaque string.
+- [x] 12. UID linking + verification (Bybit MVP)
+  - [x] 12.1 Implement `POST /api/me/uids` and `GET /api/me/uids`: create link in `PENDING_VERIFICATION` (optionally capturing referral link used), list customer's links; UID stored as opaque string.
     - _Requirements: 5.1, 5.5; Design: Key flows/UID_
-  - [ ] 12.2 Implement verification in the ATTRIBUTE job: verify a pending UID when it appears in published commissions and no other `VERIFIED` owner exists (relying on the partial unique index); store a conflicting claim as `REJECTED` + `flaggedForReview`; re-evaluate pending links when new UIDs appear.
+  - [x] 12.2 Implement verification in the ATTRIBUTE job: verify a pending UID when it appears in published commissions and no other `VERIFIED` owner exists (relying on the partial unique index); store a conflicting claim as `REJECTED` + `flaggedForReview`; re-evaluate pending links when new UIDs appear.
+    - Ownership approval with admin/evidence note is also required: report membership alone must not award a claimant money. Both approval and publication enqueue attribution; verified ownership remains unique and competing claims are rejected/flagged.
     - _Requirements: 5.2, 5.3, 5.4, 5.6; Design: Key flows/UID, Correctness Properties 3, 4_
 
-- [ ] 13. Attribution + cashback engine (rate resolution + delta, concurrency-safe)
-  - Implement `attributionService` + `cashbackEngine`: lock the `CommissionRecord` with `SELECT ... FOR UPDATE`, attribute it to the verified customer (keep unattributed when no link); resolve the rate by precedence (offer of the UID's referral link **only when corroborated by system-verified report data**, else exchange default), assert `UidLink.exchangeId = ReferralLink.exchangeId = Offer.exchangeId` (else fall back to default), and snapshot `offerId`/`cashbackRate` onto the record; compute `target = reconciledAmount × rate` and apply only `delta = target − creditedCashback` — positive delta offsets any `receivable` then CREDITs `pending` (with `availableAt`), negative delta reduces `pending` then `available` then records the remainder as `receivable` via CLAWBACK. Write every wallet movement with a unique `opKey` (e.g. `attr:{commissionVersionId}`) so retries/racing workers cannot double-apply; update `creditedCashback`.
+- [x] 13. Attribution + cashback engine (rate resolution + delta, concurrency-safe)
+  - Implement `attributionService` + `cashbackEngine`: serialize publish/attribution/UID/ledger writes with a transaction-scoped Postgres advisory lock for the low-volume MVP, attribute it to the verified customer (keep unattributed when no link); resolve the rate by precedence (offer of the UID's referral link **only when corroborated by system-verified report data**, else exchange default), assert `UidLink.exchangeId = ReferralLink.exchangeId = Offer.exchangeId` (else fall back to default), and snapshot `offerId`/`cashbackRate` onto the record; compute `target = reconciledAmount × rate` and apply only `delta = target − creditedCashback` — positive delta offsets any `receivable` then CREDITs `pending` (with `availableAt`), negative delta reduces `pending` then `available` then records the remainder as `receivable` via CLAWBACK. Write every wallet movement with a unique `opKey` (e.g. `attr:{commissionVersionId}`) so retries/racing workers cannot double-apply; update `creditedCashback`.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.7, 7.8, 8.2, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 2, 4, 11, 12, 13_
 
 ### Phase 2 — Wallet & withdrawals
 
-- [ ] 14. Wallet balances + hold release
-  - [ ] 14.1 Implement `walletService` (pending/available/reserved/withdrawn per customer+asset) and `GET /api/me/wallet` returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
+- [-] 14. Wallet balances + hold release and home cashback panel
+  - [x] 14.1 Implement `walletService` (pending/available/reserved/withdrawn per customer+asset) and `GET /api/me/wallet` returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
     - _Requirements: 8.1, 8.5, 8.6; Design: Cashback engine, Data Models_
-  - [ ] 14.2 Implement `RELEASE_HOLDS` job (scheduler tick) moving cleared CREDITs `pending→available`; implement the reversal policy (reduce `pending` then `available`, remainder to `receivable` via CLAWBACK) so no balance goes negative, and expose `receivable` in the wallet.
+  - [x] 14.2 Implement `RELEASE_HOLDS` job (scheduler tick) moving cleared CREDITs `pending→available`; implement the reversal policy (reduce `pending` then `available`, remainder to `receivable` via CLAWBACK) so no balance goes negative, and expose `receivable` in the wallet.
     - _Requirements: 8.3, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 5, 12_
+
+  - [ ] 14.3 Customer experience: sign-in/register form, private `Your cashback` panel before the home hero/grid, Bybit UID form/status, per-asset balances/freshness, paginated wallet history, and visible-tab polling. Admin gets upload/preview/publish and ownership-review UI. Real HTTP/UI verification pending.
+  - Verification: parser/money unit tests and isolated PostgreSQL integration cover migration, UID ownership, idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection, account isolation and expired-owner rollback. Deployment/live Bybit data validation remain outside these completed code tasks.
 
 - [ ] 15. Withdrawal flow (reserved balance + cancel + event audit)
   - Implement `withdrawalService` + `POST /api/me/withdrawals`, `POST /api/me/withdrawals/:id/cancel`, `GET /api/me/withdrawals`, and `POST /api/admin/withdrawals/:id/decision`.
@@ -285,7 +290,7 @@ flowchart TD
   - Server-side authz on every non-public route; customer scope from session only; private bucket credentials limited to web(write)/worker(read); secrets only in env/secret store (no public-prefixed); Postgres reachable only from web/worker; ensure admin/customer APIs require auth before shipping.
   - _Requirements: 3.3, 6.2; Design: Security_
 
-- [ ] 18. Lightweight test overview + critical invariant checks
+- [-] 18. Lightweight test overview + critical invariant checks
   - Keep testing light: a thin smoke check that the app boots and key paths respond (public browse → get link → redirect records a click; admin login; seed import runs).
   - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two customers verifying the same UID (one VERIFIED, one REJECTED/flagged); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; two concurrent withdrawals cannot both reserve the same balance. No exhaustive suite.
   - _Requirements: 5.3, 6.8, 6.9, 7.8, 9.3; Design: Testing Strategy, Correctness Properties 1-11_

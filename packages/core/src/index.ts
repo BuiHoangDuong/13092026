@@ -3,3 +3,5 @@ export * from "./services/click.js";
 export * from "./services/auth.js";
 export * from "./services/jobs.js";
 export * from "./services/imports.js";
+export * from "./services/cashback.js";
+export * from "./services/bybit-parser.js";
