@@ -118,6 +118,41 @@ export const withdrawalSchema = z.object({
 export const withdrawalsResponseSchema = z.object({ withdrawals: z.array(withdrawalSchema), nextCursor: z.string().nullable() });
 export type WithdrawalsResponse = z.infer<typeof withdrawalsResponseSchema>;
 
+export const adminAnalyticsResponseSchema = z.object({
+  generatedAt: z.iso.datetime(), rangeDays: z.number().int().min(1).max(90), totalClicks: z.number().int().nonnegative(),
+  clicksByDay: z.array(z.object({ day: z.iso.date(), clicks: z.number().int().nonnegative() })),
+  links: z.array(z.object({ linkId: z.string(), exchangeId: z.string(), exchange: z.string(), destination: z.string(), clicks: z.number().int().nonnegative() })),
+  exchanges: z.array(z.object({ exchangeId: z.string(), exchange: z.string(), clicks: z.number().int().nonnegative() })),
+  attribution: z.array(z.object({
+    exchangeId: z.string(), exchange: z.string(), attributedRecords: z.number().int().nonnegative(),
+    unattributedRecords: z.number().int().nonnegative(), attributedCommission: decimalStringSchema,
+    unattributedCommission: decimalStringSchema, creditedCashback: decimalStringSchema
+  }))
+});
+export type AdminAnalyticsResponse = z.infer<typeof adminAnalyticsResponseSchema>;
+
+export const adminSyncStatusResponseSchema = z.object({
+  generatedAt: z.iso.datetime(), apiSync: z.object({ enabled: z.boolean(), state: z.enum(["DISABLED", "IDLE", "RUNNING", "FAILED"]) }),
+  lastSuccessfulImportAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable(),
+  jobs: z.array(z.object({ state: z.enum(["PENDING", "CLAIMED", "DONE", "FAILED"]), count: z.number().int().nonnegative() })),
+  imports: z.array(z.object({
+    id: z.string(), exchangeId: z.string(), exchange: z.string(), rootAccount: z.string(),
+    status: z.enum(["UPLOADED", "PARSING", "PREVIEW", "COMMITTING", "PUBLISHED", "FAILED"]),
+    createdAt: z.iso.datetime(), publishedAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable()
+  }))
+});
+export type AdminSyncStatusResponse = z.infer<typeof adminSyncStatusResponseSchema>;
+
+export const adminAccountActivityResponseSchema = z.object({
+  account: z.object({ id: z.string(), uid: z.string(), exchangeId: z.string(), exchange: z.string(), boundEmail: z.string().nullable(), createdAt: z.iso.datetime() }),
+  activity: z.array(z.object({
+    id: z.string(), kind: z.enum(["COMMISSION", "WALLET", "WITHDRAWAL"]), occurredAt: z.iso.datetime(),
+    asset: z.string(), amount: decimalStringSchema, status: z.string(), detail: z.string().nullable()
+  })),
+  nextCursor: z.string().nullable()
+});
+export type AdminAccountActivityResponse = z.infer<typeof adminAccountActivityResponseSchema>;
+
 export const importMetadataSchema = z.object({
   exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),
   periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string().trim().min(1).max(100),

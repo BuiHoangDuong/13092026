@@ -290,7 +290,7 @@ flowchart TD
   - _Requirements: 6.7, 6.8, 6.9, 7.5, 7.8; Design: Key flows/import, Data Models, Correctness Properties 1, 7, 9_
   - Bybit normalized v1 dedup keys are defined in `bybit-parser.ts` (root + transaction ID + asset, or root + UID + asset + exact UTC period). Partial overlaps and older reports are rejected; corrections use the original identity. Native export identity mapping still needs a real sample.
 
-- [x] ~~12. UID linking + verification (Bybit MVP)~~ **SUPERSEDED by Task 22 (v0.6/v0.7)**
+- [x] 12. UID linking + verification (Bybit MVP)~~ **SUPERSEDED by Task 22 (v0.6/v0.7)**
   - ~~12.1 `POST/GET /api/me/uids`, `UidLink(PENDING_VERIFICATION)`.~~ Removed: there is no
     customer to link a UID to. A `UidAccount` is created directly by attribution (Task 22).
   - ~~12.2 Admin-approved ownership verification via `ownershipApprovedAt` + partial unique
@@ -357,16 +357,16 @@ flowchart TD
     - _Requirements: 8.1, 8.5, 8.6; Design: Cashback engine, Data Models_
   - [x] 14.2 Implement `RELEASE_HOLDS` job (scheduler tick) moving cleared CREDITs `pending→available`; implement the reversal policy (reduce `pending` then `available`, remainder to `receivable` via CLAWBACK) so no balance goes negative, and expose `receivable` in the wallet.
     - _Requirements: 8.3, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 5, 12_
-  - [x] ~~14.3 Customer experience: sign-in/register form, private "Your cashback" panel...~~
+  - [x] 14.3 Customer experience: sign-in/register form, private "Your cashback" panel...~~
     **SUPERSEDED by Task 22.** What landed here (`login-form.tsx`, `cashback-panel.tsx`,
     `cashback-dashboard.tsx`, the UID-link form, admin ownership-review UI in
     `bybit-operations.tsx`) is deleted, not migrated — v0.6/v0.7 has no customer session to
     build a panel around. Kept struck through per spec governance (§4).
-  - [x] ~~14.3a Anonymous quick-lookup widget (boolean, Requirement 1.6–1.8)~~
+  - [x] 14.3a Anonymous quick-lookup widget (boolean, Requirement 1.6–1.8)
     **SUPERSEDED by Task 23.** The Hybrid design (boolean-only response, register CTA) is
     replaced by a lookup that returns real `pending`/`available` amounts with no account
     step. `LookupAttempt` is renamed/generalized to `RateLimitCounter` (Task 22).
-  - [x] ~~14.3b Account UX gaps (username, `/me/uids` route, no-reset-password notice)~~
+  - [x] 14.3b Account UX gaps (username, `/me/uids` route, no-reset-password notice)
     **SUPERSEDED.** There is no username, no `/me/uids`, no sign-in screen — see Task 22
     for the removal and Task 25 for the withdrawal UI that replaces this scope.
   - Verification: parser/money unit tests and isolated PostgreSQL integration cover migration, idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection, and expired-owner rollback. Deployment/live Bybit data validation remain outside these completed code tasks. Account-isolation checks specifically (Customer A cannot read Customer B) are superseded by Task 25's UID-session isolation checks.
@@ -430,10 +430,9 @@ flowchart TD
     Resend failure leaves the `EmailOtp` row unmarked-as-sent.
   - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7, 15.8, 15.10, 15.11, 16.1, 16.2, 16.3, 16.4, 16.5, 16.6; Design: Key flows/Email OTP binding & UID session, core services (`otpService`, `uidSessionService`, `emailPort`), Data Models (`EmailOtp`, `UidSession`), Correctness Properties 16, 17_
 
-- [-] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
-- [-] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
-  - **Largely implemented.** Service, API routes, and core UI all exist. What remains is
-    the env-var documentation (25.8) and integration test coverage (25.9), and Task 26 (UI upgrade).
+- [x] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
+  - **Implemented and verified.** Service, API routes, core UI, env documentation, and
+    isolated PostgreSQL integration coverage are complete. Task 26 supplies the UI upgrade.
   - [x] 25.1 `withdrawalService` in `packages/core/src/services/withdrawals.ts`: `requestWithdrawal`
     (amounts/receivable/address validation, `isFirst` detection, auto-approve vs UNDER_REVIEW,
     `WITHDRAWAL_RESERVE` wallet entry, two `WithdrawalEvent` rows), `cancelWithdrawal`,
@@ -457,14 +456,17 @@ flowchart TD
     `WITHDRAWAL_ROUTES` (JSON, e.g. `{"USDT":["TRON","ETHEREUM"]}`),
     `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` (JSON, e.g. `{"USDT":"100.00"}`).
     Already present in `.env.example` with clear comments — confirmed.
-  - [ ] 25.9 Integration test coverage for the core acceptance criteria:
+  - [x] 25.9 Integration test coverage for the core acceptance criteria:
     first withdrawal → `UNDER_REVIEW` regardless of amount; second (same amount) → `AUTO_APPROVED`;
     two concurrent requests against the same available balance cannot both reserve it; cancel after
     `PAID` is rejected; every transition has a matching `WithdrawalEvent`.
-    Add as a new section in `scripts/test-bybit-integration.mjs` after the existing lease-fencing checks.
+    Added after the lease-fencing checks in `scripts/test-bybit-integration.mjs`. Verified on
+    2026-09-17 against a dedicated test database in an isolated `cashback_test_*` schema:
+    first-review, second-withdrawal auto-approval, paid-cancel rejection, audit events,
+    receivable blocking, and concurrent reservation safety all pass.
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11; Design: Key flows/withdrawal, Data Models, Correctness Properties 6, 10, 12_
 
-- [ ] 26. Cherry-pick UI components from the reference project (`cashback/`)
+- [x] 26. Cherry-pick UI components from the reference project (`cashback/`)
   - The `cashback/` folder (a local, gitignored copy of `satnaing/shadcn-admin`, MIT
     licensed) is a **Vite SPA with no backend** — its OTP form's "verify" handler is a
     `setTimeout` + toast, not a real check. Copy component *files* only; every verify/send
@@ -490,10 +492,19 @@ flowchart TD
   - Verify: `pnpm lint`/`typecheck`/`build` clean after each copied file; the admin
     withdrawal queue paginates via `data-table` instead of loading all rows; approving a
     withdrawal requires confirming a dialog first.
+  - **Verified 2026-09-17:** `input-otp` is wired to real Task 24 verification; TanStack
+    data-table components drive the withdrawal queue and import-batch list; approve/reject/
+    mark-paid use `ConfirmDialog`; only consumed primitives/dependencies were added. Web
+    lint, typecheck, and production build pass.
   - _Requirements: none directly (tooling/UX only); Design: Components/apps/web_
 
-- [ ] 16. Admin analytics & operations dashboard
+- [x] 16. Admin analytics & operations dashboard
   - Implement `GET /api/admin/analytics` (click metrics by link/exchange/time from internal data), `GET /api/admin/accounts/:id/activity` (paginated, per UID/account), and `GET /api/admin/sync-status`; 30s polling when tab visible, 5s while a batch processes; admin/private responses set `Cache-Control: private, no-store`; no secrets/raw reports leaked; views for attributed vs unattributed commission and the withdrawal queue.
+  - **Verified 2026-09-17:** all three admin endpoints use the admin guard/private response
+    helper; dashboard shows click time/link/exchange aggregates, attribution split, jobs,
+    import/source freshness and the withdrawal queue; visible-tab polling is 30 seconds and
+    active import polling is 5 seconds. Isolated integration assertions cover analytics,
+    sync-status raw-report exclusion, and paginated UID activity. Lint/typecheck/build pass.
   - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6; Design: Components/apps/web, API contracts_
 
 ### Phase 3 — Hardening
@@ -575,3 +586,4 @@ flowchart TD
 | 2026-09-16 | tasks.md | Ghi rõ Task 15 mới ở mức 0%: `Withdrawal`/`WithdrawalEvent` chỉ là khai báo Prisma, chưa có `withdrawalService` hay route `/api/me/withdrawals*`, `/api/admin/withdrawals*` | Sửa nhận định sai rằng API rút tiền đã xong; đây là phần chạm tiền thật nên không được tính là đã có | updated |
 | 2026-09-16 | tasks.md | **Chuyển sang UID-first (v2.0).** Đánh Task 12 và 14.3a/14.3b là superseded (strikethrough, không xoá); sửa Task 13 để attribution upsert `UidAccount` thay vì tra `UidLink`; sửa Task 14.1/14.3 theo model mới; thêm Task 22 (re-key Customer/UidLink → UidAccount, xoá route/service/UI cũ, viết lại `scripts/test-bybit-integration.mjs`), Task 23 (lookup trả amount thật theo exchange+UID), Task 24 (OTP qua Resend + UidSession 30 phút), Task 25 (withdrawal flow — thay Task 15 cũ, thêm rule lệnh rút đầu luôn UNDER_REVIEW), Task 26 (cherry-pick UI từ `cashback/` — input-otp, data-table, confirm-dialog; liệt kê rõ không lấy TanStack Router/Clerk/vite config vì đó chỉ là stub UI không có backend thật); cập nhật Task Dependency Graph, Task 17/18, Notes | Đồng bộ toàn bộ tasks.md với requirements v0.6 và design v0.7 (UID-first, Resend OTP, first-claimant-wins) | added |
 | 2026-09-16 | tasks.md | Thêm Task 5.6 (5.6.1–5.6.6): hiển thị logo sàn trên offer tile bằng asset PNG lưu trong repo tại `apps/web/public/exchange-logos/`, hoàn tất mapping `logoUrl` còn dở trong `core`, bỏ `logoUrl` khỏi `adminExchangeCreateSchema`, set `logoUrl` trong seed, và thứ tự deploy (push → migrate → reseed) | Triển khai `Exchange.logoUrl` vừa chốt ở design v0.5 theo hướng ảnh local, không hot-link URL online | added |
+| 2026-09-17 | tasks.md | Hoàn thành Task 25.9/25, Task 26 và Task 16: integration withdrawal, OTP/data-table/confirm-dialog, ba API dashboard admin, analytics/sync/activity UI và polling theo visibility/trạng thái batch | Đồng bộ tiến độ với code đã lint, typecheck, build và integration-test trên schema test cô lập | updated |

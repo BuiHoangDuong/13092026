@@ -38,6 +38,9 @@ export async function withAdmin(handler: (principal: Principal) => Promise<Respo
       const message = error instanceof Error ? error.message : "Import operation failed";
       return adminJson({ error: { code: domainCode, message } }, { status: domainCode === "IMPORT_NOT_FOUND" ? 404 : 400 });
     }
+    if (error instanceof Error && ["INVALID_CURSOR", "ACCOUNT_NOT_FOUND"].includes(error.message)) {
+      return adminJson({ error: { code: error.message, message: error.message === "ACCOUNT_NOT_FOUND" ? "UID account not found" : "Invalid activity cursor" } }, { status: error.message === "ACCOUNT_NOT_FOUND" ? 404 : 400 });
+    }
     if (error instanceof Error && (error.message === "UNAUTHENTICATED" || error.message === "UNAUTHORIZED_ADMIN")) {
       return adminJson({ error: { code: "UNAUTHORIZED", message: "Admin authentication required" } }, { status: 401 });
     }

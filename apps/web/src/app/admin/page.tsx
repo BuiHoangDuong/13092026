@@ -4,6 +4,7 @@ import { sessionToken } from "@/lib/auth";
 import { AdminContentManager } from "./admin-content-manager";
 import { BybitOperations } from "./bybit-operations";
 import { WithdrawalQueue } from "./withdrawal-queue";
+import { AnalyticsDashboard } from "./analytics-dashboard";
 import { db } from "@cashback/db";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ export default async function AdminPage() {
       <p className="mt-4 max-w-2xl text-lg text-muted-foreground">
         Create, edit, publish, or unpublish exchanges, offers, referral links, and guides.
       </p>
+      <AnalyticsDashboard />
       <BybitOperations exchangeId={bybit?.id ?? null} />
       <WithdrawalQueue />
       <AdminContentManager />

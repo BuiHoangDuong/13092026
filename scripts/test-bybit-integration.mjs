@@ -9,8 +9,8 @@ import { PrismaClient } from '../packages/db/dist/generated/client/index.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 dotenv.config({ path: path.join(root, '.env'), quiet: true });
-const originalUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-if (!originalUrl) throw new Error('Set TEST_DATABASE_URL or DATABASE_URL for isolated integration tests');
+const originalUrl = process.env.TEST_DATABASE_URL;
+if (!originalUrl) throw new Error('Set TEST_DATABASE_URL explicitly to a dedicated test database for integration tests');
 const schema = `cashback_test_${randomUUID().replaceAll('-', '')}`;
 assert.match(schema, /^cashback_test_[a-f0-9]{32}$/);
 const url = new URL(originalUrl); url.searchParams.set('schema', schema);
@@ -93,7 +93,7 @@ try {
   assert.equal((await core.getImportPreview(malformed)).batch.status, 'FAILED');
   await assert.rejects(() => core.createImportBatch(base, { bytes: Buffer.from('dummy'), extension: 'xlsx' }));
   // Lost leases roll back every business write, even if the handler began with a valid lease.
-  const leaseJob = await db.job.create({ data: { type: 'ATTRIBUTE', payload: {} } });
+  const leaseJob = await db.job.create({ data: { type: 'ATTRIBUTE', payload: {}, runAfter: new Date(Date.now() - 1000) } });
   const claimed = await core.claimNextJob(120, 'lease-test'); assert.equal(claimed.id, leaseJob.id);
   await assert.rejects(() => core.withJobLease({ id: claimed.id, lockedBy: claimed.lockedBy }, async tx => {
     await tx.exchange.update({ where: { id: exchange.id }, data: { name: 'Must roll back' } });
@@ -177,12 +177,12 @@ try {
   console.log('PASS: cancel releases reserved balance with event');
 
   // Cancel after PAID is rejected.
-  await assert.rejects(() => core.cancelWithdrawal(alice.id, w1.id), /INVALID_TRANSITION/, 'Cancel after PAID must be rejected');
+  await assert.rejects(() => core.cancelWithdrawal(alice.id, w1.id), error => error?.code === 'INVALID_TRANSITION', 'Cancel after PAID must be rejected');
   console.log('PASS: cancel after PAID is rejected');
 
   // Receivable > 0 blocks new withdrawals.
   await db.wallet.updateMany({ where: { uidAccountId: alice.id }, data: { receivable: '5' } });
-  await assert.rejects(() => core.requestWithdrawal(claimant, { asset: 'USDT', amount: '1', network: 'TRON', address: tronAddress }), /RECEIVABLE_OUTSTANDING/, 'Withdrawal blocked while receivable > 0');
+  await assert.rejects(() => core.requestWithdrawal(claimant, { asset: 'USDT', amount: '1', network: 'TRON', address: tronAddress }), error => error?.code === 'RECEIVABLE_OUTSTANDING', 'Withdrawal blocked while receivable > 0');
   await db.wallet.updateMany({ where: { uidAccountId: alice.id }, data: { receivable: '0' } });
   console.log('PASS: receivable blocks withdrawal');
 
@@ -195,18 +195,28 @@ try {
       core.requestWithdrawal(claimant, { asset: 'USDT', amount: halfStr, network: 'TRON', address: tronAddress }),
       core.requestWithdrawal(claimant, { asset: 'USDT', amount: halfStr, network: 'TRON', address: tronAddress })
     ]);
-    const bothSucceeded = r1.status === 'fulfilled' && r2.status === 'fulfilled';
-    if (bothSucceeded) {
-      // Race resolved; both succeeded; verify reserved does not exceed original available.
-      const walletFinal = await core.getWallet(alice.id);
-      assert.ok(parseFloat(walletFinal.balances[0].reserved) <= parseFloat(currentAvailable) + 0.0001, 'Reserved cannot exceed original available — double-spend detected');
-    }
-    // At least one must succeed (both rejected would be a different bug).
-    assert.ok(r1.status === 'fulfilled' || r2.status === 'fulfilled', 'At least one concurrent request must succeed');
+    assert.equal([r1, r2].filter(result => result.status === 'fulfilled').length, 1, 'Exactly one concurrent request must reserve the balance');
+    const walletFinal = await core.getWallet(alice.id);
+    assert.ok(parseFloat(walletFinal.balances[0].reserved) <= parseFloat(currentAvailable) + 1.0000001, 'Reserved cannot exceed the balance available before this race plus the existing second withdrawal');
     console.log('PASS: concurrent withdrawal requests — no double-spend');
   }
 
   console.log('PASS: withdrawal flow — first-review, auto-approve, cancel, audit trail, receivable block, concurrent safety');
+
+  // Admin dashboard reads aggregate internal data without exposing raw report payloads.
+  await db.clickEvent.createMany({ data: [{ linkId: referral.id }, { linkId: referral.id }] });
+  const analytics = await core.getAdminAnalytics(30);
+  assert.equal(analytics.totalClicks, 2);
+  assert.equal(analytics.links.find(link => link.linkId === referral.id)?.clicks, 2);
+  assert.ok(analytics.attribution.some(item => item.exchangeId === exchange.id && item.attributedRecords > 0));
+  const syncStatus = await core.getAdminSyncStatus();
+  assert.equal(syncStatus.apiSync.state, 'DISABLED');
+  assert.ok(syncStatus.imports.some(batch => batch.status === 'PUBLISHED'));
+  assert.equal(JSON.stringify(syncStatus).includes('originalFile'), false, 'Sync status must not expose raw reports');
+  const activity = await core.getAdminAccountActivity(alice.id, undefined, 10);
+  assert.equal(activity.account.uid, '00123');
+  assert.ok(activity.activity.some(item => item.kind === 'WITHDRAWAL'));
+  console.log('PASS: admin analytics, sync status and UID activity are sourced from internal data');
 } finally {
   await db?.$disconnect();
   await control.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

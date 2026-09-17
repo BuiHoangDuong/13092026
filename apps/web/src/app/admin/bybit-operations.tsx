@@ -1,6 +1,8 @@
 "use client";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
 import type { ImportPreview } from "@cashback/contracts";
+import { DataTable, DataTableColumnHeader } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -13,6 +15,7 @@ export function BybitOperations({ exchangeId }: { exchangeId: string | null }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const processing = batches.some(batch => ["UPLOADED", "PARSING", "COMMITTING"].includes(batch.status));
   const refresh = useCallback(async () => {
     try {
       const reports = await fetch("/api/admin/imports", { cache: "no-store" }).then(json);
@@ -20,7 +23,7 @@ export function BybitOperations({ exchangeId }: { exchangeId: string | null }) {
       if (selected) setPreview(await fetch(`/api/admin/imports/${selected}`, { cache: "no-store" }).then(json));
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to load operations"); }
   }, [selected]);
-  useEffect(() => { void refresh(); const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000); return () => clearInterval(timer); }, [refresh]);
+  useEffect(() => { void refresh(); const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, processing ? 5000 : 30000); return () => clearInterval(timer); }, [processing, refresh]);
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
     const fields = new FormData(event.currentTarget);
@@ -39,6 +42,12 @@ export function BybitOperations({ exchangeId }: { exchangeId: string | null }) {
     try { await fetch(`/api/admin/imports/${selected}/commit`, { method: "POST" }).then(json); await refresh(); }
     catch (e) { setError(e instanceof Error ? e.message : "Publish failed"); } finally { setBusy(false); }
   }
+  const batchColumns = useMemo<ColumnDef<Batch>[]>(() => [
+    { accessorKey: "rootAccount", header: ({ column }) => <DataTableColumnHeader column={column} title="Root account" />, cell: ({ row }) => <Button type="button" variant="link" className="h-auto p-0" onClick={() => setSelected(row.original.id)}>{row.original.rootAccount}</Button> },
+    { accessorKey: "status", filterFn: "equals", header: ({ column }) => <DataTableColumnHeader column={column} title="Status" /> },
+    { accessorKey: "periodStart", header: ({ column }) => <DataTableColumnHeader column={column} title="Period start" />, cell: ({ row }) => row.original.periodStart.slice(0, 10) },
+    { accessorKey: "periodEnd", header: ({ column }) => <DataTableColumnHeader column={column} title="Period end" />, cell: ({ row }) => row.original.periodEnd.slice(0, 10) }
+  ], []);
   return <section className="mt-10 space-y-6 rounded-xl border border-border bg-card p-6">
     <h2 className="text-2xl font-semibold">Bybit cashback operations</h2>
     <p className="text-sm text-muted-foreground">Upload normalized Bybit CSV v1: uid,asset,commission. Optional transaction_id,occurred_at,referral_link_id. Commission is affiliate earnings in the stated currency, not trading volume or customer fees. Review before publishing.</p>
@@ -52,7 +61,7 @@ export function BybitOperations({ exchangeId }: { exchangeId: string | null }) {
       <label className="space-y-1 text-sm">CSV file<Input name="file" type="file" accept=".csv,text/csv" required /></label>
       <Button type="submit" disabled={busy}>Upload for preview</Button>
     </form>}
-    <div className="grid gap-5 lg:grid-cols-2"><div><h3 className="mb-3 font-semibold">Recent reports</h3><ul className="max-h-80 space-y-2 overflow-y-auto">{batches.map(batch => <li key={batch.id}><button className="w-full rounded border border-border p-3 text-left text-sm hover:bg-muted" onClick={() => setSelected(batch.id)}>{batch.rootAccount} · {batch.status}<span className="block text-xs text-muted-foreground">{batch.periodStart.slice(0, 10)} — {batch.periodEnd.slice(0, 10)}</span></button></li>)}</ul></div>
+    <div className="grid gap-5 lg:grid-cols-2"><div><h3 className="mb-3 font-semibold">Recent reports</h3><DataTable data={batches} columns={batchColumns} searchKey="rootAccount" searchPlaceholder="Filter reports..." filters={[{ columnId: "status", title: "Status", options: ["UPLOADED","PARSING","PREVIEW","COMMITTING","PUBLISHED","FAILED"].map(value => ({ value, label: value })) }]} empty="No import reports." /></div>
       <div>{preview ? <><h3 className="font-semibold">Preview: {preview.batch.status}</h3><p className="mt-2 text-sm">{preview.preview.totalRows} rows · {preview.preview.flaggedRows} flagged</p><pre className="mt-3 max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-3 text-xs">{JSON.stringify({ totals: preview.batch.totals, flaggedRows: preview.preview.rows }, null, 2)}</pre><Button className="mt-3" disabled={busy || preview.batch.status !== "PREVIEW" || preview.preview.flaggedRows > 0} onClick={() => void publish()}>Publish verified report</Button><p className="mt-2 text-xs text-muted-foreground">Publishing applies the report to UID accounts. Corrections replace the same period/transaction; partial overlaps are rejected.</p></> : <p className="text-sm text-muted-foreground">Select a report to review its status and validation results.</p>}</div>
     </div>
   </section>;
