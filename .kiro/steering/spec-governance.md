@@ -73,3 +73,43 @@ Ví dụ:
   chưa rõ, hoặc khi thay đổi làm mất một tính năng người dùng đã yêu cầu.
 - Khi phát hiện code lệch spec, nêu rõ và đề xuất: sửa code cho khớp spec, hay cập nhật
   spec cho khớp thực tế — không tự ý chọn hướng làm giảm phạm vi.
+
+## 7. Database usage policy (bắt buộc)
+
+Workspace này KHÔNG dùng database local. Mọi thao tác dev/test và production phải theo
+đúng ranh giới dưới đây.
+
+### 7.1. Test / development
+
+- Trong giai đoạn pre-golive (xem `production-safety` steering), workspace dùng CHÍNH DB
+  Railway hosted (`DATABASE_URL`) làm test/dev DB vì nó chỉ chứa dữ liệu seed/fake. Cho phép
+  migrate, seed, reset, `prisma db push`, chạy integration test và backup/restore drill
+  trực tiếp trên DB này mà không cần hỏi từng lần.
+- Vẫn KHÔNG dùng: Postgres local (Docker/Postgres.app/service Windows) hay
+  `localhost`/`127.0.0.1`, và KHÔNG dùng SQLite hay DB thay thế nào khác. Nếu cần một DB
+  test riêng biệt, tạo trên Railway chứ không tạo local.
+- Nếu `TEST_DATABASE_URL` không được set, integration test dùng `DATABASE_URL` (DB Railway
+  pre-golive) — không fallback sang local.
+- Sau go-live thật, mục này sẽ được siết lại về "chỉ dùng Postgres test tách biệt".
+
+### 7.2. Production
+
+- Với production database, agent **chỉ được thực hiện thao tác đọc** (`SELECT`, `EXPLAIN`,
+  `\d`, `information_schema`...). Đọc để chẩn đoán, kiểm chứng dữ liệu, viết migration
+  plan là OK.
+- Mọi thao tác ghi hoặc thay đổi cấu trúc trên production PHẢI do người dùng trực tiếp
+  xác nhận và (mặc định) do người dùng tự chạy. Bao gồm nhưng không giới hạn:
+  - `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `MERGE`, `COPY ... FROM`.
+  - `ALTER`, `CREATE`, `DROP`, `RENAME`, thay đổi index/constraint/trigger/role/policy.
+  - `prisma migrate deploy`, `prisma db push`, `prisma db execute` trên URL production.
+  - Chạy script một lần (`*.mjs`, `*.ts`, `*.sql`, `railway run ...`) ghi vào production DB.
+- Quy trình đúng khi cần thay đổi production:
+  1. Agent mô tả rõ lệnh/script sẽ chạy và tác động dự kiến.
+  2. Chờ người dùng xác nhận tường minh ("OK", "chạy đi"...).
+  3. Ưu tiên để người dùng tự thực thi; nếu người dùng yêu cầu agent chạy, agent chạy
+     đúng lệnh đã được duyệt, không tự "mở rộng" phạm vi.
+- Không bao giờ dùng credential production để chạy test suite, seed, hoặc bất kỳ tác vụ
+  dev nào — kể cả khi "chỉ để thử".
+
+Quy tắc này bổ sung cho `production-safety` steering; khi hai bên chồng lấn, chọn diễn
+giải nghiêm ngặt hơn.

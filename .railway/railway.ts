@@ -8,7 +8,7 @@ export default defineRailway(() => {
   const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "sfo", sizeMB: 5000 });
   const _cashbackworker = service("@cashback/worker", {
     source: _13092026,
-    build: { buildCommand: "pnpm --filter @cashback/worker... build", buildEnvironment: "V3", builder: "RAILPACK", watchPatterns: ["/apps/worker/**"] },
+    build: { buildCommand: "pnpm --filter @cashback/worker... build", buildEnvironment: "V3", builder: "RAILPACK", watchPatterns: ["/apps/worker/**", "/packages/core/**", "/packages/db/**", "/packages/contracts/**", "/pnpm-lock.yaml", "/pnpm-workspace.yaml"] },
     start: "pnpm --filter @cashback/worker start",
     replicas: { "sfo": 1 },
     networking: { privateNetworkEndpoint: "cashbackworker" },
@@ -16,8 +16,11 @@ export default defineRailway(() => {
   });
   const _cashbackweb = service("@cashback/web", {
     source: _13092026,
-    build: { buildCommand: "pnpm --filter @cashback/web... build", buildEnvironment: "V3", builder: "RAILPACK", watchPatterns: ["/apps/web/**"] },
+    build: { buildCommand: "pnpm --filter @cashback/web... build", buildEnvironment: "V3", builder: "RAILPACK", watchPatterns: ["/apps/web/**", "/packages/core/**", "/packages/db/**", "/packages/contracts/**", "/pnpm-lock.yaml", "/pnpm-workspace.yaml"] },
+    preDeploy: "pnpm --filter @cashback/db db:migrate",
     start: "pnpm --filter @cashback/web start",
+    healthcheck: "/api/health",
+    healthcheckTimeout: 120,
     replicas: { "sfo": 1 },
     networking: { privateNetworkEndpoint: "cashbackweb" },
     env: { DATABASE_URL: Postgres.env.DATABASE_URL },

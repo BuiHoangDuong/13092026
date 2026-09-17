@@ -36,6 +36,12 @@ not in the dashboard:
 | Web | `pnpm --filter @cashback/web... build` | `pnpm --filter @cashback/web start` |
 | Worker | `pnpm --filter @cashback/worker... build` | `pnpm --filter @cashback/worker start` |
 
+The web service runs `pnpm --filter @cashback/db db:migrate` as its single Railway
+pre-deploy command. Railway starts the new web deployment only after migrations succeed;
+the worker does not run a second migration command. `/api/health` is the web health check
+and includes database reachability, oldest pending-job age, worker heartbeat, and the
+24-hour import failure rate without exposing secrets or report contents.
+
 The trailing `...` in each build filter includes all workspace dependencies
 and builds them before the app. This also runs `prisma generate` as part of the database
 package build. A filter without `...` only builds the app and fails on a fresh deployment

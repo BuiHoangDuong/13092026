@@ -153,6 +153,16 @@ export const adminAccountActivityResponseSchema = z.object({
 });
 export type AdminAccountActivityResponse = z.infer<typeof adminAccountActivityResponseSchema>;
 
+export const operationalHealthResponseSchema = z.object({
+  ok: z.boolean(), status: z.enum(["OK", "DEGRADED"]), service: z.literal("web"), checkedAt: z.iso.datetime(),
+  database: z.object({ ok: z.boolean() }),
+  queue: z.object({ pending: z.number().int().nonnegative(), claimed: z.number().int().nonnegative(), failed: z.number().int().nonnegative(), oldestPendingAgeSeconds: z.number().nonnegative().nullable() }),
+  worker: z.object({ status: z.enum(["HEALTHY", "STALE", "MISSING"]), lastHeartbeatAt: z.iso.datetime().nullable(), ageSeconds: z.number().nonnegative().nullable() }),
+  imports: z.object({ windowHours: z.literal(24), total: z.number().int().nonnegative(), failed: z.number().int().nonnegative(), errorRate: z.number().min(0).max(1) }),
+  alerts: z.array(z.enum(["OLDEST_JOB", "WORKER_HEARTBEAT", "IMPORT_ERROR_RATE"]))
+});
+export type OperationalHealthResponse = z.infer<typeof operationalHealthResponseSchema>;
+
 export const importMetadataSchema = z.object({
   exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),
   periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string().trim().min(1).max(100),

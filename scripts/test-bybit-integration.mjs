@@ -66,6 +66,35 @@ try {
   assert.equal(alice.boundEmail, null, 'Reports credit without an email claimant');
   assert.equal((await core.getWallet(alice.id)).balances[0].pending, '30.0000000000');
   console.log('PASS: UID-first credit without claimant');
+
+  // Two attribution workers racing on the same published UID create one account and one credit.
+  const racePeriodStart = new Date('2026-08-01T00:00:00Z');
+  const racePeriodEnd = new Date('2026-08-01T23:59:59Z');
+  const raceBatch = await db.importBatch.create({ data: {
+    exchangeId: exchange.id, rootAccount: 'race-root', reportType: 'AGGREGATE', periodStart: racePeriodStart,
+    periodEnd: racePeriodEnd, sourceTz: 'UTC', fileRef: 'test:race', status: 'PUBLISHED', publishedAt: new Date()
+  } });
+  const raceRecord = await db.commissionRecord.create({ data: {
+    exchangeId: exchange.id, uid: 'race-uid', asset: 'USDT', dedupKey: 'race-uid:USDT:2026-08-01',
+    reportType: 'AGGREGATE', rootAccount: 'race-root', periodStart: racePeriodStart, periodEnd: racePeriodEnd,
+    reconciledAmount: '10'
+  } });
+  const raceVersion = await db.commissionVersion.create({ data: { commissionId: raceRecord.id, batchId: raceBatch.id, amount: '10' } });
+  await db.commissionRecord.update({ where: { id: raceRecord.id }, data: { activeVersionId: raceVersion.id } });
+  const leaseUntil = new Date(Date.now() + 120_000);
+  const [raceJobA, raceJobB] = await Promise.all([
+    db.job.create({ data: { type: 'ATTRIBUTE', payload: { exchangeId: exchange.id }, state: 'CLAIMED', attempts: 1, lockedBy: 'race-a', leaseUntil } }),
+    db.job.create({ data: { type: 'ATTRIBUTE', payload: { exchangeId: exchange.id }, state: 'CLAIMED', attempts: 1, lockedBy: 'race-b', leaseUntil } })
+  ]);
+  await Promise.all([
+    core.attributeJob({ id: raceJobA.id, lockedBy: 'race-a' }, exchange.id),
+    core.attributeJob({ id: raceJobB.id, lockedBy: 'race-b' }, exchange.id)
+  ]);
+  const raceAccount = await db.uidAccount.findUniqueOrThrow({ where: { exchangeId_uid: { exchangeId: exchange.id, uid: 'race-uid' } } });
+  assert.equal(await db.uidAccount.count({ where: { exchangeId: exchange.id, uid: 'race-uid' } }), 1);
+  assert.equal(await db.walletEntry.count({ where: { wallet: { uidAccountId: raceAccount.id }, opKey: `attr:${raceVersion.id}` } }), 1);
+  console.log('PASS: concurrent attribution creates one UID account and one credit');
+
   await report('100');
   assert.equal((await core.getWallet(alice.id)).balances[0].pending, '30.0000000000', 'Reimport must not double credit');
   await db.exchange.update({ where: { id: exchange.id }, data: { defaultCashbackRate: '0.9' } });
@@ -217,6 +246,16 @@ try {
   assert.equal(activity.account.uid, '00123');
   assert.ok(activity.activity.some(item => item.kind === 'WITHDRAWAL'));
   console.log('PASS: admin analytics, sync status and UID activity are sourced from internal data');
+
+  await core.recordWorkerHeartbeat('integration-worker', true);
+  const health = await core.getOperationalHealth();
+  assert.equal(health.database.ok, true);
+  assert.equal(health.worker.status, 'HEALTHY');
+  assert.equal(typeof health.queue.pending, 'number');
+  assert.equal(typeof health.imports.errorRate, 'number');
+  assert.equal(JSON.stringify(health).includes('payload'), false, 'Health response must not expose job payloads');
+  await core.recordWorkerStopped('integration-worker');
+  console.log('PASS: operational health reports queue age, worker heartbeat and import error rate');
 } finally {
   await db?.$disconnect();
   await control.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

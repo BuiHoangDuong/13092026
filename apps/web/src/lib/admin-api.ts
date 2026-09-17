@@ -2,6 +2,7 @@ import { ZodError, type ZodType } from "zod";
 import { auth, PublicAccessError, type Principal } from "@cashback/core";
 import { NextResponse } from "next/server";
 import { sessionToken } from "./auth";
+import { sameOrigin } from "./uid-api";
 
 const privateHeaders = { "Cache-Control": "private, no-store" };
 
@@ -50,4 +51,11 @@ export async function withAdmin(handler: (principal: Principal) => Promise<Respo
     console.error(error);
     return adminJson({ error: { code: "INTERNAL_ERROR", message: "Internal server error" } }, { status: 500 });
   }
+}
+
+export function withAdminMutation(request: Request, handler: (principal: Principal) => Promise<Response>) {
+  return withAdmin(async principal => {
+    sameOrigin(request);
+    return handler(principal);
+  });
 }

@@ -365,3 +365,12 @@ model Job {
 
   @@index([state, runAfter])
 }
+
+model WorkerHeartbeat {
+  id         String   @id
+  startedAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  stoppedAt  DateTime?
+
+  @@index([lastSeenAt])
+}

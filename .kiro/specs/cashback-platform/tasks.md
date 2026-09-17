@@ -205,7 +205,7 @@ flowchart TD
     - Closes the earlier follow-up where `middleware.ts` hard-coded the `"vi"` prefix instead of reading the registry.
     - Verified: `pnpm --filter @cashback/web build` (tsc/eslint via Next's build step) compiles, typechecks, and lints clean; production build emits 13/13 static routes with no `/vi*` route in the output.
     - _Requirements: 4.1, 4.3, 4.5, 10.5; Design: Components/Language & i18n_
-  - [-] 5.6 Exchange logo images on offer tiles (local repo assets, no external URLs)
+  - [x] 5.6 Exchange logo images on offer tiles (local repo assets, no external URLs)
     - Added the nullable Prisma field and migration `202609160001_exchange_logo_url/migration.sql`; the prior in-flight changes described below were absent from the checkout.
     - [x] 5.6.1 Finish the in-flight `core` change. `PublicExchange` and `PublicOfferCard` in `packages/core/src/services/content.ts` already declare `logoUrl: string | null`, but the three mapping sites were left unchanged, so the package currently fails typecheck. Add `logoUrl: row.logoUrl ?? null` to the object returned from `listPublishedExchanges`, the same to `getPublishedExchange`, and `logoUrl: exchange.logoUrl` to the `exchange` object built inside `toOfferCard`.
       - _Requirements: 1.1, 1.2, 1.5; Design: Data Models, core services_
@@ -219,7 +219,7 @@ flowchart TD
       - _Requirements: 1.1, 1.2; Design: Components/apps/web (Exchange logo assets)_
     - [x] 5.6.5 Set `logoUrl` for the three seeded exchanges in `packages/db/prisma/seed.ts` (`/exchange-logos/<slug>.png`), adding it to BOTH the `create` and `update` halves of the `exchange.upsert` so a re-seed backfills the existing rows.
       - _Requirements: 1.1; Design: Testing Strategy_
-    - [ ] 5.6.6 Verify locally, then deploy in the right order. Run `corepack pnpm --filter @cashback/web... build`, which also re-runs `prisma generate` so the Prisma client picks up the new column. Deploy order matters: push first so the built image contains both migration `202609160001_exchange_logo_url` and the logo files, then apply the migration and re-seed inside the deployed container (`railway ssh -s "@cashback/web" -- sh -c "cd packages/db && npx prisma migrate deploy"`, then the seed command), and confirm the tiles show real logos. The home route is dynamic (`ƒ /` in the build output), so no extra redeploy is needed after re-seeding. The `check-railway-deploy` skill has the SSH key setup, migration, and seed details.
+    - [x] 5.6.6 Verify locally, then deploy in the right order. Run `corepack pnpm --filter @cashback/web... build`, which also re-runs `prisma generate` so the Prisma client picks up the new column. Deploy order matters: push first so the built image contains both migration `202609160001_exchange_logo_url` and the logo files, then apply the migration and re-seed inside the deployed container (`railway ssh -s "@cashback/web" -- sh -c "cd packages/db && npx prisma migrate deploy"`, then the seed command), and confirm the tiles show real logos. The home route is dynamic (`ƒ /` in the build output), so no extra redeploy is needed after re-seeding. The `check-railway-deploy` skill has the SSH key setup, migration, and seed details.
       - Local verification (2026-09-16): `corepack pnpm --filter @cashback/web... build` and `lint` passed. All three PNGs decoded successfully. Production-server smoke with a fixture DB passed for home/catalog logo rendering, null-logo fallback, service/API mapping, and local/optimized image HTTP responses. No database writes were performed.
       - Deployment remains pending: push the build/assets/migration, then migrate and re-seed in Railway and verify the live tiles. Task 5.6.6 remains unchecked until this is done.
       - _Requirements: 1.1, 6.5; Design: Environments & deployment_
@@ -270,11 +270,11 @@ flowchart TD
     - Implemented per-claim `lockedBy` tokens, guarded heartbeat/failure writes, and atomic business-result + DONE commits fenced with `clock_timestamp()`. Expired/reclaimed owners roll back; retries include jitter; exhausted leases fail. Worker ticks no longer overlap. Verified against isolated PostgreSQL.
     - _Requirements: 12.3, 12.5; Design: Job queue design, Correctness Properties 8_
 
-- [-] 10. Report import: upload → parse → preview
+- [ ] 10. Report import: upload → parse → preview
   - [x] 10.1 Implement `POST /api/admin/imports`: authz, file type/size check, store original in private storage, create `ImportBatch` + PARSE job, return 202 + batchId (no in-request parsing).
     - Bybit MVP accepts normalized CSV v1 (bounded by `IMPORT_MAX_BYTES` and 10 MiB), stores the original privately as database bytes, and creates the batch/job atomically. This replaces container-local storage for new uploads so separate Railway web/worker services share durable input. Unsupported exchange/XLSX uploads return a clear validation error.
     - _Requirements: 6.1, 6.2; Design: Key flows/import_
-  - [-] 10.2 Implement `parserRegistry` + a first CSV/XLSX adapter interface distinguishing TRANSACTION vs AGGREGATE reports; no formula/macro execution; fall back to aggregate when transaction identity keys are missing.
+  - [ ] 10.2 Implement `parserRegistry` + a first CSV/XLSX adapter interface distinguishing TRANSACTION vs AGGREGATE reports; no formula/macro execution; fall back to aggregate when transaction identity keys are missing.
     - Done: `parserRegistry.bybit`, strict normalized CSV v1, transaction/aggregate identity, opaque UID and decimal parsing, no formula execution. Pending: native Bybit export mapping (needs a real sample), XLSX adapter. See `apps/web/docs/bybit-cashback.md`.
     - _Requirements: 6.4, 6.10, 6.11; Design: Components/core services_
   - [x] 10.3 Implement PARSE job: normalize (UID string, UTC timestamps + source tz, decimals), flag error/duplicate/unmapped/conflict rows into `StagingRow`, compute totals, set batch to PREVIEW.
@@ -349,7 +349,7 @@ flowchart TD
 
 ### Phase 2 — Lookup, wallet, withdrawals
 
-- [-] 14. Wallet balances + hold release
+- [x] 14. Wallet balances + hold release
   - [x] 14.1 Implement `walletService` and a wallet read returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
     - **Amended by Task 22:** the read moves from `GET /api/me/wallet` (session-scoped
       customer) to `GET /api/uid/wallet` (session-scoped `UidAccount`, Task 24). The
@@ -509,21 +509,79 @@ flowchart TD
 
 ### Phase 3 — Hardening
 
-- [ ] 17. Security hardening
+- [x] 17. Security hardening
   - Server-side authz on every non-public route; the acting `UidAccount` derived from the
     `UidSession` only, never a request parameter; private bucket credentials limited to
     web(write)/worker(read); secrets only in env/secret store (no public-prefixed,
     including `RESEND_API_KEY`); Postgres reachable only from web/worker; ensure admin and
     `/api/uid/*` write routes require the matching session type before shipping.
+  - **Verified 2026-09-17:** every admin write route uses `withAdminMutation` (admin
+    session + same-origin check); every `/api/uid/*` route derives the acting `UidAccount`
+    from `uidPrincipal(request)` (hashed session cookie) only, never from a request
+    parameter; no secret uses a `NEXT_PUBLIC_` prefix; Railway IaC injects the private
+    `DATABASE_URL` only into `@cashback/web`/`@cashback/worker`. Findings recorded in
+    `docs/security-audit.md`. `pnpm typecheck`/`lint`/`build` pass.
   - _Requirements: 3.3, 6.2, 15.10; Design: Security_
 
-- [-] 18. Lightweight test overview + critical invariant checks
+- [ ] 18. Lightweight test overview + critical invariant checks
   - Keep testing light: a thin smoke check that the app boots and key paths respond (public browse → get link → redirect records a click; admin login; seed import runs).
   - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two publish runs racing to attribute the same (exchange, UID) → exactly one `UidAccount` (Property 3); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; two concurrent withdrawals cannot both reserve the same balance; a UID account's first withdrawal is always `UNDER_REVIEW`. No exhaustive suite.
+  - Rollback-on-mid-publish-failure is covered and previously passed. Added a
+    concurrent-attribution-race check (two `ATTRIBUTE` workers racing the same published
+    UID) asserting exactly one `UidAccount` and exactly one wallet credit in
+    `scripts/test-bybit-integration.mjs`.
+  - **Re-run 2026-09-17** against the Railway pre-golive DB (`TEST_DATABASE_URL` = the
+    `DATABASE_URL` proxy `trolley.proxy.rlwy.net`), in a throwaway `cashback_test_*` schema
+    that the script migrates and drops. **All required invariants passed:** migrations
+    applied; UID-first credit without claimant; **concurrent attribution → exactly one
+    `UidAccount` + exactly one wallet credit** (Property 3); corrections + rate-snapshot +
+    hold-release idempotency + receivable offset; atomic publish rollback + failed-batch
+    status; and the full withdrawal suite (first withdrawal always `UNDER_REVIEW`,
+    approve+mark-paid audit trail, second auto-approves below threshold, cancel releases
+    reserved with event, cancel-after-PAID rejected, receivable blocks withdrawal, two
+    concurrent requests cannot both reserve → no double-spend), plus the lost-lease
+    rollback / reap+reclaim fencing checks that precede them.
+  - **Known environment limit (not a logic failure):** the script's trailing Task-16
+    admin-dashboard read `getAdminAnalytics` fires a 5-way `Promise.all`, and from a local
+    machine over the Railway **public** TCP proxy the 5th concurrent connection is refused
+    (`P1001` "can't reach database server"); every serial query and the concurrency checks
+    (≤4 simultaneous connections) succeed, and connectivity is otherwise healthy. On
+    Railway the `db` client uses internal networking with no such cap, so this affects only
+    local-through-proxy runs. Because that `P1001` aborts before the script's `finally`
+    DROP completes, one `cashback_test_*` schema was left behind; it was dropped afterwards
+    and a follow-up scan confirmed 0 `cashback_test_*` schemas remain on the Railway server.
   - _Requirements: 5.1, 6.8, 6.9, 7.8, 9.1, 9.5; Design: Testing Strategy, Correctness Properties 1-17_
 
 - [ ] 19. Production hardening & observability (Railway)
   - Building on the Phase 0 Railway skeleton (Task 4.2): add observability (web health, oldest job age, worker heartbeat, import error rate), alerts, ensure migrations run once per deploy with reproducible builds, and verify DB backup/restore.
+  - Implemented and locally verified 2026-09-17: `WorkerHeartbeat` migration
+    (`202609170001_worker_heartbeat`) applied by the worker on idle and mid-job ticks;
+    `GET /api/health` reports database status, oldest pending-job age, queue counts,
+    worker heartbeat freshness, and the 24h import error rate without leaking job
+    payloads; structured alerts with optional `OPERATIONS_ALERT_WEBHOOK_URL`; Railway
+    `web` runs `pnpm --filter @cashback/db db:migrate` as `preDeploy` and healthchecks
+    `/api/health`; watch patterns cover `packages/core`, `packages/db`,
+    `packages/contracts`, and the lockfile; runbook in `docs/operations.md`;
+    backup/restore drill script at `scripts/verify-postgres-backup.ps1`.
+    `pnpm db:generate`/`typecheck`/`lint`/`build` all pass.
+  - **Verified 2026-09-17 (pre-golive, against the Railway hosted DB):**
+    - `railway config plan --out scripts/_railway-plan.json` (read-only) ran clean against
+      project `cashback` / env `production`: **Plan: 0 to add, 3 to change, 1 to destroy** —
+      add core/db/contracts/lockfile/workspace `watchPatterns` to `@cashback/worker` and
+      `@cashback/web`; set `@cashback/web` `deploy.healthcheckPath=/api/health`,
+      `healthcheckTimeout=120`, `preDeployCommand=["pnpm --filter @cashback/db db:migrate"]`;
+      and the one destructive change **delete variable `@cashback/web.CLIENT_IP_HEADER`**.
+      `railway config apply` was intentionally NOT run — a live deployment-config change
+      (and a destructive variable delete) needs explicit user confirmation before applying.
+    - Backup/restore drill (`scripts/verify-postgres-backup.ps1` flow, PostgreSQL 18 client
+      tools) run against a throwaway `cashback_bkdrill_*` database created on the SAME
+      Railway Postgres server (never local, never the real prod DB): `pg_dump` of `railway`
+      (44,993-byte custom-format dump) → `pg_restore` into the temp DB → verified **3 applied
+      `_prisma_migrations`** and **19 public base tables** (matching the source's 19) →
+      `DROP DATABASE` of only the temp target; dump file removed. **DRILL_RESULT=PASS.**
+    - Both runs used the Railway `DATABASE_URL` (`trolley.proxy.rlwy.net` public proxy).
+      Remaining gate: applying the reviewed `railway config` plan (deploy-config change)
+      awaits explicit user confirmation.
   - _Requirements: 6.5; Design: Environments & deployment_
 
 ### Phase 4 — Deferred (do not start until confirmed)
@@ -587,3 +645,5 @@ flowchart TD
 | 2026-09-16 | tasks.md | **Chuyển sang UID-first (v2.0).** Đánh Task 12 và 14.3a/14.3b là superseded (strikethrough, không xoá); sửa Task 13 để attribution upsert `UidAccount` thay vì tra `UidLink`; sửa Task 14.1/14.3 theo model mới; thêm Task 22 (re-key Customer/UidLink → UidAccount, xoá route/service/UI cũ, viết lại `scripts/test-bybit-integration.mjs`), Task 23 (lookup trả amount thật theo exchange+UID), Task 24 (OTP qua Resend + UidSession 30 phút), Task 25 (withdrawal flow — thay Task 15 cũ, thêm rule lệnh rút đầu luôn UNDER_REVIEW), Task 26 (cherry-pick UI từ `cashback/` — input-otp, data-table, confirm-dialog; liệt kê rõ không lấy TanStack Router/Clerk/vite config vì đó chỉ là stub UI không có backend thật); cập nhật Task Dependency Graph, Task 17/18, Notes | Đồng bộ toàn bộ tasks.md với requirements v0.6 và design v0.7 (UID-first, Resend OTP, first-claimant-wins) | added |
 | 2026-09-16 | tasks.md | Thêm Task 5.6 (5.6.1–5.6.6): hiển thị logo sàn trên offer tile bằng asset PNG lưu trong repo tại `apps/web/public/exchange-logos/`, hoàn tất mapping `logoUrl` còn dở trong `core`, bỏ `logoUrl` khỏi `adminExchangeCreateSchema`, set `logoUrl` trong seed, và thứ tự deploy (push → migrate → reseed) | Triển khai `Exchange.logoUrl` vừa chốt ở design v0.5 theo hướng ảnh local, không hot-link URL online | added |
 | 2026-09-17 | tasks.md | Hoàn thành Task 25.9/25, Task 26 và Task 16: integration withdrawal, OTP/data-table/confirm-dialog, ba API dashboard admin, analytics/sync/activity UI và polling theo visibility/trạng thái batch | Đồng bộ tiến độ với code đã lint, typecheck, build và integration-test trên schema test cô lập | updated |
+| 2026-09-17 | tasks.md | Đánh done Task 17 (đã xác nhận `withAdminMutation` trên mọi admin write route, `uidPrincipal` suy `UidAccount` chỉ từ session, không secret `NEXT_PUBLIC_`, Railway chỉ inject `DATABASE_URL` private cho web/worker, audit ghi tại `docs/security-audit.md`); giữ Task 18/19 ở trạng thái in-progress vì integration test chưa re-run với `TEST_DATABASE_URL`, `railway config plan` và backup/restore drill vào DB tạm chưa chạy | Phản ánh đúng phần đã verify (typecheck/lint/build pass) và phần còn chờ một DB test cụ thể trước khi đánh done | updated |
+| 2026-09-17 | tasks.md | Pre-golive: cho phép dùng DB Railway làm test/dev DB cho Task 18/19 (integration test + backup/restore drill) không cần xác nhận từng lần | Chưa go-live, DB chỉ có dữ liệu fake; sẽ init lại khi go-live | updated |

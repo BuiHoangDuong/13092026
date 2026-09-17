@@ -3,6 +3,20 @@ import { db, JobState, Prisma } from "@cashback/db";
 
 export type JobLease = { id: string; lockedBy: string };
 
+export async function recordWorkerHeartbeat(workerId: string, started = false) {
+  const now = new Date();
+  return db.workerHeartbeat.upsert({
+    where: { id: workerId },
+    create: { id: workerId, startedAt: now, lastSeenAt: now },
+    update: { lastSeenAt: now, stoppedAt: null, ...(started ? { startedAt: now } : {}) }
+  });
+}
+
+export async function recordWorkerStopped(workerId: string) {
+  const now = new Date();
+  return db.workerHeartbeat.updateMany({ where: { id: workerId }, data: { lastSeenAt: now, stoppedAt: now } });
+}
+
 export async function claimNextJob(leaseSeconds: number, workerId = "worker") {
   if (!Number.isFinite(leaseSeconds) || leaseSeconds < 10) throw new Error("Invalid lease duration");
   return db.$transaction(async (tx) => {

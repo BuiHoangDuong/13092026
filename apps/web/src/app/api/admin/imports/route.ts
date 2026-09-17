@@ -1,6 +1,6 @@
 import { importMetadataSchema } from "@cashback/contracts";
 import { createImportBatch, listImportBatches } from "@cashback/core";
-import { adminJson, withAdmin } from "@/lib/admin-api";
+import { adminJson, withAdmin, withAdminMutation } from "@/lib/admin-api";
 
 const allowedTypes = new Map([
   ["text/csv", "csv"], ["application/csv", "csv"], ["application/vnd.ms-excel", "csv"],
@@ -10,7 +10,7 @@ type AllowedMime = "text/csv" | "application/csv" | "application/vnd.ms-excel" |
 
 export const GET = () => withAdmin(async () => adminJson({ batches: await listImportBatches() }));
 
-export const POST = (request: Request) => withAdmin(async () => {
+export const POST = (request: Request) => withAdminMutation(request, async () => {
   const form = await request.formData();
   const upload = form.get("file");
   const rawMetadata = form.get("metadata");
