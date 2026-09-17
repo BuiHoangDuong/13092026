@@ -10,6 +10,5 @@ packages/db/dist/
 infra/data/
 *.log
 *.tsbuildinfo
-$null
 .kiro/skills
 cashback/

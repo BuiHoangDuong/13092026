@@ -50,12 +50,12 @@ async function reportOperationalHealth() {
 
 async function main() {
   console.log(`Cashback worker polling every ${pollSeconds}s`);
-  await recordWorkerHeartbeat(workerId, true);
+  try { await recordWorkerHeartbeat(workerId, true); } catch (error) { console.error("worker_heartbeat_start_failed", error); }
   while (!stopping) {
     try { await tick(); await reportOperationalHealth(); } catch (error) { console.error("worker_tick_failed", error); }
     if (!stopping) await new Promise(resolve => setTimeout(resolve, pollSeconds * 1000));
   }
-  await recordWorkerStopped(workerId);
+  try { await recordWorkerStopped(workerId); } catch (error) { console.error("worker_heartbeat_stop_failed", error); }
   await db.$disconnect();
 }
-void main();
+void main().catch(error => { console.error("worker_fatal", error); process.exit(1); });

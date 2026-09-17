@@ -23,7 +23,10 @@ export default defineRailway(() => {
     healthcheckTimeout: 120,
     replicas: { "sfo": 1 },
     networking: { privateNetworkEndpoint: "cashbackweb" },
-    env: { DATABASE_URL: Postgres.env.DATABASE_URL },
+    env: {
+      DATABASE_URL: Postgres.env.DATABASE_URL,
+      CLIENT_IP_HEADER: "x-forwarded-for",
+    },
   });
 
   return project("13092026", {
