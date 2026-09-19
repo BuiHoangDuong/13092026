@@ -26,6 +26,7 @@ export default defineRailway(() => {
     env: {
       DATABASE_URL: Postgres.env.DATABASE_URL,
       CLIENT_IP_HEADER: "x-forwarded-for",
+      APP_URL: "https://cashbackweb-production.up.railway.app",
     },
   });
 
