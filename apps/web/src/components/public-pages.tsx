@@ -216,8 +216,8 @@ function RebateLedgerDemo({ locale }: { locale: Locale }) {
       <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{messages.home.ledgerLead}</p>
       <div className="rebate-ticker mt-6 rounded-xl border border-border" tabIndex={0} aria-label={messages.home.ledgerTitle}>
         <table className="w-full table-fixed text-left text-sm">
-          <thead>
-            <tr className="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+          <thead className="rebate-ticker-head">
+            <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3 font-medium">{messages.home.ledgerColExchange}</th>
               <th className="px-4 py-3 font-medium">{messages.home.ledgerColRate}</th>
               <th className="px-4 py-3 font-medium">{messages.home.ledgerColUid}</th>

@@ -87,7 +87,20 @@
   height: calc(22rem + 2.5625rem);
   overflow: hidden;
 }
+.rebate-ticker-head {
+  position: relative;
+  z-index: 2;
+}
+/* Opaque fill: tbody translateY moves rows through the header box, and bg-muted/40 let them show through. */
+.rebate-ticker-head th {
+  position: relative;
+  z-index: 2;
+  background-color: color-mix(in oklch, var(--muted) 40%, var(--background));
+  box-shadow: inset 0 -1px 0 var(--border);
+}
 .rebate-ticker-track {
+  position: relative;
+  z-index: 1;
   animation: rebate-ticker 40s linear infinite;
   /* Safari has long-standing bugs rendering `transform` on table-row-group boxes; force
      GPU compositing so the marquee scrolls reliably instead of staying static/clipped. */
