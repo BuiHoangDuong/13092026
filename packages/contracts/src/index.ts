@@ -93,7 +93,16 @@ export type WalletResponse = z.infer<typeof walletResponseSchema>;
 export const lookupRequestSchema = z.object({ exchangeId: z.string().trim().min(1).max(128), uid: z.string().trim().min(1).max(128) }).strict();
 export const lookupResponseSchema = z.object({
   balances: z.array(z.object({ asset: assetSchema, pending: decimalStringSchema, available: decimalStringSchema }).strict()),
-  hasData: z.boolean(), lastImportAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable()
+  hasData: z.boolean(), hasMore: z.boolean(), lastImportAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable(),
+  transactions: z.array(z.object({
+    id: z.string(),
+    asset: assetSchema,
+    periodStart: z.iso.datetime(),
+    periodEnd: z.iso.datetime(),
+    commission: decimalStringSchema,
+    cashbackRate: decimalStringSchema.nullable(),
+    cashback: decimalStringSchema
+  }).strict())
 }).strict();
 export type LookupResponse = z.infer<typeof lookupResponseSchema>;
 export const otpRequestSchema = lookupRequestSchema.extend({ email: z.email().max(254).transform(v => v.trim().toLowerCase()) });

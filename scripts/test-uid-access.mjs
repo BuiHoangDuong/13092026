@@ -44,8 +44,9 @@ try {
  const response=await lookup({exchangeId:exchange.id,uid:a.uid});assert.equal(response.status,200);assert.match(response.headers.get('cache-control'),/private, no-store/);
  const body=await response.json();assert.equal(body.balances[0].pending,'12.0000000000');assert.equal(body.balances[0].available,'30.0000000000');
  const {lookupResponseSchema}=await import('../packages/contracts/dist/index.js');lookupResponseSchema.parse(body);
- assert(!/email|address|reserved|withdrawn|receivable|history|private@test/.test(JSON.stringify(body)));
- const unknown=await(await lookup({exchangeId:exchange.id,uid:'unknown'})).json();assert.equal(unknown.hasData,false);
+ assert.equal(body.transactions.length,1);assert.equal(body.transactions[0].commission,'0.0000000000');assert.equal(body.transactions[0].cashback,'0.0000000000');
+ assert(!/email|address|reserved|withdrawn|receivable|"history"|private@test/.test(JSON.stringify(body)));
+ const unknown=await(await lookup({exchangeId:exchange.id,uid:'unknown'})).json();assert.equal(unknown.hasData,false);assert.deepEqual(unknown.transactions,[]);
  const realZero=await(await lookup({exchangeId:exchange.id,uid:zero.uid})).json();assert.equal(realZero.hasData,true);assert.equal(realZero.balances[0].available,'0.0000000000');
  for(let i=0;i<2;i++)assert.equal((await lookup({exchangeId:exchange.id,uid:a.uid})).status,200);
  // A fixed window may roll over while earlier assertions query a remote database.
@@ -56,7 +57,7 @@ try {
  await assert.rejects(()=>core.lookupCashback({uid:a.uid},'192.0.2.3'));
  const html=await(await fetch(origin)).text();assert(html.includes('Check your cashback'));assert(html.indexOf('cashback-lookup-title')<html.indexOf('Crypto affiliate cashback'));
  assert.equal((await fetch(`${origin}/api/me/wallet`)).status,404);assert.equal((await fetch(`${origin}/login`)).status,404);
- console.log('PASS: HTTP lookup exposes only balances/freshness, validates before queries, limits IPs, preserves read-only state and distinguishes zero; home placement and old-route removal');
+ console.log('PASS: HTTP lookup exposes balances plus commission vs cashback rows, validates before queries, limits IPs, preserves read-only state and distinguishes zero; home placement and old-route removal');
  const claimant=await db.uidAccount.create({data:{exchangeId:exchange.id,uid:'00999'}});
  const fakeEmail={sendOtp:async input=>{sent.push(input);return {accepted:true,messageId:'test-message'};}};
  const request={exchangeId:exchange.id,uid:claimant.uid,email:'claimant@test.invalid'};

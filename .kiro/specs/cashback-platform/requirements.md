@@ -4,7 +4,7 @@
 
 - **Status:** Draft v0.6 (UID-first / no customer accounts; supersedes the
   customer-account model of v0.4–v0.5)
-- **Last updated:** 2026-09-16
+- **Last updated:** 2026-09-17
 - **Access model:** **UID-first, no customer accounts.** A visitor enters exchange + UID and
   immediately sees that UID's cashback amounts. Ownership is asserted only at withdrawal:
   the first withdrawal binds an email to that (exchange, UID) via a 6-digit OTP, and a
@@ -20,7 +20,8 @@
 
 > This document uses EARS-style acceptance criteria so it can be consumed directly by
 > AI coding agents (Kiro / Claude / Codex) and by humans. Implementation status per
-> requirement lives in `tasks.md`, not here.
+> requirement lives in `tasks.md`, not here. Operator and tester **happy-path**
+> runbook (how to click through the live product) lives in `happy-path-scenarios.md`.
 
 ---
 
@@ -355,12 +356,14 @@ status, so that I know what is earned, what is available, and what has been with
 4. IF a source report is later corrected downward, THEN THE SYSTEM SHALL apply the
    reversal against `pending` first, then `available`; neither balance SHALL go negative.
 5. WHEN a lookup returns a UID's cashback, THE SYSTEM SHALL show `pending` and `available`
-   balances, the last import time, and the source data "as-of" time; THE SYSTEM SHALL
-   distinguish "no data" from a zero value.
-6. WHILE a UID session is active, THE SYSTEM SHALL expose that UID's transaction history of
-   wallet movements (credit, hold release, withdrawal reserve/release/settle, adjustment,
-   reversal, clawback); THE SYSTEM SHALL NOT expose movement history to an unauthenticated
-   lookup (Requirement 14.3).
+   balances, the last import time, the source data "as-of" time, and the commission vs
+   cashback rows in Requirement 14.2; THE SYSTEM SHALL distinguish "no data" from a zero
+   value.
+6. WHILE a UID session is active, THE SYSTEM SHALL expose that UID's wallet-movement
+   history (credit, hold release, withdrawal reserve/release/settle, adjustment, reversal,
+   clawback). Unauthenticated lookup MAY show commission vs cashback split rows
+   (Requirement 14.2, 14.7) and SHALL NOT show those wallet-movement types
+   (Requirement 14.3).
 7. IF a downward correction exceeds the UID account's `pending + available` (because cashback
    was already withdrawn/settled), THEN THE SYSTEM SHALL record the uncovered remainder as
    a `receivable` (clawback). WHILE `receivable > 0`, THE SYSTEM SHALL block new
@@ -416,6 +419,10 @@ guides, so that the public site shows accurate, up-to-date content.
 5. THE SYSTEM SHALL store translatable content fields keyed per locale to support
    Requirement 4, and admin authoring SHALL expose fields only for enabled locales —
    English alone while English is the only enabled locale.
+6. WHEN an admin edits a referral link, offer, or guide and the current exchange or
+   offer is not in the loaded choice list, THE SYSTEM SHALL keep that current id
+   selected. THE SYSTEM SHALL NOT submit "No offer", "General", or a different row
+   unless the admin explicitly chooses it.
 
 ### Requirement 11: Admin analytics & operations dashboard
 **User Story:** As an admin, I want dashboards for clicks, imports, attribution, and
@@ -425,8 +432,10 @@ withdrawals, so that I can operate the platform.
 1. WHEN an admin opens the analytics dashboard, THE SYSTEM SHALL show click activity
    aggregated by link, exchange, and time, read from internal data (not by calling
    exchange APIs on page load).
-2. WHILE an admin tab is visible, THE SYSTEM SHALL poll dashboard APIs every 30 seconds
-   and SHALL pause polling when the tab is hidden.
+2. WHILE an admin **operations page** is visible, THE SYSTEM SHALL poll **that
+   page's** dashboard APIs every 30 seconds and SHALL pause polling when the tab
+   is hidden. THE SYSTEM SHALL NOT poll analytics, imports, and withdrawals
+   together unless those pages are each open (Requirement 18.4).
 3. WHILE an import batch is processing, THE SYSTEM SHALL let the admin UI poll batch
    status roughly every 5 seconds until it settles.
 4. THE SYSTEM SHALL provide a sync-status view showing import/API state, last success
@@ -483,11 +492,13 @@ cashback that UID has earned, so that I can decide to withdraw without creating 
    IF either is missing, THEN THE SYSTEM SHALL reject the request and SHALL NOT return any
    balance. A UID without an exchange SHALL NEVER be resolved.
 2. WHEN a visitor submits a valid exchange + UID that has attributed cashback, THE SYSTEM
-   SHALL return that UID account's `pending` and `available` amounts per asset, the last
-   import time, and the source "as-of" time.
+   SHALL return that UID account's `pending` and `available` amounts per asset (what they
+   receive), the last import time, the source "as-of" time, and a **transaction table** of
+   attributed commissions for that UID: period, asset, **exchange-paid commission**,
+   cashback rate, and **cashback shared with the UID**.
 3. THE SYSTEM SHALL NOT include in a lookup response: the bound email (in any form), payout
-   addresses, withdrawal records or history, wallet movement history, `reserved`/`withdrawn`/
-   `receivable` buckets, or any other UID's data.
+   addresses, withdrawal records, wallet movement types (hold release, reserve, settle,
+   clawback), `reserved`/`withdrawn`/`receivable` buckets, or any other UID's data.
 4. WHILE serving lookups, THE SYSTEM SHALL rate-limit per client IP; IF the limit is
    exceeded, THEN THE SYSTEM SHALL reject further lookups with a retry-after response
    rather than answering.
@@ -497,6 +508,16 @@ cashback that UID has earned, so that I can decide to withdraw without creating 
    explicit "no cashback data for this UID under our referral links" result, using the same
    response shape whether the UID is unknown or known-with-zero, and SHALL distinguish this
    from a real zero balance per Requirement 8.5.
+7. WHEN the lookup returns attributed cashback, THE SYSTEM SHALL list each attributed
+   `CommissionRecord` for that (exchange, UID) so the visitor can see, per period, how
+   much the exchange paid versus how much was shared with them
+   (`creditedCashback` = that commission × the snapshotted rate). Newest period first,
+   cap 100 rows. Empty `transactions` when `hasData` is false.
+   WHILE a newer published version exists but ATTRIBUTE has not yet written a wallet
+   entry whose `sourceRef` is that version id, THE SYSTEM SHALL show the commission
+   amount of the latest applied version, not the in-flight `reconciledAmount`. IF no
+   applied entry exists, THE SYSTEM SHALL show commission 0. WHEN more than 100
+   attributed rows exist, THE SYSTEM SHALL set `hasMore` and return only the newest 100.
 
 ### Requirement 15: Email OTP binding & UID session
 **User Story:** As a UID claimant, I want to prove I control an email address before money
@@ -553,16 +574,79 @@ claimants can complete withdrawals and delivery problems are visible.
 6. THE SYSTEM SHALL record, per OTP send, whether the provider accepted the request and any
    provider message id, for support and audit purposes.
 
+### Requirement 17: Public Online Rebate Ledger (social proof)
+**User Story:** As a visitor, I want to see a moving stream of large cashback credits
+on the home page, so that the product looks active and I am more likely to look up
+my own UID.
+
+#### Acceptance Criteria
+1. WHEN a visitor opens the home page, THE SYSTEM SHALL render an **Online Rebate
+   Ledger** with **100** cashback rows.
+2. THE SYSTEM SHALL animate those rows in continuous motion as a marketing ticker
+   (not a live exchange feed and not SSE).
+3. WHILE live attributed credits are too few to fill a convincing ticker, THE
+   SYSTEM SHALL use an **in-repo, deterministic fake set** of 100 rows with
+   **large cashback amounts** (hundreds to thousands of USDT) to attract visitors.
+   THE SYSTEM SHALL NOT read `WalletEntry` / `CommissionRecord` for this ticker
+   in that interim. THE SYSTEM SHALL keep a visible badge that the rows are
+   illustrative, not live data.
+4. THE SYSTEM SHALL mask every UID in the ledger (partial characters only) and
+   SHALL NOT include bound email, payout address, withdrawal records, movement
+   history, or `reserved` / `withdrawn` / `receivable`.
+5. IF the visitor's client requests reduced motion, THEN THE SYSTEM SHALL show
+   the same rows without continuous animation.
+6. THE SYSTEM SHALL NOT treat the ledger as a cashback lookup: a visitor still
+   uses Requirement 14 (exchange + UID) to see their own `pending` / `available`.
+7. WHEN the operator later switches the ticker to live credits, THE SYSTEM SHALL
+   drop the fake generator and the illustrative badge in the same change (future
+   task — not this interim).
+
+### Requirement 18: Admin operations shell (left navigation)
+**User Story:** As an admin, I want a left table of contents for each operations
+area, so that the screen is not one long page and I can switch (or open another
+tab) to do several jobs without losing my place.
+
+#### Acceptance Criteria
+1. WHILE an admin is authenticated, THE SYSTEM SHALL render a **left navigation
+   shell** on all admin operations pages except `/admin/login`.
+2. THE SYSTEM SHALL split today's stacked `/admin` blocks into **separate
+   routes**, one primary job per page. The nav SHALL include at least:
+   Overview (analytics), Bybit imports, Withdrawal queue, Exchanges, Offers,
+   Referral links, Guides.
+3. WHEN the admin selects a nav item, THE SYSTEM SHALL show only that section
+   in the main pane. THE SYSTEM SHALL keep using the existing `/api/admin/*`
+   endpoints; this requirement SHALL NOT add money-engine, schema, or worker
+   changes.
+4. WHILE a section is not mounted, THE SYSTEM SHALL NOT poll that section's
+   APIs. Visible-tab polling rules in Requirement 11 apply **per open page**,
+   not to every section at once.
+5. THE SYSTEM SHALL still deny every `/admin/*` route (except login) and every
+   `/api/admin/*` write without an admin session (Requirement 3, 10.1). Route denial
+   SHALL happen before page content is produced. A session check only in the shared
+   layout is not sufficient, because the page can still be rendered into an RSC
+   response. A request with no admin session cookie SHALL be redirected to
+   `/admin/login` before render. Each admin page SHALL check the session again before
+   reading data or returning its content.
+6. English labels only. Parallel work is **multiple browser tabs** of different
+   admin routes (same session cookie), not a split-pane or background keep-alive
+   of every form on one URL.
+
 ---
 
 ## Non-functional requirements
 
-### Performance & scale (answer 17B — 1k–50k events/day)
+### Performance & scale (answer 17B — 1k–50k events/day; target 5,000 transacting UIDs/day)
 - Public pages SHALL render server-side and read cached/persisted data, not live
   exchange APIs.
 - The redirect endpoint SHALL respond quickly and independently of any sync work.
 - The system SHALL comfortably handle the medium-traffic band (1k–50k clicks/day) on a
   single Railway service tier, with room to scale the worker separately.
+- WHEN daily transacting UIDs approach **5,000**, THE SYSTEM SHALL keep money
+  mutations on a compact OLTP schema and SHALL store append-only transaction
+  history as **fact tables partitioned by time**, so lookups and admin analytics
+  prune old months instead of scanning one ever-growing heap. Dimension tables
+  (exchange, UID account, offer, asset, date) SHALL stay unpartitioned. Current
+  wallet **balances** SHALL NOT be partitioned (one row per UID+asset).
 
 ### Security
 - All authorization SHALL be enforced server-side; the browser SHALL NOT be trusted with
@@ -620,8 +704,7 @@ claimants can complete withdrawals and delivery problems are visible.
 |----------|----------------|--------|
 | `GET /api/exchanges` | Published exchanges + offers. | Public |
 | `GET /go/:linkId` | Resolve link, record click, redirect. | Public |
-| `POST /api/lookup` | Quick lookup: does this (exchange, UID) have cashback? Boolean only, IP rate-limited. | Public |
-| `POST /api/lookup` | Cashback lookup by exchange + UID. Amounts + freshness only; IP rate-limited. | Public |
+| `POST /api/lookup` | Cashback lookup by exchange + UID. `pending`/`available`, freshness, and per-period commission vs cashback rows; IP rate-limited. | Public |
 | `POST /api/otp/request` | Send OTP for a UID withdrawal. Bound email enforced if one exists. | Public (rate-limited) |
 | `POST /api/otp/verify` | Verify OTP → bind email + issue 30-min UID session. | Public (rate-limited) |
 | `POST /api/admin/auth/*` | Admin login/logout/session. | Public → admin session |
@@ -681,7 +764,7 @@ claimants can complete withdrawals and delivery problems are visible.
 | # | Topic | Answer given | What's still needed |
 |---|-------|--------------|---------------------|
 | 11 | Dedup / reconciliation key | Decide later | Real sample report to fix per-exchange keys. |
-| 12 | Customer visibility of UID-level detail | **Resolved (2026-09-16)** | Anyone entering exchange + UID sees that UID's `pending`/`available`; everything else needs a UID session (Req 14.2–14.3). |
+| 12 | Customer visibility of UID-level detail | **Updated (2026-09-17)** | Anyone entering exchange + UID sees `pending`/`available` **and** per-period exchange-paid commission vs cashback share (Req 14.2, 14.7). Email, payout address, withdrawals, and wallet-movement types still need a UID session (Req 14.3). |
 | 13 | Auth solution | **Narrowed (2026-09-16)** | End users have no accounts, so this now only covers **admin** auth. Interim email+password + `Session` stays until a provider is chosen. |
 | 20 | Outbound email transport | **Resolved (2026-09-16): Resend** | Remaining prerequisites are operational, not design: verify an operator-owned domain with SPF/DKIM (the shared testing domain only delivers to the Resend account owner), set API key + from-address env vars, and confirm the send quota fits expected withdrawal volume (Req 16). |
 | 21 | Ownership dispute handling | **Accepted as-is (2026-09-16)** | First claimant wins; there is no ownership proof and no recourse for a displaced true owner. Revisit if losses occur or an exchange-side proof becomes available. |
@@ -760,3 +843,11 @@ claimants can complete withdrawals and delivery problems are visible.
 | 2026-09-16 | requirements.md | Cập nhật Req 7 (attribute về UidAccount, tự tạo khi chưa có), Req 8 (wallet theo UidAccount; history chỉ khi có UID session), Req 9 (bắt buộc UID session; lệnh rút ĐẦU TIÊN luôn phải admin duyệt bất kể số tiền) | Tác động chéo của việc bỏ Customer; giữ một lớp kiểm soát cuối trước khi tiền ra | updated |
 | 2026-09-16 | requirements.md | Thêm mục "Accepted risk — first claimant wins" và "Known exposure (accepted)" trong Security; API surface đổi sang `/api/lookup`, `/api/otp/*`, `/api/uid/*`; data model đổi sang UidAccount/EmailOtp/UidSession/RateLimitCounter | Chủ dự án chấp nhận rủi ro không xác minh được chủ UID — ghi thành quyết định có ý thức kèm phạm vi thiệt hại, không che | added |
 | 2026-09-16 | requirements.md | Open decision #12 resolved, #13 thu hẹp còn admin auth, #20 chốt Resend (còn việc verify domain + quota), thêm #21 (không có đường cứu tranh chấp UID) | Đồng bộ trạng thái quyết định sau khi chốt mô hình | updated |
+| 2026-09-17 | requirements.md | Trỏ sang `happy-path-scenarios.md` (runbook S0–S16) | Testers/admin cần kịch bản nghiệp vụ chính; không đổi hành vi | updated |
+| 2026-09-17 | requirements.md | Thêm Requirement 17: Online Rebate Ledger trên home, tối đa 100 credit gần nhất, animation, mask UID, không bịa hàng demo | Marketing social proof; thay bảng illustrative giả | added |
+| 2026-09-17 | requirements.md | Req 17: interim **fake 100 hàng cashback lớn** (deterministic, badge illustrative), không đọc wallet live cho đến khi operator chuyển | Dump thật quá ít credit; cần ticker hấp dẫn ngay | updated |
+| 2026-09-17 | requirements.md | Req 14.2/14.7 + 8.5/8.6: lookup trả bảng giao dịch (sàn trả `reconciledAmount` vs chia `creditedCashback`); vẫn giấu email/address/withdrawal/reserved. Xoá dòng API Hybrid boolean | Visitor cần thấy sàn trả bao nhiêu và mình nhận bao nhiêu | updated |
+| 2026-09-17 | requirements.md | NFR scale: 5,000 UID giao dịch/ngày → fact partition theo thời gian, dim không partition, số dư ví không partition | Tránh heap click/commission/wallet-entry phình làm chậm lookup/analytics | added |
+| 2026-09-19 | requirements.md | Thêm Requirement 18: admin left-nav + tách route; poll theo trang; API/schema/worker không đổi. Sửa 11.2 poll theo section | `/admin` một trang quá dài; không đụng kiến trúc tiền | added |
+| 2026-09-22 | requirements.md | Req 18.5: chặn `/admin` trước khi render, kể cả RSC không cookie; mỗi page kiểm tra session. Req 10.6: form không được gỡ offer/exchange đang chọn khi id nằm ngoài trang đã tải. Req 14.7: lookup hiện commission của version đã có bút toán `attr:{versionId}`, không hiện `reconciledAmount` đang chờ ATTRIBUTE | Ba lỗ hổng P2: lộ RSC admin, gỡ nhầm offer, bảng lookup lệch phiên bản | updated |
+| 2026-09-22 | requirements.md | Req 14.7: không có bút toán thì commission là 0, không fallback `reconciledAmount`. Thêm `hasMore` khi quá 100 dòng | Review: fallback vẫn lộ số chưa attribute | updated |

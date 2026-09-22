@@ -99,6 +99,15 @@ export async function getPublicStats(): Promise<PublicStats> {
   return { exchangeCount };
 }
 
+/** Lightweight id-only lookup for callers that don't need offers/links/guides. */
+export async function getPublishedExchangeId(slug: string): Promise<string | null> {
+  const exchange = await db.exchange.findFirst({
+    where: { slug, status: PublishStatus.PUBLISHED },
+    select: { id: true }
+  });
+  return exchange?.id ?? null;
+}
+
 export async function getPublishedExchange(slug: string, locale = "en"): Promise<PublicExchange | null> {
   const exchange = await db.exchange.findFirst({
     where: { slug, status: PublishStatus.PUBLISHED },

@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { sessionCookieName } from "./session-cookie";
 
-export const sessionCookieName = process.env.SESSION_COOKIE_NAME ?? "cashback_session";
+export { sessionCookieName };
 export async function sessionToken() { return (await cookies()).get(sessionCookieName)?.value; }

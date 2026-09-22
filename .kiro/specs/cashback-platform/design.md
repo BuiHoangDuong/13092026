@@ -1,7 +1,7 @@
 # Design — Cashback Affiliate Platform
 
 - **Status:** Draft v0.7 (UID-first: no customer accounts; email OTP + UID session)
-- **Last updated:** 2026-09-16
+- **Last updated:** 2026-09-17
 - **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.6), `architecture.html` v0.4 (context only)
 - **Audience:** implementers and AI coding agents (Kiro / Claude / Codex)
 
@@ -79,7 +79,7 @@ flowchart TD
 | Validation | zod in `packages/contracts` | One schema for API + parser boundaries. |
 | Money | `Decimal` (Prisma `Decimal`/numeric); API returns strings | No float error (Req 7.4). |
 | Auth | **[PENDING]** provider (open decision #13); interim email+password | Abstracted behind an auth port; see Components/Auth. |
-| Styling (public site) | Tailwind CSS v4 + shadcn/ui (Radix primitives), copied into `src/components/ui` | Free/open-source component kit; replaces hand-rolled CSS for the public marketing pages (home, exchanges, guides) with a light, blue/teal "friendly-professional" theme. Admin screens intentionally stay on plain utility classes (out of scope for this refresh). |
+| Styling (public site) | Tailwind CSS v4 + shadcn/ui (Radix primitives), copied into `src/components/ui` | Free/open-source component kit; replaces hand-rolled CSS for the public marketing pages (home, exchanges, guides) with a light, blue/teal "friendly-professional" theme. Admin uses the same tokens plus a **simple left-nav shell** (Req 18); do not import the full reference `cashback/` admin SPA. |
 | Hosting | Local/SIT + Railway prod, dual-track | Verify local, push, deploy (Req 6.5). |
 | Language / i18n | Single locale registry + message catalogs + locale-segment routing | English is the only enabled locale; enabling another is a registry + catalog change, not a routing change (Req 4). |
 
@@ -170,19 +170,26 @@ flowchart LR
   V2 -- yes --> RL{Per-IP rate limit ok?}
   RL -- no --> R429[429 + Retry-After, no lookup performed]
   RL -- yes --> Q[Read-only: UidAccount wallets for exchange+UID]
-  Q -- found --> Y[pending + available per asset, lastImportAt, sourceAsOf]
+  Q -- found --> Y[pending + available, commission vs cashback rows, freshness]
   Q -- none --> N[no-data result, same shape]
 ```
 
 - **Exchange is mandatory.** The lookup key is the pair; the same UID string on two
   exchanges is two different subjects (Req 14.1). A request missing either half is rejected
   before any query runs.
-- **Amounts are returned** (`pending`, `available` per asset) plus freshness timestamps.
-  This is the accepted-risk decision recorded in requirements: it makes per-UID value
-  visible to anyone who can guess a UID.
+- **Amounts returned:** `pending` / `available` per asset (what the UID receives) plus
+  freshness timestamps, plus a `transactions` array of attributed `CommissionRecord`s
+  (newest `periodEnd` first, cap 100): `asset`, `periodStart`, `periodEnd`,
+  `commission` (amount on the latest applied `CommissionVersion`, matched by
+  `WalletEntry.sourceRef`, not by parsing `opKey`. A published correction that
+  ATTRIBUTE has not applied yet stays off this row. If no applied entry exists,
+  commission is 0, never the in-flight `reconciledAmount`), `cashbackRate` (snapshot),
+  `cashback` (`creditedCashback`). `hasMore` is true when more than 100 rows exist
+  (Req 7, 14.2, 14.7).
 - **Withheld even so:** bound email (in any form, including masked), payout addresses,
-  withdrawal records, wallet movement history, and the `reserved`/`withdrawn`/`receivable`
-  buckets (Req 14.3). Those require a UID session.
+  withdrawal records, wallet-movement types (hold release, reserve, settle, clawback),
+  and the `reserved`/`withdrawn`/`receivable` buckets (Req 14.3). Those require a UID
+  session. Do not name the array `history`.
 - **Read-only.** No writes to `UidAccount`, `Wallet`, `EmailOtp`, or `UidSession` (Req 14.5),
   so a lookup can never squat or claim a UID. `UidAccount` rows are created only by the
   ATTRIBUTE job (Req 5.3).
@@ -400,6 +407,47 @@ until the reset.
 - **UID API** (`/api/uid/*`): `UidSession`-guarded; scopes every query to the session's
   `uidAccountId`; never trusts a client-sent UID/account id (Req 3.3, 15.10).
 - **Admin API** (`/api/admin/*`): admin-guarded; `Cache-Control: private, no-store`.
+  **Unchanged by Req 18** — the shell only remounts existing client sections onto
+  nested routes.
+- **Admin shell (Req 18):** presentation/routing only. Not a money, schema, worker,
+  or API redesign.
+
+  Route group so login has no sidebar:
+
+  ```
+  app/admin/login/page.tsx          # unauthenticated form; no shell
+  app/admin/(shell)/layout.tsx      # session guard + left nav + main pane
+  app/admin/(shell)/page.tsx                    # Overview / analytics
+  app/admin/(shell)/imports/page.tsx            # Bybit cashback operations
+  app/admin/(shell)/withdrawals/page.tsx        # Withdrawal queue
+  app/admin/(shell)/exchanges/page.tsx
+  app/admin/(shell)/offers/page.tsx
+  app/admin/(shell)/links/page.tsx              # Referral links
+  app/admin/(shell)/guides/page.tsx
+  ```
+
+  Layout: `requireAdminPage()` → redirect `/admin/login` if not admin; otherwise a
+  two-column flex: sticky left nav (~14–16rem) + scrollable main. Nav items are
+  English `Link`s; the active path is highlighted. The layout check does **not**
+  stop Next.js from rendering the page slot into an RSC payload, so middleware
+  redirects any `/admin` request except `/admin/login` when the admin session
+  cookie is missing, and **each** shell page calls `requireAdminPage()` again
+  before any data read or returned content (Req 18.5). Reuse the existing
+  `AnalyticsDashboard`, `BybitOperations`, `WithdrawalQueue`, and split
+  `AdminContentManager` into four section components (same fetch/save APIs:
+  `/api/admin/exchanges|offers|links|guides`). Choice lists are still paged
+  (default 50). When the exchange or offer already saved on the row is not in
+  that page, the form keeps an option for that id so an edit cannot clear it
+  or retarget it by accident (Req 10.6).
+
+  Polling: each page's `useEffect` interval runs only while that page is mounted
+  and `document.visibilityState === "visible"` (Req 11.2, 18.4). Opening
+  `/admin/imports` in one tab and `/admin/withdrawals` in another is how the
+  operator works two jobs at once (shared `cashback_session` cookie). Do not
+  keep hidden sections mounted, do not add split-pane, do not add SSE.
+
+  `GET /admin` stays the overview landing after login. Deep links to
+  `/admin/links` etc. are first-class. No new `/api/admin/*` routes.
 - Route handlers are thin: validate with `contracts` zod schema → call `core` service →
   map result to response. No business logic in handlers.
 - **Exchange logo assets (static, in-repo):** logo files live at
@@ -410,6 +458,40 @@ until the reset.
   when `logoUrl` is set and keep the existing generated colour placeholder when it is
   `null`. Assets are baked into the build image, so adding or replacing a logo is a repo
   change plus deploy, not a runtime upload (Req 1.1, 1.2).
+- **Online Rebate Ledger (home, Req 17):** a marketing ticker on `/`. Not a wallet
+  statement, not SSE, not a cashback lookup (Req 14). **Interim source is fake
+  data** because live attributed credits are too few to look busy.
+
+  **Interim data (now):** `generateLedgerDemoRows(100)` in
+  `apps/web/src/content/ledger-demo.ts`. Deterministic (seeded from the row index),
+  never hand-typed to resemble a real person. **100 rows.** Amounts are **large
+  on purpose** to attract visitors:
+  - most rows ~480–2,600 USDT
+  - about every 11th row a headline credit ~3,200–8,500 USDT
+  - asset always `USDT`; exchanges rotate Binance / MEXC / Bybit; rates 40 / 35 / 30
+    to match seed offer rates; dates spread across the last ~30 days
+  Keep the visible `home.ledgerDemoBadge` ("illustrative example — not live data").
+  Do **not** read `WalletEntry` / `CommissionRecord` for this ticker yet.
+
+  **Later (not this task):** swap the generator for
+  `contentService.listRecentRebateCredits({ limit: 100 })` (CREDIT entries, newest
+  first) and remove the badge + `ledger-demo.ts` in the same change.
+
+  **Masking:** UID shown as asterisks plus 3–4 trailing characters (e.g. `***4567`).
+  Never full UID, never `boundEmail`, never payout address, never
+  `reserved` / `withdrawn` / `receivable`, never withdrawal history.
+
+  **Motion:** CSS-only vertical marquee. Viewport shows a handful of rows; the
+  track contains the 100-row table **twice** so the loop is seamless. Pause on
+  hover and `:focus-within`. `prefers-reduced-motion: reduce` stops the animation
+  and shows a static scrollable table of the same 100 rows (Req 17.5). Loop
+  duration ~40s. No polling. Home stays SSR; the browser only animates HTML
+  already on the page (Req 1.5).
+
+  **Copy:** `home.ledger*` in the English catalog. Lead must not claim the ticker
+  is the visitor's own wallet — they still look up exchange + UID (Req 14).
+
+  No new public `/api/*` route.
 
 ### apps/worker
 - Boot connects to Postgres, starts a poll loop (~10s) that claims one job via
@@ -421,12 +503,15 @@ until the reset.
 
 ### packages/core services
 - `contentService` — read/write exchanges, offers, links (incl. link↔offer binding and
-  exchange default rate), guides.
+  exchange default rate), guides. (Live rebate-ledger read is deferred; the home
+  ticker uses `ledger-demo.ts` until Req 17.7.)
 - `clickService` — record click (best-effort), aggregate analytics.
 - `lookupService` — cashback lookup by exchange + UID: consume the per-IP rate-limit budget
-  (`RateLimitCounter`, scope `lookup:ip`), then read the `UidAccount`'s wallets and return
-  `pending`/`available` per asset plus freshness timestamps. Read-only; never creates a
-  `UidAccount`, `Wallet`, or session (Req 14).
+  (`RateLimitCounter`, scope `lookup:ip`), then read the `UidAccount`'s wallets
+  (`pending`/`available`) and attributed `CommissionRecord`s (commission vs cashback
+  rows, cap 100). `commission` is the latest version that already has `attr:{versionId}`,
+  not an in-flight `reconciledAmount` (Req 14.7). Read-only; never creates a `UidAccount`,
+  `Wallet`, or session (Req 14).
 - `otpService` — generates a 6-digit code with `crypto.randomInt(100000, 1000000)`, hashes
   it with the `bcryptjs` already used for admin credentials, and enforces send order:
   check per-UID cooldown + daily cap (`RateLimitCounter` scope `otp:uid`) and per-IP limit
@@ -467,7 +552,7 @@ decimal string with an `asset`. Errors use a consistent envelope
 |----------|--------|------|-------|
 | `/api/exchanges` | GET | public | published exchanges + offers |
 | `/go/:linkId` | GET | public | 302 redirect; records click (best-effort) |
-| `/api/lookup` | POST | public | `{ exchangeId, uid }` → `pending`/`available` per asset + freshness; IP rate-limited, 429 + `Retry-After` when exceeded |
+| `/api/lookup` | POST | public | `{ exchangeId, uid }` → `pending`/`available`, freshness, `transactions[]` (commission vs cashback); IP rate-limited, 429 + `Retry-After` when exceeded |
 | `/api/otp/request` | POST | public (rate-limited) | send OTP for a withdrawal; targets the bound email if one exists |
 | `/api/otp/verify` | POST | public (rate-limited) | verify OTP → bind email + issue 30-min `UidSession` cookie |
 | `/api/admin/auth/*` | POST | public→admin session | admin login/logout (interim) **[PENDING provider]** |
@@ -843,6 +928,140 @@ Enums:
 `JobType{PARSE,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}`,
 `JobState{PENDING,CLAIMED,DONE,FAILED}`.
 
+## Dimensional store & fact partitioning (5,000 transacting UIDs/day)
+
+This is the **scale architecture** for when ~5,000 UIDs generate cashback
+transactions per day. It does **not** replace the OLTP Prisma schema above for
+MVP. Money mutations (publish, attribute, reserve, settle) stay on the compact
+normalized tables. Facts are an append-only projection so history queries do
+not scan an ever-growing heap.
+
+### Load sketch
+
+| Stream | Conservative | Busy |
+|--------|--------------|------|
+| Transacting UIDs / day | 5,000 | 5,000 |
+| Commission / cashback facts / day | ~5k–15k (1–3 rows per UID) | ~25k (5 rows) |
+| Wallet-movement facts / day | ~10k–20k | ~40k |
+| Click facts / day | ~5k–20k | ~50k (already in NFR band) |
+| Rows / year (all facts) | ~7–20 million | ~40 million |
+
+Dims stay small: tens of exchanges/offers/links; UID accounts grow with unique
+(exchange, UID) pairs (hundreds of thousands over years, still a dim).
+
+PostgreSQL handles this **if** range queries hit **one or two monthly
+partitions** and current balances stay a tiny `Wallet` table. A single
+unpartitioned `WalletEntry` / `ClickEvent` heap of tens of millions of rows is
+what slows lookup and admin analytics.
+
+### Two layers
+
+```mermaid
+flowchart LR
+  subgraph oltp[OLTP — source of truth]
+    UidAccount
+    Wallet
+    CommissionRecord
+    Job
+  end
+  subgraph facts[Facts — partitioned by month]
+    FactCashback
+    FactWalletMovement
+    FactClick
+    FactWithdrawalEvent
+  end
+  subgraph dims[Dimensions — not partitioned]
+    DimDate
+    DimExchange
+    DimUid
+    DimAsset
+    DimOffer
+  end
+  PUBLISH[PUBLISH / ATTRIBUTE / click] --> oltp
+  oltp -->|async project, same event time| facts
+  facts --> DimDate
+  facts --> DimExchange
+  facts --> DimUid
+  Lookup[Lookup + admin analytics] --> Wallet
+  Lookup --> facts
+```
+
+| Layer | Tables (today → target) | Partition? | Why |
+|-------|-------------------------|------------|-----|
+| **Dim** | `Exchange`, `Offer`, `ReferralLink`, `UidAccount`, `AdminAccount`, `DimDate`, `DimAsset` | **No** | Small, updated in place, looked up by id |
+| **Snapshot (not a fact)** | `Wallet` (pending/available/reserved/withdrawn/receivable) | **No** | One row per UID+asset. Partitioning would break `SELECT … FOR UPDATE` and unique `(uidAccountId, asset)` |
+| **OLTP identity** | `CommissionRecord` (current reconciled amount + snapshots) | **No** | Unique `(exchangeId, dedupKey)`; locked during attribution |
+| **Fact** | `ClickEvent`, `WalletEntry`, `CommissionVersion`, `WithdrawalEvent`, lookup `transactions` history | **Yes — RANGE by month** on `event_date` (UTC date of the event) | Append-only, queried by UID + recent time window |
+| **Blob / control** | `ImportBatch.originalFile`, `Job`, `Session`, `EmailOtp`, `RateLimitCounter`, `WorkerHeartbeat` | No (move BYTEA to object storage before it grows) | Not analytics facts |
+
+### Dimension grain
+
+| Dim | Natural key | Notes |
+|-----|-------------|--------|
+| `DimDate` | `date_key` int `YYYYMMDD` | Pre-populated 10 years. Facts store `date_key` for prune-friendly filters |
+| `DimExchange` | `exchange_id` (OLTP id) | slug, name, default rate |
+| `DimUid` | `(exchange_id, uid)` | Same grain as `UidAccount`. No bound email on this dim if used for public lookup |
+| `DimAsset` | `asset` text (`USDT`, …) | Tiny |
+| `DimOffer` | `offer_id` | Snapshotted rate lives on the **fact**, not only on the dim |
+| `DimBatch` | `batch_id` | period, report type, published_at — not the CSV bytes |
+
+### Fact grain and measures
+
+**`FactCashback` (one row per attributed commission version for a UID+asset+period)**  
+Used by lookup “exchange paid vs your share” (Req 14.7).
+
+- Keys: `date_key` (partition), `uid_sk`, `exchange_sk`, `asset_sk`, `offer_sk` nullable, `batch_sk`
+- Degenerate: `period_start`, `period_end`
+- Measures (decimal, not float): `commission_amount` (exchange paid), `cashback_rate`, `cashback_amount` (UID share)
+- Partition: `PARTITION BY RANGE (date_key)` monthly, e.g. `fact_cashback_2026_09` for `date_key` 20260901–20260930
+- PK must **include** `date_key` (PostgreSQL partition requirement)
+
+**`FactWalletMovement`** — grain = one `WalletEntry`. Measures: `amount`, JSON/numeric bucket deltas. Types CREDIT / HOLD_RELEASE / … stay on the fact as a degenerate `entry_type`. Session-only reads (Req 8.6). Same monthly partition.
+
+**`FactClick`** — grain = one click. Degenerate `link_id`. Monthly partition. Aggressive drop after 12–24 months (clicks are not money).
+
+**`FactWithdrawalEvent`** — grain = one status transition. Keep ≥ 7 years once compliance (#19) is known; until then same monthly partition, no drop.
+
+### Partition operations (so the heap never becomes “all history”)
+
+1. **Create ahead:** a monthly job (or `pg_partman`) creates the next 3 month partitions before the month starts. A `DEFAULT` partition exists so a clock/skew row never fails the insert.
+2. **Prune on read:** every UID lookup of transactions **must** include
+   `date_key >= :from` (e.g. last 24 months). PostgreSQL then opens only those
+   partitions. A query without a date predicate **scans every month** — forbidden
+   on fact tables in app SQL.
+3. **Detach/drop:** click facts older than retention `DETACH` then `DROP`. Money
+   facts are detached to a cheap archive schema / dump, not deleted, until
+   compliance says otherwise.
+4. **Indexes:** create **on the parent** so they apply to all partitions:
+   `(uid_sk, date_key DESC)`, `(exchange_sk, date_key DESC)`. No global unique
+   on a column that is not the partition key unless it includes `date_key`.
+5. **Writes:** OLTP commit first; project to the fact in the same worker
+   transaction as ATTRIBUTE/PUBLISH/click when cheap, or a follow-up job. Idempotent
+   `opKey` / `(commission_id, batch_id)` still applies so retries do not double-insert
+   facts.
+
+### Application rules at this scale
+
+- **Lookup (Req 14)** reads `Wallet` for pending/available (tiny) and
+  `FactCashback` for the table (partition-pruned). It does not `SELECT * FROM
+  WalletEntry`.
+- **Admin analytics** aggregates facts with `date_key BETWEEN`. No
+  `COUNT(*)` on unfiltered facts.
+- **Prisma:** keep OLTP models in Prisma. Declare fact parents in raw SQL
+  migrations (`CREATE TABLE ... PARTITION BY RANGE`). Prisma 6 does not manage
+  partition children well — worker/SQL owns `CREATE TABLE fact_cashback_YYYY_MM
+  PARTITION OF fact_cashback FOR VALUES FROM (...) TO (...)`.
+- **Do not** partition `Wallet`, `UidAccount`, `Job`, or `CommissionRecord`.
+  Those are hot unique rows, not time-series.
+
+### When to build this
+
+Not before go-live while facts are hundreds of rows. Build when **any** of
+these is true: approaching 5,000 transacting UIDs/day, `WalletEntry` or
+`ClickEvent` sequential scans show up in `pg_stat_statements`, or lookup
+transaction history exceeds ~200 ms p95. Until then the OLTP tables remain the
+only store; the mapping above is the target, not a second live database today.
+
 ## Correctness Properties
 
 Invariants the implementation and tests must uphold.
@@ -923,13 +1142,15 @@ matching exchange; a client-supplied link/offer never raises the rate, and misma
 fall back to the exchange default.
 **Validates: Requirements 7.3**
 
-### Property 14: Lookup discloses balances only, never identity or history
-For any (exchange, UID), the lookup response carries only `pending`/`available` per asset
-and freshness timestamps. It never includes a bound email (in any form), payout address,
-withdrawal record, wallet movement history, or the `reserved`/`withdrawn`/`receivable`
-buckets — those require a `UidSession` for that exact `UidAccount`. The endpoint performs
-no writes, so a lookup can never create or claim a `UidAccount` (Req 14.3, 14.5).
-**Validates: Requirements 14.2, 14.3, 14.5**
+### Property 14: Lookup discloses balances and commission split, never identity or payouts
+For any (exchange, UID), the lookup response carries `pending`/`available` per asset,
+freshness timestamps, and per-period `commission` vs `cashback` rows. It never includes a
+bound email (in any form), payout address, withdrawal record, wallet-movement types, or
+the `reserved`/`withdrawn`/`receivable` buckets — those require a `UidSession` for that
+exact `UidAccount`. `commission` matches the latest attributed version, not a published
+amount ATTRIBUTE has not applied yet. The endpoint performs no writes, so a lookup can
+never create or claim a `UidAccount` (Req 14.3, 14.5, 14.7).
+**Validates: Requirements 14.2, 14.3, 14.5, 14.7**
 
 ### Property 15: Rate limits survive restarts and multiple instances
 Lookup and OTP-send budgets are stored in Postgres (`RateLimitCounter`), so they are shared
@@ -1011,10 +1232,12 @@ most critical money/concurrency invariants, not an exhaustive suite.
 - Postgres reachable only from web/worker services (Railway private networking / local
   compose network).
 - Financial state changes are append-only auditable (WalletEntry, WithdrawalEvent).
-- Lookup is the only anonymous endpoint that touches money data. It is read-only, per-IP
-  rate limited from Postgres, and constrained to `pending`/`available` amounts and
-  freshness — never email, address, history, or `reserved`/`withdrawn`/`receivable`
-  (Req 14.3).
+- Lookup is the only anonymous **API** that returns a specific UID's balances. It is
+  read-only, per-IP rate limited from Postgres, and constrained to `pending`/`available`
+  amounts and freshness — never email, address, history, or `reserved`/`withdrawn`/
+  `receivable` (Req 14.3). The home **Online Rebate Ledger** (Req 17) is interim
+  **fake marketing HTML** (100 large deterministic credits, badge on). It must not
+  be mistaken for live wallets and must not grow into an unmasked feed.
 - **Exposure note:** admin APIs and every `/api/uid/*` write MUST require the matching
   session type before shipping; the only intentionally anonymous endpoints are content
   reads, the redirect, the amount-only lookup, and `/api/otp/*` (which are self-rate-limited).
@@ -1030,6 +1253,7 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | Requirement | Design sections |
 |-------------|-----------------|
 | R1 Public discovery | Components/apps/web, API contracts |
+| R17 Online Rebate Ledger | Components/apps/web (home ticker + `ledger-demo.ts` interim 100 large fake credits) |
 | R2 Redirect/tracking | Components/apps/web (best-effort click), Key flows, API contracts |
 | R3 Admin auth & principal separation | Components/apps/web, Auth (interim + admin `Session`) |
 | R4 Language/i18n | Components/Language & i18n |
@@ -1043,10 +1267,12 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | R16 Outbound email (Resend) | Components/core services (`emailPort`), Environments & deployment (Resend send path) |
 | R10 Admin content | Components/apps/web, core services |
 | R11 Admin analytics | Components/apps/web, API contracts |
+| R18 Admin operations shell | Components/apps/web (admin `(shell)` layout + nested routes) |
 | R12 Worker/jobs | Components/apps/worker, Job queue |
 | R13 Deferred sync | Job queue, Environments & deployment |
 | NFR security | Security |
 | NFR deploy | Environments & deployment |
+| NFR scale 5k UID/day | Dimensional store & fact partitioning |
 
 ## Open design decisions
 
@@ -1114,3 +1340,9 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-16 | design.md | Thêm `lookupService`, `otpService`, `uidSessionService`, `emailPort` (+ `resendEmailAdapter`) vào core services; thêm mục "Resend send path" (gửi in-request, không qua job queue; lý do quota 100/ngày) và các env var OTP/Resend mới vào Environments & deployment | Hiện thực Req 15/16 với Resend theo lựa chọn của operator | added |
 | 2026-09-16 | design.md | Viết lại Property 3 (one UID account per pair, bỏ partial unique index), Property 4 (attribution không cần claimant), Property 6 (thêm điều kiện UidSession + first-withdrawal luôn UNDER_REVIEW), Property 14 (lookup chỉ trả balance, không trả identity/history); thêm Property 16 (OTP hashed/single-use/attempt-limited), Property 17 (UidSession scope đúng 1 UID) | Các property cũ mô tả hành vi đã bị thay thế; property mới khoá lại đúng bất biến của Req 5/9/14/15 | updated |
 | 2026-09-16 | design.md | Cập nhật API surface (`/api/lookup`, `/api/otp/*`, `/api/admin/auth/*`, `/api/uid/*`), mục Auth thành "v0.6: admin only", Security (accepted exposure), Requirements mapping, Open design decisions (#12 resolved, #13 narrowed, #20 resolved: Resend, #21 accepted: first-claimant-wins, mục Superseded cho Hybrid) | Đồng bộ toàn bộ design với quyết định UID-first + Resend | updated |
+| 2026-09-17 | design.md | Online Rebate Ledger trên home: SSR tối đa 100 `WalletEntry` CREDIT gần nhất, ticker CSS lặp, mask UID, không bịa hàng, `prefers-reduced-motion` tắt animation; xoá `ledger-demo` khi implement | Req 17 — thu hút visitor bằng giao dịch thật, không dùng bảng illustrative | added |
+| 2026-09-17 | design.md | Interim: **fake 100 credit lớn** (`generateLedgerDemoRows(100)`, ~480–8500 USDT), ticker CSS, giữ badge illustrative; chưa đọc wallet live | Operator muốn ticker hấp dẫn ngay vì dump thật quá ít | updated |
+| 2026-09-17 | design.md | Lookup trả `transactions[]`: commission (sàn trả) vs cashback (chia cho UID); Property 14 và `/api/lookup` cập nhật; vẫn giấu email/address/withdrawal | Req 14.2/14.7 — visitor thấy chia tiền | updated |
+| 2026-09-17 | design.md | Thêm kiến trúc dim/fact + partition RANGE theo tháng cho 5,000 UID giao dịch/ngày; Wallet/UidAccount không partition | NFR scale — tránh heap history làm chậm lookup | added |
+| 2026-09-19 | design.md | Admin left-nav shell: route group `(shell)`, 7 trang, poll theo page; API/Prisma/worker không đổi | Req 18 — `/admin` một cột quá dài | added |
+| 2026-09-22 | design.md | Lookup lấy commission từ version đã có `attr:{versionId}`. Admin: middleware thiếu cookie + `requireAdminPage()` trên từng page. Form giữ id exchange/offer ngoài trang đã tải | Req 18.5, 10.6, 14.7 | updated |

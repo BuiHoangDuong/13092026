@@ -74,8 +74,54 @@
   }
 }
 
-/* ---- Minimal admin styling (kept plain on purpose; admin is not part of the template refresh) ---- */
+@keyframes rebate-ticker {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
+}
+
+.rebate-ticker {
+  /* thead now shares this table with the animated tbody (for a11y); pad the clip height
+     by the header row's rendered height (text-xs line-height 1rem + py-3 1.5rem padding +
+     1px border = 2.5625rem) so the row-scrolling viewport stays 22rem as before. Update
+     this value if the header row's font size, padding, or border changes. */
+  height: calc(22rem + 2.5625rem);
+  overflow: hidden;
+}
+.rebate-ticker-track {
+  animation: rebate-ticker 40s linear infinite;
+  /* Safari has long-standing bugs rendering `transform` on table-row-group boxes; force
+     GPU compositing so the marquee scrolls reliably instead of staying static/clipped. */
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.rebate-ticker:hover .rebate-ticker-track,
+.rebate-ticker:focus-within .rebate-ticker-track {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rebate-ticker {
+    height: auto;
+    max-height: 22rem;
+    overflow: auto;
+  }
+  .rebate-ticker-track {
+    animation: none;
+  }
+  .rebate-ticker-track [data-ticker-copy] {
+    display: none;
+  }
+}
+
+/* ---- Admin shell + content forms ---- */
 @layer components {
+  .admin-shell { @apply flex min-h-screen; }
+  .admin-nav {
+    @apply sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border bg-card p-4;
+  }
+  .admin-nav-title { @apply mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-primary; }
+  .admin-nav a { @apply rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground; }
+  .admin-nav a[aria-current="page"] { @apply bg-muted font-medium text-foreground; }
+  .admin-main { @apply min-w-0 flex-1 px-6 py-10; }
   .admin-stack { @apply grid gap-6 mt-8; }
   .admin-section { @apply rounded-lg border border-border bg-card p-5; }
   .admin-section form { @apply grid grid-cols-2 gap-3 mt-4; }
@@ -95,7 +141,10 @@
   .button {
     @apply inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 cursor-pointer;
   }
+  .load-more { @apply mt-3 text-sm text-primary hover:underline; }
   @media (max-width: 700px) {
+    .admin-shell { @apply flex-col; }
+    .admin-nav { @apply h-auto w-full border-r-0 border-b; }
     .admin-section form { @apply grid-cols-1; }
   }
 }

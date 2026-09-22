@@ -5,6 +5,15 @@ import { lookupResponseSchema, type LookupResponse } from "@cashback/contracts";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { getMessages, type Locale } from "../i18n";
+function money(value: string) {
+  return value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+function rateLabel(value: string | null, unknown: string) {
+  if (value == null) return unknown;
+  const percent = Number(value) * 100;
+  if (!Number.isFinite(percent)) return unknown;
+  return `${percent.toFixed(2).replace(/\.00$/, "")}%`;
+}
 export function CashbackLookup({ exchanges, locale }: { exchanges: Array<{ id: string; name: string }>; locale: Locale }) {
   const m = getMessages(locale).lookup;
   const [result, setResult] = useState<LookupResponse | null>(null); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
@@ -27,6 +36,13 @@ export function CashbackLookup({ exchanges, locale }: { exchanges: Array<{ id: s
       <label className="text-sm">{m.uid}<Input name="uid" disabled={busy} required maxLength={128} autoComplete="off" className="mt-2" placeholder={m.uidPlaceholder} onChange={() => setResult(null)} /></label>
       <Button disabled={busy || !exchanges.length}>{busy ? m.loading : m.check}</Button>
     </form><p className="mt-3 text-xs text-muted-foreground">{m.help}</p>
-    <div aria-live="polite">{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}{result && <div className="mt-6 space-y-4">{!result.hasData ? <p>{m.noData}</p> : <><div className="grid gap-4 sm:grid-cols-2">{result.balances.map(w => <div key={w.asset} className="rounded-xl bg-muted p-5"><p className="font-semibold">{w.asset}</p><p className="mt-2 text-sm">{m.available}</p><p className="break-all text-3xl font-bold text-primary">{w.available}</p><p className="mt-3 break-all text-sm">{m.pending}: {w.pending}</p></div>)}</div><Button asChild><Link href={`/withdraw?exchangeId=${encodeURIComponent(selection?.exchangeId ?? "")}&uid=${encodeURIComponent(selection?.uid ?? "")}`}>{m.withdraw}</Link></Button><p className="text-xs text-muted-foreground">{m.lastImport}: {result.lastImportAt ? new Date(result.lastImportAt).toISOString() : m.unknown}<br/>{m.sourceAsOf}: {result.sourceAsOf ?? m.unknown}</p></>}</div>}</div>
+    <div aria-live="polite">{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}{result && <div className="mt-6 space-y-4">{!result.hasData ? <p>{m.noData}</p> : <><div className="grid gap-4 sm:grid-cols-2">{result.balances.map(w => <div key={w.asset} className="rounded-xl bg-muted p-5"><p className="font-semibold">{w.asset}</p><p className="mt-2 text-sm">{m.received}</p><p className="break-all text-3xl font-bold text-primary">{money(w.available)}</p><p className="mt-1 text-xs text-muted-foreground">{m.available}</p><p className="mt-3 break-all text-sm">{m.pending}: {money(w.pending)}</p></div>)}</div>
+      <div className="overflow-x-auto rounded-xl border border-border">
+        <p className="px-4 pt-4 text-sm font-semibold">{m.txTitle}</p>
+        <p className="px-4 pt-1 text-xs text-muted-foreground">{m.txLead}</p>
+        {result.transactions.length ? <table className="mt-3 w-full text-left text-sm"><thead><tr className="border-y border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground"><th className="px-4 py-2 font-medium">{m.txPeriod}</th><th className="px-4 py-2 font-medium">{m.txAsset}</th><th className="px-4 py-2 font-medium">{m.txPaid}</th><th className="px-4 py-2 font-medium">{m.txRate}</th><th className="px-4 py-2 font-medium">{m.txShare}</th></tr></thead><tbody>{result.transactions.map(row => <tr key={row.id} className="border-b border-border/60 last:border-0"><td className="px-4 py-2.5 text-muted-foreground">{row.periodStart.slice(0, 10)} – {row.periodEnd.slice(0, 10)}</td><td className="px-4 py-2.5">{row.asset}</td><td className="px-4 py-2.5">{money(row.commission)} {row.asset}</td><td className="px-4 py-2.5">{rateLabel(row.cashbackRate, m.unknown)}</td><td className="px-4 py-2.5 font-medium text-primary">{money(row.cashback)} {row.asset}</td></tr>)}</tbody></table> : <p className="px-4 py-4 text-sm text-muted-foreground">{m.txEmpty}</p>}
+        {result.hasMore && <p className="px-4 py-3 text-xs text-muted-foreground">{m.txHasMore}</p>}
+      </div>
+      <Button asChild><Link href={`/withdraw?exchangeId=${encodeURIComponent(selection?.exchangeId ?? "")}&uid=${encodeURIComponent(selection?.uid ?? "")}`}>{m.withdraw}</Link></Button><p className="text-xs text-muted-foreground">{m.lastImport}: {result.lastImportAt ? new Date(result.lastImportAt).toISOString() : m.unknown}<br/>{m.sourceAsOf}: {result.sourceAsOf ?? m.unknown}</p></>}</div>}</div>
   </section>;
 }

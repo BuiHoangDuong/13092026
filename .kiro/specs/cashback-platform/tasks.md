@@ -2,8 +2,8 @@
 
 - **Status:** Draft v2.0 (UID-first re-key: no customer accounts; cashback lookup by
   exchange + UID; email OTP via Resend + UID session; supersedes the Hybrid plan of v1.4)
-- **Last updated:** 2026-09-16
-- **Derives from:** `requirements.md` (Draft v0.6), `design.md` (Draft v0.7)
+- **Last updated:** 2026-09-17
+- **Derives from:** `requirements.md` (Draft v0.6 + Req 17), `design.md` (Draft v0.7)
 
 ## Overview
 
@@ -498,6 +498,42 @@ flowchart TD
     lint, typecheck, and production build pass.
   - _Requirements: none directly (tooling/UX only); Design: Components/apps/web_
 
+- [x] 27. Home Online Rebate Ledger ticker (interim fake 100 large credits)
+  - Keep `apps/web/src/content/ledger-demo.ts` as the only source for the home
+    ticker. Generate **exactly 100** deterministic rows (not live `WalletEntry`).
+    Amounts must look large: most ~480–2,600 USDT, ~every 11th row a headline
+    ~3,200–8,500 USDT. Rotate Binance/MEXC/Bybit, mask UIDs, spread dates over
+    ~30 days. Keep the illustrative badge.
+  - Animate the 100 rows as a CSS vertical marquee (duplicate the table for a
+    seamless loop, pause on hover/focus, `prefers-reduced-motion` = static
+    scrollable table). No SSE, no new public API, no DB read for this block.
+  - Copy stays English (`home.ledger*`). Lead must not claim the ticker is the
+    visitor's own wallet.
+  - **Verified 2026-09-17:** `generateLedgerDemoRows(100)` emits 100 masked rows
+    with large USDT amounts; home ticker duplicates the table for a 40s CSS
+    loop, pauses on hover/focus, and disables motion under
+    `prefers-reduced-motion`. Illustrative badge kept. Web `tsc --noEmit` pass.
+  - _Requirements: 17.1, 17.2, 17.3, 17.4, 17.5, 17.6; Design: Components/apps/web
+    (Online Rebate Ledger)_
+
+- [x] 28. Lookup shows commission vs cashback split (Requirement 14.2, 14.7)
+  - Extend `lookupResponseSchema` with `transactions`: `{ asset, periodStart, periodEnd,
+    commission, cashbackRate, cashback }[]` (decimal strings, cap 100, newest period
+    first). Empty array when `hasData` is false. Do not add keys `email`, `address`,
+    `reserved`, `withdrawn`, `receivable`, or `history`.
+  - `lookupService` reads attributed `CommissionRecord`s for that UID: `commission` =
+    amount of the latest applied `CommissionVersion` (`WalletEntry.sourceRef` = version
+    id; 0 when no applied entry exists, never in-flight `reconciledAmount`), `cashback` =
+    `creditedCashback`, `cashbackRate` snapshot. `hasMore` when more than 100 rows exist.
+  - Home lookup UI: keep pending/available totals, then a table **Exchange paid** vs
+    **Your share** (rate + period). English catalog only.
+  - Update `scripts/test-uid-access.mjs` so the body still must not match
+    `email|address|reserved|withdrawn|receivable|history` and must include
+    `transactions` when `hasData` is true.
+  - **Verified 2026-09-17:** schema + `lookupService` return `transactions`; home
+    table shows Exchange paid vs Your share; `tsc` for contracts/core/web passes.
+  - _Requirements: 14.2, 14.3, 14.7, 8.5, 8.6; Design: Key flows/Cashback lookup_
+
 - [x] 16. Admin analytics & operations dashboard
   - Implement `GET /api/admin/analytics` (click metrics by link/exchange/time from internal data), `GET /api/admin/accounts/:id/activity` (paginated, per UID/account), and `GET /api/admin/sync-status`; 30s polling when tab visible, 5s while a batch processes; admin/private responses set `Cache-Control: private, no-store`; no secrets/raw reports leaked; views for attributed vs unattributed commission and the withdrawal queue.
   - **Verified 2026-09-17:** all three admin endpoints use the admin guard/private response
@@ -594,6 +630,61 @@ flowchart TD
   - Add `PostgreSQL NOTIFY → backend SSE → client refetch` with auth, heartbeat, reconnect snapshot, and streaming-capable proxy. Not required for MVP.
   - _Requirements: 13.6; Design: Overview_
 
+- [ ] 29. Dimensional facts + monthly partitions (5,000 transacting UIDs/day)
+  - **Do not start** until approaching 5,000 UIDs/day, `WalletEntry`/`ClickEvent`
+    sequential scans appear, or lookup history p95 > ~200 ms. OLTP Prisma tables
+    stay the money source of truth.
+  - Add SQL-migrated fact parents `PARTITION BY RANGE (date_key)`: `FactCashback`,
+    `FactWalletMovement`, `FactClick`, `FactWithdrawalEvent`. Monthly children +
+    `DEFAULT` partition; create next 3 months ahead. Dims (`DimDate`, exchange,
+    UID, asset, offer) and `Wallet` balances stay **unpartitioned**.
+  - Project from ATTRIBUTE/PUBLISH/click; lookups of transactions filter
+    `date_key >= :from` so PostgreSQL prunes months. Prisma does not manage
+    partition children — raw SQL only.
+  - _Requirements: NFR scale 5k UID/day; Design: Dimensional store & fact partitioning_
+
+- [x] 30. Admin left-nav shell (Requirement 18)
+  - **Do not change** Prisma, worker, cashback engine, or `/api/admin/*` contracts.
+  - Introduce `app/admin/(shell)/layout.tsx` (session guard + sticky left nav) and
+    split the stacked `/admin` page into: `/admin` overview, `/admin/imports`,
+    `/admin/withdrawals`, `/admin/exchanges`, `/admin/offers`, `/admin/links`,
+    `/admin/guides`. `/admin/login` stays outside the shell.
+  - Move existing `AnalyticsDashboard`, `BybitOperations`, `WithdrawalQueue`, and
+    split `AdminContentManager` into four section components. Poll only while the
+    page is mounted and the tab is visible.
+  - Verify: unauthenticated `/admin/*` (except login) redirects; nav highlights
+    the active route; imports and withdrawals no longer share one scroll page;
+    two tabs can open two sections; lint/typecheck/build pass.
+  - **Verified 2026-09-19:** shell layout + 7 routes; content split into four
+    sections; login stays outside the shell; `tsc` and `eslint src` pass. Build
+    recorded with the web production build.
+  - _Requirements: 18.1–18.6, 10.1, 11.2; Design: Components/apps/web (Admin shell)_
+
+- [x] 31. Admin RSC guard, link offer select, lookup version (Req 18.5, 10.6, 14.7)
+  - Middleware redirects `/admin/*` except `/admin/login` when the admin session
+    cookie is absent, before the page renders. Each shell page calls
+    `requireAdminPage()` before reading data or returning content. The layout
+    guard stays. `/api/admin/*` guards are unchanged.
+  - Referral-link, offer, and guide forms keep the current exchange or offer
+    selected when that id is outside the first loaded page, so save does not
+    clear `offerId` or retarget the exchange unless the admin picks another option.
+  - Lookup `transactions[].commission` is the amount of the latest applied
+    `CommissionVersion` (`WalletEntry.sourceRef` = version id, not parsed from
+    `opKey`). Until ATTRIBUTE writes that entry, a newly published
+    `reconciledAmount` is not shown; commission is 0 if no applied entry exists.
+    `cashback` stays `creditedCashback`.
+  - **Verified 2026-09-22:** core and web typecheck pass; eslint on the touched
+    admin/web files passes. `creditedCommissionByRecord` keeps commission on the
+    version that already has `attr:{versionId}`. `retainedChoiceId` keeps an id
+    that is outside the loaded page and adds nothing when it is already listed.
+    Dev server after the pending Railway migrations: no cookie on `/admin/imports`
+    returns 307 to `/admin/login`. A bogus `cashback_session` makes both the
+    layout and the imports page throw `NEXT_REDIRECT` to `/admin/login` before
+    the page body; the document request is 307. `/admin/login` stays 200.
+    `/api/health` is 200 with database ok. The dropdown was not clicked in a
+    browser.
+  - _Requirements: 18.5, 10.6, 14.7; Design: Admin shell, Cashback lookup, Property 14_
+
 ## Notes
 
 - **[PENDING] dedup key** (Open decision #11): finalize `CommissionRecord.dedupKey`
@@ -647,3 +738,10 @@ flowchart TD
 | 2026-09-17 | tasks.md | Hoàn thành Task 25.9/25, Task 26 và Task 16: integration withdrawal, OTP/data-table/confirm-dialog, ba API dashboard admin, analytics/sync/activity UI và polling theo visibility/trạng thái batch | Đồng bộ tiến độ với code đã lint, typecheck, build và integration-test trên schema test cô lập | updated |
 | 2026-09-17 | tasks.md | Đánh done Task 17 (đã xác nhận `withAdminMutation` trên mọi admin write route, `uidPrincipal` suy `UidAccount` chỉ từ session, không secret `NEXT_PUBLIC_`, Railway chỉ inject `DATABASE_URL` private cho web/worker, audit ghi tại `docs/security-audit.md`); giữ Task 18/19 ở trạng thái in-progress vì integration test chưa re-run với `TEST_DATABASE_URL`, `railway config plan` và backup/restore drill vào DB tạm chưa chạy | Phản ánh đúng phần đã verify (typecheck/lint/build pass) và phần còn chờ một DB test cụ thể trước khi đánh done | updated |
 | 2026-09-17 | tasks.md | Pre-golive: cho phép dùng DB Railway làm test/dev DB cho Task 18/19 (integration test + backup/restore drill) không cần xác nhận từng lần | Chưa go-live, DB chỉ có dữ liệu fake; sẽ init lại khi go-live | updated |
+| 2026-09-17 | tasks.md | Thêm Task 27: ticker Online Rebate Ledger 100 hàng fake cashback lớn, CSS marquee, badge illustrative | Req 17 interim — thu hút visitor khi dump thật chưa đủ credit | added |
+| 2026-09-17 | tasks.md | Thêm Task 28: lookup trả bảng sàn trả vs chia cho UID (`transactions`) | Req 14.2/14.7 | added |
+| 2026-09-17 | tasks.md | Thêm Task 29 (Phase 4): dim/fact + partition tháng khi ~5,000 UID/ngày | NFR scale — chưa làm lúc dump còn ít hàng | added |
+| 2026-09-19 | tasks.md | Thêm Task 30: admin left-nav + tách route, không đổi API/DB/worker | Req 18 — chờ duyệt rồi mới code | added |
+| 2026-09-19 | tasks.md | Đánh done Task 30: shell layout, 7 route, 4 content section; lint/typecheck/build pass | Implement Req 18 | updated |
+| 2026-09-22 | tasks.md | Thêm Task 31: chặn RSC admin, giữ offer/exchange ngoài trang đã tải, lookup đúng version đã attribute | Req 18.5, 10.6, 14.7 | added |
+| 2026-09-22 | tasks.md | Lookup không fallback reconciledAmount; hasMore; admin page wrapper; exchange list dùng chung. Giữ requireAdminPage trong page vì layout không chặn RSC | Review 13 finding | updated |

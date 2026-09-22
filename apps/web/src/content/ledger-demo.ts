@@ -1,14 +1,10 @@
 /**
- * DEMO / ILLUSTRATIVE ONLY — not real transactions, not real users.
+ * INTERIM MARKETING SET — not real transactions, not real users (Req 17.3).
  *
- * This powers a preview of the future "rebate ledger" table (real data lands once
- * import + attribution + wallet, i.e. Tasks 10-14, are implemented and reading from
- * `WalletEntry`/`CommissionRecord`). Until then this file is the ONLY source for the
- * table; do not wire it to any live customer/UID/amount data.
- *
- * Rows are deterministically generated (not hand-typed fake amounts) so nothing here
- * resembles a specific real payout. The UI must keep the "illustrative example" label
- * shown alongside this data — see ledgerDemoBadge in the message catalog.
+ * Home Online Rebate Ledger shows exactly 100 deterministic fake credits with
+ * large USDT amounts so the ticker looks busy. Do not wire this to WalletEntry
+ * until the operator switches to live credits (Req 17.7). Keep the illustrative
+ * badge next to the table.
  */
 
 export type LedgerDemoRow = {
@@ -21,28 +17,38 @@ export type LedgerDemoRow = {
 };
 
 const DEMO_EXCHANGES = ["Binance", "MEXC", "Bybit"] as const;
+const DEMO_RATES = [40, 35, 30] as const;
 
 function maskedUid(seed: number): string {
-  const digits = String(100 + (seed * 37) % 900);
-  return `***${digits}***`;
+  const digits = String(1000 + ((seed * 7919) % 9000));
+  return `***${digits}`;
 }
 
 function rebateAmount(seed: number): string {
-  // Deterministic pseudo-amount in a plausible range, not tied to any real payout.
-  const value = 20 + ((seed * 53) % 400) + (seed % 7) / 10;
+  const headline = seed % 11 === 0;
+  const value = headline
+    ? 3200 + ((seed * 97) % 5300) + (seed % 9) / 10
+    : 480 + ((seed * 83) % 2100) + (seed % 13) / 10;
   return value.toFixed(2);
 }
 
-export function generateLedgerDemoRows(count = 20, isoDate = "2026-09-15"): LedgerDemoRow[] {
+function rebateDate(seed: number, end = "2026-09-17"): string {
+  const endUtc = Date.parse(`${end}T00:00:00.000Z`);
+  const daysBack = seed % 30;
+  return new Date(endUtc - daysBack * 86_400_000).toISOString().slice(0, 10);
+}
+
+export function generateLedgerDemoRows(count = 100, endDate = "2026-09-17"): LedgerDemoRow[] {
   return Array.from({ length: count }, (_, i) => {
     const seed = i + 1;
+    const exchangeIndex = seed % DEMO_EXCHANGES.length;
     return {
-      exchange: DEMO_EXCHANGES[seed % DEMO_EXCHANGES.length]!,
-      ratePercent: [40, 35, 30][seed % 3]!,
+      exchange: DEMO_EXCHANGES[exchangeIndex]!,
+      ratePercent: DEMO_RATES[exchangeIndex]!,
       maskedUid: maskedUid(seed),
       rebateAmount: rebateAmount(seed),
       asset: "USDT",
-      date: isoDate
+      date: rebateDate(seed, endDate)
     };
   });
 }

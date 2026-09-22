@@ -12,7 +12,7 @@ export const en = {
     statsCountries: "Countries",
     statsExchanges: "Exchanges",
     ledgerTitle: "Online Rebate Ledger",
-    ledgerLead: "Once live, this table updates daily from published affiliate reports. You'll be able to check your own balance in your wallet.",
+    ledgerLead: "A stream of recent cashback credits across our referral network. Look up your exchange and UID above to see your own balance.",
     ledgerDemoBadge: "Illustrative example — not live data",
     ledgerColExchange: "Exchange",
     ledgerColRate: "Rate",
@@ -38,6 +38,12 @@ export const en = {
     check: "Check cashback", withdraw: "Verify email and withdraw", loading: "Checking…", help: "Use your account UID, not a referral code. Keep any leading zeros. Balances are separate for each currency.",
     available: "Available to withdraw", pending: "Pending", noData: "No cashback data for this UID under our referral links yet.",
     lastImport: "Last report published (UTC)", sourceAsOf: "Source data as of (UTC)", unknown: "Not provided",
+    received: "You receive",
+    txTitle: "Your cashback transactions",
+    txLead: "Each row shows how much the exchange paid in affiliate commission and how much we shared with this UID.",
+    txPeriod: "Period (UTC)", txAsset: "Asset", txPaid: "Exchange paid", txRate: "Your rate", txShare: "Your share",
+    txEmpty: "No attributed commission rows yet.",
+    txHasMore: "Showing the 100 most recent rows. Older commission is not listed.",
     rateLimited: "Too many lookups. Try again in {{seconds}} seconds.", unavailable: "Cashback is temporarily unavailable. Please try again."
   },
   withdrawal: {

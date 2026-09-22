@@ -187,15 +187,24 @@ function StatBlock({ value, label }: { value: string; label: string }) {
 }
 
 /**
- * Preview of the future rebate ledger, backed ONLY by `generateLedgerDemoRows`
- * (deterministic demo data — see content/ledger-demo.ts). This is not connected to any
- * wallet/commission table and must not be, until real attribution data exists. The
- * "illustrative example" badge is intentionally not decorative: remove it only once this
- * table is rewired to real `WalletEntry` data.
+ * Interim marketing ticker (Req 17): 100 deterministic large fake credits.
+ * Not WalletEntry. Keep the illustrative badge until live credits replace this.
  */
+function RebateLedgerRow({ row, copy = false }: { row: ReturnType<typeof generateLedgerDemoRows>[number]; copy?: boolean }) {
+  return (
+    <tr aria-hidden={copy || undefined} data-ticker-copy={copy ? "" : undefined} className="border-b border-border/60 odd:bg-muted/10">
+      <td className="px-4 py-2.5 text-foreground">{row.exchange}</td>
+      <td className="px-4 py-2.5 text-muted-foreground">{row.ratePercent}%</td>
+      <td className="px-4 py-2.5 text-muted-foreground">{row.maskedUid}</td>
+      <td className="px-4 py-2.5 font-medium text-primary">{row.rebateAmount} {row.asset}</td>
+      <td className="px-4 py-2.5 text-muted-foreground">{row.date}</td>
+    </tr>
+  );
+}
+
 function RebateLedgerDemo({ locale }: { locale: Locale }) {
   const messages = getMessages(locale);
-  const rows = generateLedgerDemoRows(20);
+  const rows = generateLedgerDemoRows(100);
   return (
     <section className="mt-20 border-t border-border pt-12">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -205,8 +214,8 @@ function RebateLedgerDemo({ locale }: { locale: Locale }) {
         </Badge>
       </div>
       <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{messages.home.ledgerLead}</p>
-      <div className="mt-6 overflow-x-auto rounded-xl border border-border">
-        <table className="w-full text-left text-sm">
+      <div className="rebate-ticker mt-6 rounded-xl border border-border" tabIndex={0} aria-label={messages.home.ledgerTitle}>
+        <table className="w-full table-fixed text-left text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3 font-medium">{messages.home.ledgerColExchange}</th>
@@ -216,18 +225,9 @@ function RebateLedgerDemo({ locale }: { locale: Locale }) {
               <th className="px-4 py-3 font-medium">{messages.home.ledgerColDate}</th>
             </tr>
           </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className="border-b border-border/60 last:border-0 odd:bg-muted/10">
-                <td className="px-4 py-2.5 text-foreground">{row.exchange}</td>
-                <td className="px-4 py-2.5 text-muted-foreground">{row.ratePercent}%</td>
-                <td className="px-4 py-2.5 text-muted-foreground">{row.maskedUid}</td>
-                <td className="px-4 py-2.5 font-medium text-primary">
-                  {row.rebateAmount} {row.asset}
-                </td>
-                <td className="px-4 py-2.5 text-muted-foreground">{row.date}</td>
-              </tr>
-            ))}
+          <tbody className="rebate-ticker-track">
+            {rows.map((row, index) => <RebateLedgerRow key={`${row.maskedUid}-${row.date}-${index}`} row={row} />)}
+            {rows.map((row, index) => <RebateLedgerRow key={`copy-${row.maskedUid}-${row.date}-${index}`} row={row} copy />)}
           </tbody>
         </table>
       </div>

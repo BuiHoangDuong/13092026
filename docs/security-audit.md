@@ -4,6 +4,9 @@
 
 - Every `/api/admin/*` data route uses `withAdmin`; admin mutations use
   `withAdminMutation`, which requires an admin session and validates the request origin.
+- Admin pages are not guarded by the shell layout alone. Middleware redirects
+  `/admin` (except `/admin/login`) when the session cookie is missing, and each
+  shell page calls `requireAdminPage()` before reading data or returning content.
 - Every `/api/uid/*` route calls `uidPrincipal(request)`. The principal comes only from
   the hashed `cashback_uid_session` cookie; caller-selected `uidAccountId`, `exchangeId`,
   and `uid` query parameters are rejected.
