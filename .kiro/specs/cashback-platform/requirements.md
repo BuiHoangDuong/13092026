@@ -814,6 +814,11 @@ tab) to do several jobs without losing my place.
    WHEN an admin opens a route in a group, THE SYSTEM SHALL expand that group and
    indicate the current destination. The groups SHALL remain usable on narrow
    screens.
+10. WHEN an admin opens the Referral activity report, THE SYSTEM SHALL prefill
+    both period dates with the current UTC calendar date. THE SYSTEM SHALL use UTC
+    to interpret the selected report dates and SHALL NOT ask for a source timezone
+    in this report filter. This SHALL NOT change the source timezone metadata
+    required for manual uploads.
 
 ---
 
@@ -1046,3 +1051,4 @@ tab) to do several jobs without losing my place.
 | 2026-09-27 | requirements.md | Req 18.9: admin nav xếp từng link một hàng; Data ingest/Reports xổ xuống, tự mở nhóm của route hiện tại và dùng được bằng bàn phím trên màn hình hẹp | Sidebar hiện tại dồn link ngang và ngắt nhãn khó đọc | added |
 | 2026-09-27 | requirements.md | Req 13.14: worker ghi readiness an toàn và còn hạn cho web; chặn Enable/Sync khi chưa sẵn sàng và hiện mã lý do cụ thể, không đưa secret sang web | Web hiện tự kiểm tra biến môi trường chỉ có trên worker nên luôn báo Connector is not ready | added |
 | 2026-09-27 | requirements.md | Req 13.12/13.14: bỏ điều kiện bắt buộc IP allowlist; key `ips=["*"]` vẫn được sync nếu read-only Affiliate và chưa hết hạn, chỉ cảnh báo IP/expiry; giữ chặn khi Bybit thực sự từ chối IP | Người vận hành chọn dùng key không giới hạn IP để bật ingest tự động | updated |
+| 2026-09-27 | requirements.md | Req 18.10: hai ngày lọc báo cáo Referral activity mặc định là ngày hiện tại theo UTC; bỏ ô source timezone trong báo cáo và luôn diễn giải kỳ lọc theo UTC, giữ metadata timezone cho upload | Giảm thao tác nhập trên trang báo cáo và thống nhất ranh giới ngày với dữ liệu API | added |

@@ -4,7 +4,8 @@ import { ActivityReport } from "../../../activity-report";
 
 async function ReportSection() {
   const exchanges = (await listPublishedExchanges()).map(({ id, name }) => ({ id, name }));
-  return <ActivityReport exchanges={exchanges} />;
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  return <ActivityReport exchanges={exchanges} todayUtc={todayUtc} />;
 }
 
 export default async function ActivityReportPage() {

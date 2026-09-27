@@ -1148,6 +1148,13 @@ until the reset.
   show a visible focus state. On narrow screens the nav moves above the main
   content, retains the same stacked dropdown structure, and does not clip links.
 
+  **Referral activity filter (Req 18.10).** The server passes the current UTC
+  calendar date (`YYYY-MM-DD`) when rendering the report. Both period date inputs
+  start with that value; the admin may change either date. The client converts the
+  inclusive selected dates to UTC boundaries before querying
+  `/api/admin/reports/activity`. The report form has no source timezone input;
+  `sourceTz` remains part of manual upload metadata and parsing only.
+
   Route group so login has no sidebar:
 
   ```
@@ -2385,3 +2392,4 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-27 | design.md | Admin nav dùng disclosure dropdown cho Data ingest/Reports, link xếp dọc full-width, nhóm route hiện tại tự mở; giữ focus và mobile layout | Req 18.9: tránh link dồn ngang/ngắt nhãn trong sidebar | updated |
 | 2026-09-27 | design.md | Worker probe readiness định kỳ và lưu snapshot không chứa secret; web dùng kết quả còn hạn để điều khiển Enable/Sync/Resume, UI hiện mã lỗi; chặn root UID lệch | Req 13.14: sửa kiểm tra nhầm biến môi trường của web | updated |
 | 2026-09-27 | design.md | Cho phép readiness với key `ips=["*"]`, giữ cảnh báo và ngày hết hạn; chỉ chặn khi Bybit thực sự trả lỗi IP/quyền/key | Req 13.12: bỏ cổng chặn IP allowlist do ứng dụng tự đặt | updated |
+| 2026-09-27 | design.md | Bộ lọc Referral activity lấy ngày UTC lúc render làm mặc định cho period start/end, cố định phép đổi ranh giới kỳ sang UTC và bỏ ô source timezone riêng của báo cáo | Req 18.10: thao tác xem dữ liệu hôm nay đơn giản và cùng ranh giới ngày với API | updated |

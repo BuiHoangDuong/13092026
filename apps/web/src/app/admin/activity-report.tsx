@@ -15,7 +15,7 @@ function metrics(row: ActivityReportResponse["activity"][number], kind: string) 
     .map((metric) => `${metric.amount ?? metric.valueState} ${metric.asset}`).join(", ") || "—";
 }
 
-export function ActivityReport({ exchanges }: { exchanges: Array<{ id: string; name: string }> }) {
+export function ActivityReport({ exchanges, todayUtc }: { exchanges: Array<{ id: string; name: string }>; todayUtc: string }) {
   const [report, setReport] = useState<ActivityReportResponse | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -33,7 +33,7 @@ export function ActivityReport({ exchanges }: { exchanges: Array<{ id: string; n
     event.preventDefault();
     const fields = new FormData(event.currentTarget);
     try {
-      const period = inclusivePeriodUtc(String(fields.get("start")), String(fields.get("end")), String(fields.get("sourceTz") ?? "").trim());
+      const period = inclusivePeriodUtc(String(fields.get("start")), String(fields.get("end")), "UTC");
       const base = new URLSearchParams({ exchangeId: String(fields.get("exchangeId") ?? ""), ...period }).toString();
       setQuery(base);
       void fetchPage(base);
@@ -41,16 +41,15 @@ export function ActivityReport({ exchanges }: { exchanges: Array<{ id: string; n
   }
   return <section className="mt-8 space-y-4">
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    <form onSubmit={load} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <form onSubmit={load} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <label className="text-sm">Exchange<select name="exchangeId" className="mt-1 block w-full rounded-md border border-border bg-background p-2" required>{exchanges.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      <label className="text-sm">Source timezone<Input name="sourceTz" required placeholder="UTC" /></label>
-      <label className="text-sm">Period start<Input name="start" type="date" required /></label>
-      <label className="text-sm">Period end<Input name="end" type="date" required /></label>
+      <label className="text-sm">Period start (UTC)<Input name="start" type="date" defaultValue={todayUtc} required /></label>
+      <label className="text-sm">Period end (UTC)<Input name="end" type="date" defaultValue={todayUtc} required /></label>
       <Button type="submit" disabled={busy}>Show activity</Button>
     </form>
     {report && <>
       <p className="text-sm text-muted-foreground">{report.note} Reported commission is not pending or settled cashback.</p>
-      <p className="text-xs text-muted-foreground">API totals include whole UTC day buckets that overlap the selected period. A non-UTC boundary makes those rows partial because daily values cannot be prorated.</p>
+      <p className="text-xs text-muted-foreground">API totals include whole UTC day buckets in the selected period.</p>
       {!!report.coverageDays.length && <p className="text-sm">API coverage: {report.coverageDays.map((day) => `${day.rootAccount}: ${day.fetched}/${day.expected} days fetched, ${day.open} open, ${day.missing} missing`).join("; ")}</p>}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">

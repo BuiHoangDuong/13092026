@@ -791,6 +791,12 @@ flowchart TD
   - Verify wildcard-IP readiness and admin enable on the Docker stack.
   - _Requirements: 13.7, 13.12, 13.14; Design: Schedule and operation_
 
+- [x] 37. Default Referral activity filter to today UTC (Req 18.10)
+  - Prefill both report dates from the server's current UTC date, remove the
+    report source timezone field, and convert the selected dates as UTC.
+  - Verify the web production build on the Docker stack.
+  - _Requirements: 18.10; Design: Admin shell — Referral activity filter_
+
 ## Notes
 
 - **[PENDING] commission dedup key** (Open decision #11): finalize
@@ -838,3 +844,4 @@ flowchart TD
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 34: admin nav dropdown cho Data ingest/Reports, link xếp dọc và tự mở nhóm hiện tại; typecheck/lint/build web qua | Req 18.9 và phản hồi về sidebar khó đọc | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 35: worker ghi readiness, web đọc trạng thái còn hạn, tránh yêu cầu Bybit secret trên web; Docker build/migration/integration qua; probe thật local báo IP_ALLOWLIST_REQUIRED | Req 13.14, sửa lỗi Connector is not ready giả và hiện đúng blocker | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 36: bỏ cổng chặn key không IP allowlist, giữ cảnh báo/expiry và lỗi Bybit 401/403; Docker build/unit/integration qua, probe key local báo READY với IP `*` | Req 13.12 theo yêu cầu người vận hành | added |
+| 2026-09-27 | tasks.md | Thêm và hoàn thành Task 37: mặc định period start/end của Referral activity là hôm nay theo UTC và bỏ ô source timezone của báo cáo; Docker web build qua | Req 18.10 và yêu cầu giảm thao tác lọc báo cáo | added |
