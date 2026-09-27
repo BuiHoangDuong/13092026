@@ -1,0 +1,18 @@
+# Secrets and customer data never enter an image (compose passes env at runtime).
+.env
+.env.*
+data/
+infra/data/
+
+# Build output and local state; the image builds from source like Railway.
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+packages/db/src/generated
+.git
+.claude
+.kiro
+*.log

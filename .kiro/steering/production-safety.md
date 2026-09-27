@@ -2,12 +2,14 @@
 
 > Scope: áp dụng cho mọi phiên làm việc trong workspace này.
 
-## Giai đoạn hiện tại: Pre-golive (dùng DB Railway làm test/dev, chưa có dữ liệu thật)
+## Giai đoạn hiện tại: Pre-golive — test trên Docker mô phỏng Railway (từ 2026-09-27)
 
-- **Trạng thái (từ 2026-09-17):** project chưa go-live. DB Railway **hosted** hiện tại (biến `DATABASE_URL`) chỉ chứa dữ liệu seed/fake, KHÔNG có dữ liệu người dùng thật. Người dùng đã xác nhận: agent được dùng thẳng DB này làm test/dev DB (kể cả cho `TEST_DATABASE_URL`, integration test, backup/restore drill) và được thực hiện ghi / DDL / `prisma migrate deploy` / seed / script một lần **mà không cần hỏi xác nhận từng lần**.
-- **Luôn là DB Railway hosted, KHÔNG BAO GIỜ dùng DB local.** Không dùng Postgres local (Docker/Postgres.app/service Windows), `localhost`/`127.0.0.1`, cũng không dùng SQLite hay DB thay thế nào khác. Mọi schema/DB test tạm (nếu cần) phải tạo trên chính server Railway Postgres, không tạo local.
-- Khi go-live thật (có dữ liệu người dùng), người dùng sẽ xoá và init lại DB từ đầu. Lúc đó mục này bị gỡ bỏ và "Quy tắc mặc định" bên dưới quay lại áp dụng đầy đủ.
-- Ngoại lệ này KHÔNG áp dụng cho: xoá toàn bộ database/instance production, thay đổi credential / access control / role, hoặc bất kỳ hành động làm mất khả năng phục hồi dữ liệu mà không có đường rollback rõ ràng — các hành động này vẫn PHẢI hỏi trước.
+- **Test / dev chạy trên Docker, cấu hình giống Railway.** Mọi build, migrate, seed, integration test, backup/restore drill và thử nghiệm dữ liệu do agent chạy đều dùng stack Docker trong `infra/docker-compose.yml`. Stack này mô phỏng đúng Railway: Postgres 18.6 (Debian), `TimeZone=Etc/UTC`, `max_connections=500`, DB `railway`, host nội bộ `postgres`; web và worker build/start bằng đúng lệnh Railway (`.railway/railway.ts`), web chạy `db:migrate` trước khi start và healthcheck `/api/health`. Trên stack Docker, agent được ghi / DDL / migrate / seed / reset **không cần hỏi từng lần**.
+- **Không dùng DB thay thế khác:** không Postgres cài trực tiếp trên máy (scoop/Postgres.app/service Windows, cluster tạm), không SQLite, không bản Postgres khác version với Railway. Nếu Docker không chạy được: dừng và báo người dùng, không tự chuyển sang DB khác và không tự chuyển sang Railway.
+- **Railway chỉ dùng khi người dùng yêu cầu tường minh**, và chỉ để **debug** (log, status, kết nối, cấu hình) hoặc **truy xuất dữ liệu** (đọc). Agent KHÔNG tự chạy test suite, migrate, seed, script một lần, `railway config apply` hay bất kỳ lệnh ghi nào lên Railway, kể cả khi DB Railway hiện chỉ có dữ liệu seed/fake. Khi được yêu cầu ghi lên Railway: mô tả lệnh và tác động, chờ xác nhận, chỉ chạy đúng lệnh đã duyệt.
+- Việc Railway tự chạy `pnpm --filter @cashback/db db:migrate` trong `preDeploy` khi người dùng deploy là quy trình deploy của người dùng, không phải thao tác của agent.
+- Khi go-live thật (có dữ liệu người dùng), người dùng sẽ xoá và init lại DB từ đầu; "Quy tắc mặc định" bên dưới áp dụng đầy đủ cho Railway production.
+- Luôn PHẢI hỏi trước (kể cả trên Docker nếu ảnh hưởng ngoài stack test): xoá toàn bộ database/instance, thay đổi credential / access control / role, hoặc hành động làm mất khả năng phục hồi dữ liệu mà không có đường rollback rõ ràng.
 
 ## Quy tắc mặc định (áp dụng lại sau go-live thật, hoặc khi ngoại lệ trên bị gỡ)
 
@@ -30,4 +32,4 @@ Cụ thể, các hành động sau đây KHÔNG được tự ý thực hiện m
 
 ## Lý do
 
-Agent có `railway ssh` và `DATABASE_URL` production trong workspace. Về mặt kỹ thuật có thể chạy bất kỳ SQL nào. Trong giai đoạn pre-golive, rủi ro này được người dùng chấp nhận có chủ đích (mục "Giai đoạn hiện tại"). Sau go-live, quy tắc xác nhận là lớp bảo vệ chính; kiểm soát kỹ thuật đầy đủ (restricted DB role, CI/CD migrations) được thêm ở Task 19.
+Agent có `railway ssh`, Railway CLI và `DATABASE_URL` Railway trong workspace. Về mặt kỹ thuật có thể chạy bất kỳ SQL nào. Vì vậy mọi việc test chạy trên Docker, còn Railway chỉ được chạm tới khi người dùng yêu cầu (mục "Giai đoạn hiện tại"). Sau go-live, quy tắc xác nhận là lớp bảo vệ chính; kiểm soát kỹ thuật đầy đủ (restricted DB role, CI/CD migrations) được thêm ở Task 19.

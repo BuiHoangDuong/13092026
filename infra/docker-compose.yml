@@ -1,25 +1,90 @@
+# Test/dev stack that mirrors Railway (.railway/railway.ts). Steering: all agent tests
+# run here; Railway is only for debugging or reading data when the user asks.
+#
+#   docker compose -f infra/docker-compose.yml up -d postgres            # DB only (tests)
+#   docker compose -f infra/docker-compose.yml --profile app up --build  # + web, worker
+#
+# Keep in step with Railway: Postgres 18.6 (Debian), TimeZone Etc/UTC,
+# max_connections 500, database "railway", private host "postgres".
+name: cashback-test
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: infra/Dockerfile
+    args:
+      NODE_VERSION: ${NODE_VERSION:-22}
+  env_file:
+    - path: ../.env
+      required: false
+  environment: &app-env
+    # Always the Docker DB; never inherit the Railway URL from .env.
+    DATABASE_URL: postgresql://postgres:postgres@postgres:5432/railway?connection_limit=10&pool_timeout=20
+    TEST_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/railway
+    NODE_ENV: production
+    TZ: Etc/UTC
+  depends_on:
+    postgres:
+      condition: service_healthy
+  profiles: ["app"]
+
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18.6-trixie
     environment:
-      POSTGRES_USER: cashback
-      POSTGRES_PASSWORD: cashback
-      POSTGRES_DB: cashback
-    ports: ["5432:5432"]
-    volumes: ["postgres_data:/var/lib/postgresql/data"]
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: railway
+      TZ: Etc/UTC
+      PGTZ: Etc/UTC
+    command: ["postgres", "-c", "max_connections=500", "-c", "timezone=Etc/UTC", "-c", "log_timezone=Etc/UTC"]
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cashback"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d railway"]
       interval: 5s
       timeout: 3s
-      retries: 10
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address :9001
+      retries: 20
+
+  # Railway @cashback/web: build "pnpm --filter @cashback/web... build",
+  # preDeploy "pnpm --filter @cashback/db db:migrate", start "pnpm --filter @cashback/web start",
+  # healthcheck /api/health (timeout 120 s).
+  web:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
+        SERVICE: web
+    command: ["sh", "-c", "pnpm --filter @cashback/db db:migrate && pnpm --filter @cashback/web start"]
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: change-me
-    ports: ["9000:9000", "9001:9001"]
-    volumes: ["minio_data:/data"]
+      <<: *app-env
+      CLIENT_IP_HEADER: x-forwarded-for
+      APP_URL: http://localhost:3000
+      PORT: "3000"
+    ports: ["${WEB_PORT:-3000}:3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
+  # Railway @cashback/worker: build "pnpm --filter @cashback/worker... build",
+  # start "pnpm --filter @cashback/worker start". Starts after web has migrated.
+  worker:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
+        SERVICE: worker
+    command: ["pnpm", "--filter", "@cashback/worker", "start"]
+    depends_on:
+      web:
+        condition: service_healthy
+
 volumes:
   postgres_data:
-  minio_data:

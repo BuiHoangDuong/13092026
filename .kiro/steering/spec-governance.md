@@ -76,21 +76,33 @@ Ví dụ:
 
 ## 7. Database usage policy (bắt buộc)
 
-Workspace này KHÔNG dùng database local. Mọi thao tác dev/test và production phải theo
-đúng ranh giới dưới đây.
+Test/dev chạy trên stack Docker mô phỏng Railway; Railway chỉ dùng để debug hoặc truy
+xuất dữ liệu khi người dùng yêu cầu. Mọi thao tác phải theo đúng ranh giới dưới đây.
 
 ### 7.1. Test / development
 
-- Trong giai đoạn pre-golive (xem `production-safety` steering), workspace dùng CHÍNH DB
-  Railway hosted (`DATABASE_URL`) làm test/dev DB vì nó chỉ chứa dữ liệu seed/fake. Cho phép
-  migrate, seed, reset, `prisma db push`, chạy integration test và backup/restore drill
-  trực tiếp trên DB này mà không cần hỏi từng lần.
-- Vẫn KHÔNG dùng: Postgres local (Docker/Postgres.app/service Windows) hay
-  `localhost`/`127.0.0.1`, và KHÔNG dùng SQLite hay DB thay thế nào khác. Nếu cần một DB
-  test riêng biệt, tạo trên Railway chứ không tạo local.
-- Nếu `TEST_DATABASE_URL` không được set, integration test dùng `DATABASE_URL` (DB Railway
-  pre-golive) — không fallback sang local.
-- Sau go-live thật, mục này sẽ được siết lại về "chỉ dùng Postgres test tách biệt".
+- DB test/dev là Postgres trong `infra/docker-compose.yml`, cấu hình giống Railway
+  (Postgres 18.6 Debian, `TimeZone=Etc/UTC`, `max_connections=500`, DB `railway`). Web và
+  worker test theo đúng lệnh build/start/preDeploy/healthcheck của `.railway/railway.ts`.
+  Cho phép migrate, seed, reset, `prisma db push`, integration test và backup/restore
+  drill trên stack này mà không cần hỏi từng lần.
+- `TEST_DATABASE_URL` (và `DATABASE_URL` khi chạy web/worker để test) phải trỏ vào
+  Postgres Docker. Agent kiểm tra host trước khi chạy test: nếu URL trỏ tới Railway
+  (`*.rlwy.net`, `*.railway.internal`, `*.up.railway.app`) thì dừng và báo, không chạy.
+  Không fallback sang `DATABASE_URL` Railway.
+- KHÔNG dùng: Postgres cài trực tiếp trên máy (scoop/Postgres.app/service Windows, cluster
+  tạm), SQLite, hay Postgres khác version với Railway. Khi version Postgres trên Railway
+  đổi, cập nhật image Docker trong cùng thay đổi.
+- Nếu Docker không chạy được: dừng và báo người dùng; không tự chuyển sang DB khác.
+
+### 7.1b. Railway (debug / truy xuất dữ liệu)
+
+- Chỉ khi người dùng yêu cầu tường minh. Được phép: đọc log, status, cấu hình
+  (`railway logs`, `railway status`, `railway config pull/plan`), kiểm tra kết nối, và
+  truy vấn đọc (`SELECT`, `EXPLAIN`, `information_schema`) trên DB Railway.
+- Không tự chạy trên Railway: test suite, migrate, seed, `prisma db push`, script một lần,
+  `railway config apply`, hay bất kỳ lệnh ghi nào. Nếu người dùng yêu cầu ghi: áp dụng quy
+  trình của mục 7.2.
 
 ### 7.2. Production
 

@@ -15,19 +15,16 @@ replace them.
 
 | Steering file | Rules that block a task |
 |---------------|-------------------------|
-| `production-safety.md` | **Never use a local database** (no Docker/scoop/Windows-service Postgres, no `localhost`/`127.0.0.1`, no SQLite). Use only Railway hosted Postgres (`DATABASE_URL`, and `TEST_DATABASE_URL` pointing at Railway). During pre-golive the Railway DB may be migrated, seeded and used for integration tests without asking each time. Always ask first before: deleting the whole database or instance, changing credentials, access control or roles, or any action with no rollback. After go-live, every write, DDL, `migrate deploy`, seed or one-off script on production needs explicit user confirmation. |
-| `spec-governance.md` | Update spec first, then code: `requirements.md` (WHAT) and `design.md` (HOW) are the source of truth. Check cross-impact, remove obsolete (legacy) content instead of stacking new text beside it, and add one changelog row for each spec change. Keep `Requirement N` numbers stable and never reuse a removed number. Keep EARS format. Undecided items go to "Open decisions", never SHALL. §7: same database policy as above; the agent may only read production data. |
+| `production-safety.md` | **Test on the Docker stack that mirrors Railway** (`infra/docker-compose.yml`: Postgres 18.6 Debian, `TimeZone=Etc/UTC`, `max_connections=500`, DB `railway`; web/worker with the Railway build, `preDeploy` migrate, start and `/api/health`). Build, migrate, seed and integration tests run there without asking. No other DB (no host-installed Postgres, SQLite, or a different Postgres version). **Railway only for debugging or reading data when the user asks**; never run tests, migrations, seeds, scripts or `railway config apply` on Railway on your own. Always ask first before deleting a whole database or instance, changing credentials, access control or roles, or any action with no rollback. |
+| `spec-governance.md` | Update spec first, then code: `requirements.md` (WHAT) and `design.md` (HOW) are the source of truth. Check cross-impact, remove obsolete (legacy) content instead of stacking new text beside it, and add one changelog row for each spec change. Keep `Requirement N` numbers stable and never reuse a removed number. Keep EARS format. Undecided items go to "Open decisions", never SHALL. §7: test DB is Docker; check that `TEST_DATABASE_URL` is not a Railway host before running tests; Railway (§7.1b) only on request; production is read-only for the agent. §8: end each response that changed files with a "File đã thay đổi" summary. |
 | `context7.md` | Before implementing or reviewing framework, library, SDK or API behavior (Next.js, React, Prisma transactions, Zod…), check the docs through Context7 for the version in the lockfile and state what was checked. Never send secrets, customer data or reports into Context7 queries. |
 
-**When Railway Postgres is unreachable:** stop and report the error to the user. Do
-not fall back to a local or substitute database, and do not mark a test as verified
-until it passes on Railway. Known cause (2026-09-26): from a local machine, a Prisma
-connect to the Railway TCP proxy takes about 2.2–3.4 s, while the URL sets no
-`connect_timeout` (Prisma default 5 s). A slow moment then fails with P1001 "Can't
-reach database server" even though the database is healthy (Postgres logs showed no
-restart). Remedy: add `connect_timeout=30` to the local `DATABASE_URL` /
-`TEST_DATABASE_URL` in `.env` (the user edits `.env`), then retry. See design
-"Environments & deployment".
+**Running tests.** Start the stack with
+`docker compose -f infra/docker-compose.yml up -d postgres` (add `--profile app up
+--build` for web + worker) and point `TEST_DATABASE_URL` at it
+(`postgresql://postgres:postgres@localhost:5432/railway`). If Docker is not available,
+stop and report; do not switch to another database or to Railway. A test counts as
+verified only when it passes on this stack.
 
 ## Overview
 
@@ -191,7 +188,7 @@ flowchart TD
   - [x] 4.2 Stand up the Railway skeleton in parallel: web + worker services + managed Postgres, build pipeline, run migrations, and a health check on each service. Keep both local and Railway green.
     - Config + `/api/health` are in place. The verified application smoke was a local web process using Railway test Postgres; deploying the web/worker processes on Railway remains part of production hardening rather than this smoke result.
     - _Requirements: 6.5; Design: Environments & deployment_
-  - [x] 4.3 Stand up SIT against a hosted Railway test Postgres (no local Docker) and verify it end to end.
+  - [x] 4.3 Stand up SIT against a hosted Railway test Postgres and verify it end to end. (Superseded 2026-09-27: SIT and all tests run on the Docker stack that mirrors Railway, `infra/docker-compose.yml`.)
     - SIT uses a dedicated Railway **test** Postgres over its public proxy (no local Docker); `web`/`worker` run on the host via `pnpm dev`. `infra/docker-compose.yml` is legacy: its Postgres service must not be used (`.kiro/steering/production-safety.md`).
     - Verified live: `migrate deploy`, seed, `/api/health`, `/api/exchanges`, public pages 200, `/go/:linkId` 302 + real `ClickEvent`, unknown link falls back to `/exchanges` (no open redirect). No mocks.
     - _Requirements: 1.1, 2.1, 3.1, 6.5; Design: Environments & deployment, Testing Strategy_
@@ -612,7 +609,7 @@ flowchart TD
     - One fixture per use case UC0–UC17 and UF1–UF7 (design "Use cases"): assert
       drift class, rows written (none on UC1/UC8–UC11), change-log entries, roster
       state, and that published data is unchanged on every failure path.
-    - On a private Railway test DB, apply migration/backfill and compare all MEXC
+    - On the Docker stack, apply migration/backfill and compare all MEXC
       snapshot counts/amounts before and after. With a Bybit key in worker-only
       variables and allowed egress IP, perform one bounded manual sync, compare a
       chosen UID/referral code/day against the Affiliate portal, then enable a
@@ -671,7 +668,7 @@ flowchart TD
 
 - [x] 32. Admin ingest and reports information architecture (Req 18.2, 18.7, 18.8)
   - Follow `.kiro/steering/` (top of this file). Spec is updated first (Req 18,
-    design "Admin shell"); verify on Railway Postgres only, never a local DB.
+    design "Admin shell"); verify on the Docker stack that mirrors Railway.
     Check Next.js App Router redirects and route groups via Context7 for the
     version in the lockfile before coding.
   - [x] 32.1 Adapter descriptor and registry endpoint.
@@ -721,7 +718,7 @@ flowchart TD
 
 - [x] 33. Raw landing layer before target tables (Req 6.23–6.26, 6.3, 6.16, 6.21, 13.4)
   - Follow `.kiro/steering/` (top of this file): spec is already updated; verify on
-    Railway Postgres only; check Prisma raw SQL (`$queryRaw`/`$executeRaw`, `jsonb`,
+    the Docker stack that mirrors Railway; check Prisma raw SQL (`$queryRaw`/`$executeRaw`, `jsonb`,
     transactions) and PostgreSQL declarative partitioning via Context7 for the
     versions in the lockfile before coding.
   - [x] 33.1 Schema.
@@ -765,13 +762,20 @@ flowchart TD
       TRANSFORM fails with `BREAKING`; after adding an alias, re-transform succeeds
       without re-upload; duplicate/empty headers are stored; personal keys never
       reach `raw_record`; a stale TRANSFORM (superseded load) writes nothing.
-    - Integration on Railway (`scripts/test-mexc-activity.mjs`,
+    - Integration on the Docker stack (`scripts/test-mexc-activity.mjs`,
       `test-bybit-sync.mjs`): two loads of the same slice leave only the latest raw
       rows, other periods untouched; an exchange without a partition lands in
       `raw_default`; formulas/ZIP bomb still fail at LOAD; no `CommissionRecord`,
       `WalletEntry` or withdrawal change from activity data.
     - Update `happy-path-scenarios.md` S17–S19 (status now goes LOAD → TRANSFORM → PREVIEW).
     - _Requirements: 6.21–6.26; Design: Testing Strategy_
+
+- [x] 34. Admin navigation dropdowns (Req 18.9)
+  - Update requirements and design first. Render Data ingest and Reports as
+    keyboard-operable disclosure groups; stack every destination on its own row,
+    open the current route's group, and preserve mobile navigation.
+  - Verify web typecheck, lint, and production build.
+  - _Requirements: 18.9; Design: Admin shell — Navigation presentation_
 
 ## Notes
 
@@ -807,23 +811,14 @@ flowchart TD
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
-| 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 map tới requirements/design (Overview, DAG, Notes). Hoàn thành Phase 0: scaffold + boundary lint, Prisma (versioned commission, reserved wallet, opKey, receivable/CLAWBACK), contracts, SIT trên Railway test Postgres (không Docker), root `.env`, seed idempotent, public SSR, redirect + click, interim auth, admin content (8.2–8.5), English-only (5.5), job queue có lease fencing | Hoàn tất bộ spec và nền tảng; chỉ đánh done phần đã verify thật | added |
-| 2026-09-16 | tasks.md | Chốt mô hình UID-first (v2.0): thêm Task 22 (re-key sang `UidAccount`), 23 (lookup exchange + UID), 24 (OTP Resend + UidSession), 25 (withdrawal, lệnh đầu luôn review), 26 (cherry-pick UI); Task 13 attribution upsert `UidAccount`. Thêm Task 5.6 logo local. Hoàn thành 10.1/10.4 và import Bybit CSV v1 | Đồng bộ requirements v0.6/design v0.7; phương án Hybrid bị loại | added |
-| 2026-09-17 | tasks.md | Hoàn thành Task 16, 17, 22–28; Task 18/19 re-run integration + backup drill trên Railway pre-golive DB; thêm Task 27 (ticker fake), 28 (commission vs cashback), 29 (partition, deferred) | Đồng bộ tiến độ với code đã test trên schema cô lập | updated |
-| 2026-09-19 | tasks.md | Thêm và hoàn thành Task 30: admin left-nav, 7 route, không đổi API/DB/worker | Req 18 | added |
-| 2026-09-22 | tasks.md | Thêm và hoàn thành Task 31: chặn RSC admin, giữ offer/exchange ngoài trang đã tải, lookup chỉ hiện commission của version đã attribute (không fallback `reconciledAmount`), `hasMore` | Req 18.5, 10.6, 14.7 | added |
-| 2026-09-25 | tasks.md | Thêm Task 10.5–10.9 (shared ingest, MEXC XLSX referral snapshot, API admin, data gate, CSV fallback deferred) và 11.1 (MEXC commission gate); Task 20 tái dùng pipeline. Compact v2.1: bỏ task superseded (12, 14.3*), ghi chú lịch sử Customer/UidLink, gộp changelog theo ngày, sửa vòng lặp T13↔T22 trong DAG | Export MEXC thật toàn số 0; tài liệu chỉ giữ trạng thái hiện hành (lịch sử nằm trong git) | updated |
-| 2026-09-25 | tasks.md | Hoàn thành 10.5–10.7: envelope + snapshot versioned, adapter MEXC XLSX, API và trang admin. 10.8/10.9/11.1 vẫn mở vì sample toàn số 0 | Đã verify parser, sample 46 dòng, và integration schema cô lập | updated |
-| 2026-09-26 | tasks.md | Lập Task 20.1–20.5 cho Bybit Affiliate API sync: metric nhiều asset, connector, lịch 30m/1h/12h/24h từng sàn, admin controls, backfill và Railway rollout; giữ Task 21/29 tùy chọn | Bybit API đã gọi được nhưng không có trạng thái pending/settled; cần triển khai activity trước và không đụng ví | updated |
-| 2026-09-26 | tasks.md | Task 20.2/20.3 cập nhật theo probe Bybit thật: readiness qua query-api + cảnh báo hết hạn key, bind IP, luôn gửi startDate/endDate, dừng phân trang khi list rỗng, không retry 610015, map thêm taker/maker/TradFi volume, sourceAsOf từ volUpdateTime, backfill 365 ngày | Key IP `*` hết hạn 2026-12-26; lịch sử ≥ 1 năm; volume về sau commission | updated |
-| 2026-09-26 | tasks.md | Thêm Task 20.0 refactor ingest thành adapter framework (abstract TS, field contract, registry theo contract version, drift + fingerprint, Bybit CSV cảnh báo cột lạ); 20.1 thêm model API sink (roster, day status, metric current, change log) + view; 20.2 ghi theo digest + ON CONFLICT IS DISTINCT FROM + ABSENT + change log; 20.5 test theo UC0–UC17, UF1–UF7 | Design v1.0: thêm sàn chỉ cần kế thừa; sync 30 phút không sinh rác | updated |
-| 2026-09-26 | tasks.md | Code Task 20.0–20.4: contract/drift, migration metric + sync, connector Bybit, lịch worker, trang `/admin/sync`. 20.5 chưa chạy được vì proxy Railway không kết nối và chưa probe key | Activity sync không ghi ví; rollout thật còn khóa operational | updated |
-| 2026-09-26 | tasks.md | Thêm mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file (production-safety, spec-governance, context7; steering thắng khi mâu thuẫn); quy trình khi Railway không kết nối được (dừng và báo, không dùng DB local) và nguyên nhân P1001 do `connect_timeout` | Ngày 2026-09-26 agent đã dựng Postgres local để chạy integration test, vi phạm steering | updated |
-| 2026-09-26 | tasks.md | Đổi route trang activity thành `/admin/crawl-data`; route cũ `/admin/referrals` chuyển hướng | Đồng bộ Task 10.7/20.4 với menu mới, không đổi pipeline | updated |
-| 2026-09-26 | tasks.md | Thêm Task 32 (32.1–32.4): descriptor adapter + `GET /api/admin/ingest/adapters`, API `/api/admin/ingest/*` và `/api/admin/reports/activity` với alias route cũ, trang Uploads/API connectors/Referral activity, redirect `/admin/imports`, `/admin/crawl-data`, `/admin/referrals`, `/admin/sync`; cập nhật route trong Task 10.7, 20.4 và DAG | Req 18.2, 18.7, 18.8: menu theo việc vận hành, form theo registry | added |
-| 2026-09-26 | tasks.md | Hoàn thành 32.1–32.3: descriptor, API ingest/reports và alias, menu nhóm, form một trang, redirect 307 sau requireAdminPage. 32.4 còn chạy trên Railway sau khi deploy | Route mới chưa có trên deploy hiện tại nên chưa click-through được | updated |
-| 2026-09-26 | tasks.md | Thêm 32.5 sửa review: alias shape, báo cáo range/paging/root/coverage, adapter đa hình và version, polling/UI/contract, kiểm thử Railway | 32.1–32.3 có code nhưng chưa đạt hết Req 6.10/18.8; 32.4 vẫn mở | updated |
-| 2026-09-26 | tasks.md | Thêm Task 33 (33.1–33.5): bảng `raw_record` partition theo sàn, bước LOAD chỉ kiểm tra định dạng/an toàn và ghi đè slice, TRANSFORM async bỏ qua load đã bị thay thế, chạy lại transform, retention 30 ngày, verify trên Railway; DAG `T32 → T33` | Req 6.23–6.26 | added |
-| 2026-09-26 | tasks.md | Hoàn thành Task 33.1–33.5: migration raw partition/RawLoad, LOAD → TRANSFORM cho file và API, re-transform có audit, retention; unit 26/26 và integration MEXC/Bybit trên schema test Railway qua. Task 32.4 vẫn chờ kiểm tra UI sau deploy | Đồng bộ tiến độ với code và kiểm chứng thực tế | updated |
-| 2026-09-26 | tasks.md | Deploy web + worker lên Railway; health 200, xác thực admin và multipart upload/publish MEXC fixture cùng Bybit CSV giá trị 0 qua route ingest mới, report/alias và redirect qua. Giữ 32.4 mở cho lượt click trực tiếp trong browser | Ghi đúng giới hạn kiểm chứng giao diện | updated |
-| 2026-09-26 | tasks.md | Xóa mục 32.4 Verify và các tham chiếu tiến độ hiện hành đến mục này | Theo yêu cầu người dùng | updated |
+| 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 (Overview, DAG, Notes); hoàn thành Phase 0: scaffold + boundary lint, Prisma versioned commission/wallet, contracts, test Postgres, seed, public SSR, redirect + click, interim auth, admin content, job queue có lease fencing | Hoàn tất spec và nền tảng | added |
+| 2026-09-16 | tasks.md | Chốt UID-first (v2.0): Task 22–26, attribution upsert `UidAccount`, Task 5.6 logo local; hoàn thành 10.1/10.4 và import Bybit CSV v1 | Đồng bộ requirements v0.6 / design v0.7 | added |
+| 2026-09-17 | tasks.md | Hoàn thành Task 16, 17, 22–28; re-run integration và backup drill (18/19); thêm Task 27, 28, 29 (deferred) | Đồng bộ tiến độ với code đã test | updated |
+| 2026-09-19 | tasks.md | Thêm và hoàn thành Task 30: admin left-nav, tách route | Req 18 | added |
+| 2026-09-22 | tasks.md | Thêm và hoàn thành Task 31: chặn RSC admin, giữ lựa chọn offer/exchange, lookup chỉ hiện commission đã attribute | Req 18.5, 10.6, 14.7 | added |
+| 2026-09-25 | tasks.md | Thêm Task 10.5–10.9 và 11.1 (ingest chung, MEXC XLSX activity snapshot, data gate); hoàn thành 10.5–10.7. Compact v2.1: bỏ task superseded, gộp changelog theo ngày | Export MEXC thật toàn số 0; doc chỉ giữ trạng thái hiện hành | updated |
+| 2026-09-26 | tasks.md | Task 20 Bybit Affiliate API sync: lập và code 20.0–20.4 (adapter framework, drift, metric nhiều asset, connector theo probe thật, lịch 30m/1h/12h/24h, admin controls); 20.5 rollout còn mở | Activity sync không ghi ví; API không có pending/settled | added |
+| 2026-09-26 | tasks.md | Task 32 admin IA (Data ingest / Reports): hoàn thành 32.1–32.3 và 32.5 (descriptor adapter, API `/api/admin/ingest/*`, `/api/admin/reports/activity`, alias và redirect route cũ, form upload theo registry, sửa review) | Req 18.2, 18.7, 18.8 | added |
+| 2026-09-26 | tasks.md | Task 33 raw landing layer: hoàn thành 33.1–33.5 (`raw_record` partition theo sàn, LOAD → TRANSFORM async, re-transform có audit, retention 30 ngày); deploy web + worker, upload/publish qua route mới | Req 6.23–6.26 | added |
+| 2026-09-27 | tasks.md | Mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file: test trên stack Docker mô phỏng Railway (`infra/docker-compose.yml`), Railway chỉ để debug/đọc dữ liệu khi được yêu cầu; các bước verify của Task 20.5, 32, 33 chuyển sang Docker | Người dùng đổi chính sách môi trường test | updated |
+| 2026-09-27 | tasks.md | Thêm và hoàn thành Task 34: admin nav dropdown cho Data ingest/Reports, link xếp dọc và tự mở nhóm hiện tại; typecheck/lint/build web qua | Req 18.9 và phản hồi về sidebar khó đọc | added |

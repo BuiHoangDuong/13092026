@@ -109,7 +109,8 @@ packages/
   core/                         # services, cashback engine, normalization
   db/                           # prisma schema + migrations + repositories
 infra/
-  docker-compose.yml            # legacy; its Postgres service must not be used (steering: Railway DB only)
+  docker-compose.yml            # test/dev stack mirroring Railway (Postgres 18.6, web, worker)
+  Dockerfile                    # one image per service, same build commands as Railway
   railway/                      # railway service config
 architecture.html
 .kiro/specs/cashback-platform/  # this spec
@@ -1030,13 +1031,20 @@ for that UID account (Req 9.1); admin transitions require an admin session.
 
 ### Environments & deployment (Req 6.5)
 
-| Aspect | Local / SIT | Production |
-|--------|-------------|------------|
-| Orchestration | local `pnpm` processes | Railway services |
-| Postgres | **Railway hosted Postgres only** (pre-golive test/dev DB; never a local or substitute DB — `.kiro/steering/production-safety.md`) | Railway Postgres plugin |
-| Storage | compose (e.g. MinIO) or local dir | Railway volume / S3-compatible |
-| Web | `pnpm --filter web dev` | Railway web service |
-| Worker | `pnpm --filter worker dev` | Railway worker service (always-on) |
+| Aspect | Test / dev (Docker, mirrors Railway) | Production (Railway) |
+|--------|--------------------------------------|----------------------|
+| Definition | `infra/docker-compose.yml` + `infra/Dockerfile` | `.railway/railway.ts` |
+| Postgres | `postgres:18.6-trixie`, `TimeZone=Etc/UTC`, `max_connections=500`, DB `railway`, host `postgres` | Railway Postgres 18.6 (Debian), same settings, private endpoint `postgres` |
+| Storage | originals in Postgres (`ImportBatch.originalFile`) | same; no object storage service |
+| Web | image built with `pnpm --filter @cashback/web... build`; `db:migrate` then `pnpm --filter @cashback/web start`; healthcheck `/api/health` | Railpack, same build/preDeploy/start/healthcheck |
+| Worker | image built with `pnpm --filter @cashback/worker... build`; `pnpm --filter @cashback/worker start` | Railpack, same build/start, always-on |
+
+All agent tests run on the Docker stack (`.kiro/steering/production-safety.md`). Railway is
+used only for debugging or reading data when the user asks. When Railway changes
+(Postgres version, Node version, build/start commands, settings), the Docker stack is
+updated in the same change so the two stay identical. Node: the Docker image uses
+`NODE_VERSION` (default 22); pin `engines.node` in `package.json` to the major Railway
+resolves so both sides match.
 
 Dual-track from Phase 0: a minimal Railway skeleton (web + worker + Postgres, build,
 migrate, health check) is stood up early alongside local/SIT, so both tracks stay green.
@@ -1060,14 +1068,11 @@ stable Railway outbound egress before production sync can be enabled. The worker
 also reads `BYBIT_AFFILIATE_MASTER_UID` (affiliate root), `BYBIT_API_BASE`, and
 `BYBIT_VOL_TIMEZONE` (set only after the `volUpdateTime` zone is confirmed).
 
-**Connecting to Railway Postgres from a local machine.** Local processes and
-integration tests reach Railway through its public TCP proxy. On 2026-09-26 a Prisma
-connect plus `SELECT 1` took 2.2–3.4 s (8 samples) while TCP alone took about 60 ms, and
-the URL set no `connect_timeout`, so Prisma's 5 s default left about 1.6 s of margin. One
-slow moment then produced P1001 "Can't reach database server" although the database
-was healthy (no restart or FATAL in the Postgres logs). Local `DATABASE_URL` /
-`TEST_DATABASE_URL` values should carry `connect_timeout=30`. If the error persists,
-check Railway service status and logs; never switch to a local database.
+**Connecting to Railway Postgres for debugging (on request only).** Through the public
+TCP proxy, a Prisma connect plus `SELECT 1` took 2.2–3.4 s on 2026-09-26 while TCP alone
+took about 60 ms; with no `connect_timeout` in the URL (Prisma default 5 s) a slow moment
+produced P1001 "Can't reach database server" although the database was healthy. Add
+`connect_timeout=30` to a Railway URL used for debugging or reading data.
 
 **Resend send path (Req 16):** OTP send happens **in-request**, not via the job queue —
 the claimant is waiting on the code, and a queued send would add worker-poll latency on
@@ -1117,6 +1122,16 @@ until the reset.
   ├─ Withdrawals                   /admin/withdrawals
   └─ Exchanges · Offers · Referral links · Guides
   ```
+
+  **Navigation presentation (Req 18.9).** `Overview`, `Withdrawals`, `Exchanges`,
+  `Offers`, `Referral links`, and `Guides` are full-width, single-row links.
+  `Data ingest` and `Reports` are native disclosure dropdowns: their summary
+  controls expand/collapse child links in a vertical list directly below the
+  label. The disclosure for the current route starts expanded, including nested
+  routes such as upload preview; route changes update that default. Mark the
+  current link with `aria-current="page"`, keep summary keyboard-operable and
+  show a visible focus state. On narrow screens the nav moves above the main
+  content, retains the same stacked dropdown structure, and does not clip links.
 
   Route group so login has no sidebar:
 
@@ -2351,3 +2366,5 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-26 | design.md | Admin shell: nhóm menu Data ingest (Uploads, API connectors) và Reports (Referral activity) thay cho Commission imports/Crawl data/Sync schedules; cây route `/admin/ingest/*`, `/admin/reports/*`; form upload dựng theo descriptor adapter (`GET /api/admin/ingest/adapters`, server resolve lại adapter); bảng API dùng `/api/admin/ingest/*`, `/api/admin/reports/activity`; route/API cũ redirect hoặc alias; SourceAdapter thêm `accept`/`uploadFields`/`affectsCashback`/`describe()` | Req 18.2, 18.7, 18.8: menu theo việc vận hành, không theo sàn hay định dạng; thêm adapter không cần trang mới | updated |
 | 2026-09-26 | design.md | Task 32 review: file adapter tự validate/parse, lưu ID+version từ lúc upload, registry chọn bản active; báo cáo range cộng ngày API UTC với coverage và phân trang UID/root; API alias cũ giữ shape `snapshots[]` | Sửa 4 lỗi dữ liệu và tránh hai registry chạy song song | updated |
 | 2026-09-26 | design.md | Thêm Raw landing layer: mọi nguồn (file/API) ghi bản ghi nguyên trạng vào `raw_record` partition theo sàn (`raw_bybit`, `raw_mexc`, `raw_binance`, `raw_bingx`, `raw_default`) dạng `payload jsonb`, ghi đè theo slice (xoá load cũ, `RawLoad` SUPERSEDED), LOAD chỉ fail vì định dạng/an toàn; TRANSFORM chạy async (bỏ qua load đã bị thay thế), lỗi contract để lại raw và chạy lại được (UC18/UC19); bỏ key cá nhân khi load, raw giữ 30 ngày; job `LOAD`/`TRANSFORM` thay `PARSE`; model `RawLoad`; template method tách `load()`/`transform()`; recovery bằng re-transform | Sàn đổi cấu trúc dữ liệu không làm fail bước import; chọn JSONB thay vì tạo lại bảng/cột mỗi lần load (tránh DDL từ header không tin cậy, khoá bảng, lệch Prisma migrate) | updated |
+| 2026-09-27 | design.md | Environments: test/dev chạy trên Docker mô phỏng Railway (`infra/docker-compose.yml`, `infra/Dockerfile`: Postgres 18.6 trixie, UTC, max_connections 500, build/preDeploy/start/healthcheck như `.railway/railway.ts`), bỏ MinIO; Railway chỉ để debug/đọc dữ liệu; ghi chú `connect_timeout` chuyển thành hướng dẫn debug Railway | Người dùng đổi chính sách môi trường test; bảng cũ ghi "Railway only" | updated |
+| 2026-09-27 | design.md | Admin nav dùng disclosure dropdown cho Data ingest/Reports, link xếp dọc full-width, nhóm route hiện tại tự mở; giữ focus và mobile layout | Req 18.9: tránh link dồn ngang/ngắt nhãn trong sidebar | updated |

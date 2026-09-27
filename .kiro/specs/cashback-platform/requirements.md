@@ -796,6 +796,13 @@ tab) to do several jobs without losing my place.
    paths (`/api/admin/imports*`, `/api/admin/referral-snapshots`,
    `/api/admin/sync-config/*`) SHALL remain aliases with identical behavior and
    authorization until an explicit removal is recorded in the changelog.
+9. WHILE the admin left navigation is visible, THE SYSTEM SHALL display each
+   destination on its own row without wrapping labels into neighboring links.
+   **Data ingest** and **Reports** SHALL be expandable dropdown groups with a
+   keyboard-operable control and their child links stacked below the group label.
+   WHEN an admin opens a route in a group, THE SYSTEM SHALL expand that group and
+   indicate the current destination. The groups SHALL remain usable on narrow
+   screens.
 
 ---
 
@@ -1025,3 +1032,4 @@ tab) to do several jobs without losing my place.
 | 2026-09-26 | requirements.md | Req 18.2 nhóm menu theo việc vận hành: Data ingest (Uploads, API connectors) và Reports (Referral activity), bỏ Commission imports/Crawl data/Sync schedules; 18.3 bỏ ràng buộc giữ nguyên `/api/admin/*`; thêm 18.7 một trang upload cho mọi sàn/loại dữ liệu/định dạng, form dựng theo adapter đã đăng ký, thêm adapter không cần trang mới; thêm 18.8 redirect route cũ và giữ API cũ làm alias; Req 6.1/6.7 và bảng API dùng `/api/admin/ingest/*`, `/api/admin/reports/activity` | Tách theo định dạng (crawl-data/xlsx, /api, /json) nhân bản UI và vô hiệu hóa adapter framework; "crawl" sai nghĩa vì hệ thống không scrape | updated |
 | 2026-09-26 | requirements.md | Req 6.22 chốt báo cáo khoảng: manual theo kỳ chính xác, API cộng ngày UTC rời nhau kèm coverage/partial và phân trang không mất root/source | Sửa lỗi báo cáo không thấy API nhiều ngày và bỏ dòng khi UID có nhiều nhóm | updated |
 | 2026-09-26 | requirements.md | Thêm Req 6.23–6.26: mọi nguồn ghi bản ghi nguyên trạng vào bảng raw theo sàn trước khi vào bảng đích; load mới ghi đè dữ liệu và schema của đúng slice, không fail vì đổi cột (chỉ fail vì định dạng/an toàn); transform sang bảng đích chạy async, load bị thay thế không ghi gì; raw giữ 30 ngày, không lộ payload, admin chạy lại transform; sửa 6.3, 6.16, 6.21, 13.4, 13.13 và danh sách entity cho khớp | Cấu trúc dữ liệu các sàn có thể đổi; bước import không được fail và lỗi mapping sửa được mà không cần tải lại | added |
+| 2026-09-27 | requirements.md | Req 18.9: admin nav xếp từng link một hàng; Data ingest/Reports xổ xuống, tự mở nhóm của route hiện tại và dùng được bằng bàn phím trên màn hình hẹp | Sidebar hiện tại dồn link ngang và ngắt nhãn khó đọc | added |

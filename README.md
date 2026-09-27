@@ -58,25 +58,30 @@ commands directly in the Railway dashboard — `railway.ts` is the source of tru
 Railway's older `railway.json`/`railway.toml` Config as Code format is deprecated; this repo
 does not use it.
 
-## Local/SIT setup (with a database)
+## Local/SIT setup (Docker, mirrors Railway)
 
-SIT does not run Postgres in local Docker. `web`/`worker` run on the host via `pnpm dev`
-against a **dedicated Railway test Postgres** (separate from prod), reached over its
-public/proxy host — `*.internal` hostnames only resolve inside Railway's network.
-`infra/docker-compose.yml` is kept only as an optional convenience if you prefer a
-container instead of a hosted test database; it is not part of the SIT workflow.
+Tests and development run on a Docker stack that mirrors the Railway services in
+`.railway/railway.ts`: Postgres 18.6 (Debian, `TimeZone=Etc/UTC`, `max_connections=500`,
+database `railway`), plus web and worker images built and started with the same commands
+Railway uses. The Railway database is used only for debugging or reading data on request
+(see `.kiro/steering/production-safety.md`).
 
-1. Copy `.env.example` to `.env` and set `DATABASE_URL` to the Railway test Postgres
-   **public** connection string (`...proxy.rlwy.net:<port>/railway`), not the `*.internal`
-   one.
-2. Apply migrations and seed data:
+1. Start Postgres:
+   ```
+   docker compose -f infra/docker-compose.yml up -d postgres
+   ```
+2. In `.env`, point `DATABASE_URL` and `TEST_DATABASE_URL` at it:
+   `postgresql://postgres:postgres@localhost:5432/railway`
+3. Apply migrations and seed data, then start the apps on the host:
    ```
    pnpm db:migrate
    pnpm db:seed
-   ```
-3. Start the web app and worker:
-   ```
    pnpm dev
+   ```
+   Or run web and worker in containers exactly as on Railway (web migrates first, then
+   starts; healthcheck `/api/health`):
+   ```
+   docker compose -f infra/docker-compose.yml --profile app up --build
    ```
 
 The workspace scripts load the root `.env` automatically (`scripts/with-root-env.mjs`).
