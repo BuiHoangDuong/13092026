@@ -1155,6 +1155,21 @@ until the reset.
   `/api/admin/reports/activity`. The report form has no source timezone input;
   `sourceTz` remains part of manual upload metadata and parsing only.
 
+  **Report readability and navigation (Req 18.11–18.12).** Style the native date
+  picker indicator as a visible, high-contrast button on the dark background,
+  retaining keyboard and native picker behavior. Render friendly labels for
+  `REPORTED`, `INCOMPLETE`, and `NO_ACTIVITY`, with an explanation of their
+  coverage meaning. `REPORTED` means source metrics exist, not settled cashback;
+  `INCOMPLETE` means at least one requested UTC day is not sealed or is missing, so a blank
+  metric is unknown rather than zero; label the API `open` coverage count as
+  "unsealed" because it includes both OPEN and SETTLING states. `NO_ACTIVITY`
+  means complete coverage but no
+  reported metric for that UID. Keep a client-side stack of cursors for the current
+  query: advance on Next, use the prior cursor for Previous, and omit the cursor
+  for First. Change the page index or reset the stack only after a successful
+  response, and reset it when a new search succeeds. The report API remains a
+  forward-cursor API.
+
   Route group so login has no sidebar:
 
   ```
@@ -2393,3 +2408,4 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-27 | design.md | Worker probe readiness định kỳ và lưu snapshot không chứa secret; web dùng kết quả còn hạn để điều khiển Enable/Sync/Resume, UI hiện mã lỗi; chặn root UID lệch | Req 13.14: sửa kiểm tra nhầm biến môi trường của web | updated |
 | 2026-09-27 | design.md | Cho phép readiness với key `ips=["*"]`, giữ cảnh báo và ngày hết hạn; chỉ chặn khi Bybit thực sự trả lỗi IP/quyền/key | Req 13.12: bỏ cổng chặn IP allowlist do ứng dụng tự đặt | updated |
 | 2026-09-27 | design.md | Bộ lọc Referral activity lấy ngày UTC lúc render làm mặc định cho period start/end, cố định phép đổi ranh giới kỳ sang UTC và bỏ ô source timezone riêng của báo cáo | Req 18.10: thao tác xem dữ liệu hôm nay đơn giản và cùng ranh giới ngày với API | updated |
+| 2026-09-27 | design.md | Date picker báo cáo có nút lịch tương phản cao; nhãn/ghi chú giải thích REPORTED, INCOMPLETE, NO_ACTIVITY; lưu cursor theo trang trên client để Next, Previous và First, chỉ đổi trang sau khi tải thành công | Req 18.11–18.12: dễ đọc trạng thái và không kẹt ở trang cuối | updated |

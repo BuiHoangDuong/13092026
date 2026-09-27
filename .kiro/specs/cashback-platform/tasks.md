@@ -797,6 +797,12 @@ flowchart TD
   - Verify the web production build on the Docker stack.
   - _Requirements: 18.10; Design: Admin shell — Referral activity filter_
 
+- [x] 38. Clarify report states, date controls, and pagination (Req 18.11–18.12)
+  - Add clear labels/help for report data states, emphasize the native date picker,
+    and retain page cursors so Previous and First work after Next.
+  - Verify web build on Docker and page navigation behavior.
+  - _Requirements: 18.11–18.12; Design: Admin shell — Report readability and navigation_
+
 ## Notes
 
 - **[PENDING] commission dedup key** (Open decision #11): finalize
@@ -845,3 +851,4 @@ flowchart TD
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 35: worker ghi readiness, web đọc trạng thái còn hạn, tránh yêu cầu Bybit secret trên web; Docker build/migration/integration qua; probe thật local báo IP_ALLOWLIST_REQUIRED | Req 13.14, sửa lỗi Connector is not ready giả và hiện đúng blocker | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 36: bỏ cổng chặn key không IP allowlist, giữ cảnh báo/expiry và lỗi Bybit 401/403; Docker build/unit/integration qua, probe key local báo READY với IP `*` | Req 13.12 theo yêu cầu người vận hành | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 37: mặc định period start/end của Referral activity là hôm nay theo UTC và bỏ ô source timezone của báo cáo; Docker web build qua | Req 18.10 và yêu cầu giảm thao tác lọc báo cáo | added |
+| 2026-09-27 | tasks.md | Thêm và hoàn thành Task 38: giải thích trạng thái dữ liệu, làm nổi bật nút lịch và thêm Previous/First cho báo cáo nhiều trang; Docker web build qua | Req 18.11–18.12 và phản hồi về khả năng sử dụng | added |

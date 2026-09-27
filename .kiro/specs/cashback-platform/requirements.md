@@ -819,6 +819,15 @@ tab) to do several jobs without losing my place.
     to interpret the selected report dates and SHALL NOT ask for a source timezone
     in this report filter. This SHALL NOT change the source timezone metadata
     required for manual uploads.
+11. WHILE the Referral activity report is visible, THE SYSTEM SHALL make each date
+    picker control visually discernible on the dark theme and explain the reported,
+    incomplete, and no-activity data states in plain language. The explanation
+    SHALL distinguish missing or unsealed (open/settling) coverage from a complete day with no metric
+    and SHALL NOT imply reported commission is paid cashback.
+12. WHEN an admin follows a report page cursor, THE SYSTEM SHALL offer controls
+    to return to the previous page and the first page. A new report search SHALL
+    reset pagination to page one; a failed page request SHALL leave the current
+    page and navigation history intact.
 
 ---
 
@@ -1052,3 +1061,4 @@ tab) to do several jobs without losing my place.
 | 2026-09-27 | requirements.md | Req 13.14: worker ghi readiness an toàn và còn hạn cho web; chặn Enable/Sync khi chưa sẵn sàng và hiện mã lý do cụ thể, không đưa secret sang web | Web hiện tự kiểm tra biến môi trường chỉ có trên worker nên luôn báo Connector is not ready | added |
 | 2026-09-27 | requirements.md | Req 13.12/13.14: bỏ điều kiện bắt buộc IP allowlist; key `ips=["*"]` vẫn được sync nếu read-only Affiliate và chưa hết hạn, chỉ cảnh báo IP/expiry; giữ chặn khi Bybit thực sự từ chối IP | Người vận hành chọn dùng key không giới hạn IP để bật ingest tự động | updated |
 | 2026-09-27 | requirements.md | Req 18.10: hai ngày lọc báo cáo Referral activity mặc định là ngày hiện tại theo UTC; bỏ ô source timezone trong báo cáo và luôn diễn giải kỳ lọc theo UTC, giữ metadata timezone cho upload | Giảm thao tác nhập trên trang báo cáo và thống nhất ranh giới ngày với dữ liệu API | added |
+| 2026-09-27 | requirements.md | Req 18.11–18.12: làm rõ nhãn trạng thái báo cáo, tăng độ nổi bật của date picker và cho phép quay về trang trước/trang đầu khi phân trang | Người vận hành khó hiểu trạng thái, khó thấy lịch và bị kẹt ở trang cuối | added |

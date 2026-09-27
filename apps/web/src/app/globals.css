@@ -127,6 +127,16 @@
 
 /* ---- Admin shell + content forms ---- */
 @layer components {
+  .activity-date-input { color: var(--foreground); color-scheme: light; }
+  .activity-date-input::-webkit-calendar-picker-indicator {
+    background-color: var(--primary);
+    border-radius: 0.375rem;
+    cursor: pointer;
+    height: 1.125rem;
+    opacity: 1;
+    padding: 0.375rem;
+    width: 1.125rem;
+  }
   .admin-shell { @apply flex min-h-screen; }
   .admin-nav {
     @apply sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border bg-card p-4;
