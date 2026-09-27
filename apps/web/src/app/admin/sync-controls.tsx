@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 
 type SyncView = {
   configured: boolean; enabled: boolean; intervalMinutes: number; nextRunAt: string | null;
+  readiness: { ready: boolean; reason: string | null; checkedAt: string | null; expiresAt: string | null; ipWarning: boolean };
   lastAttemptAt: string | null; lastSuccessAt: string | null; pausedReason: string | null;
   consecutiveFailures: number; note: string;
   coverage: { from: string | null; to: string | null; days: number };
@@ -14,6 +15,20 @@ async function read(response: Response) {
   const body = await response.json();
   if (!response.ok) throw new Error(body.error?.message ?? "Request failed");
   return body as SyncView;
+}
+
+function readinessMessage(reason: string | null) {
+  switch (reason) {
+    case "NOT_CHECKED": return "Waiting for the worker to check the connector.";
+    case "READINESS_STALE": return "The worker's last check is too old. Check that the worker is running.";
+    case "MISSING_KEY": return "Set BYBIT_AFFILIATE_API_KEY, BYBIT_AFFILIATE_API_SECRET, and BYBIT_AFFILIATE_MASTER_UID on the worker.";
+    case "PERMISSION": return "The key must be read-only with Affiliate as its only permission.";
+    case "EXPIRED": return "The Bybit API key has expired.";
+    case "IP_ALLOWLIST_REQUIRED": return "Bind the key to the worker's outbound IP before enabling production sync.";
+    case "ROOT_MISMATCH": return "The worker master UID differs from this connector's saved root. Review the worker configuration.";
+    case "CHECK_UNAVAILABLE": return "The worker could not complete the Bybit key check. It will retry shortly.";
+    default: return reason ? `Bybit key check failed: ${reason}.` : "Connector is ready.";
+  }
 }
 
 export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
@@ -48,7 +63,9 @@ export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
   return <section className="mt-8 space-y-4">
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <p className="text-sm text-muted-foreground">{view?.note}</p>
-    <p className="text-sm">{view?.configured ? "Worker credentials are configured." : "Set BYBIT_AFFILIATE_API_KEY, BYBIT_AFFILIATE_API_SECRET, and BYBIT_AFFILIATE_MASTER_UID on the worker."} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : "Not paused."}</p>
+    <p className="text-sm" role="status">{view ? readinessMessage(view.readiness.reason) : "Loading worker readiness..."} {view?.readiness.checkedAt ? `Checked ${new Date(view.readiness.checkedAt).toLocaleString()}.` : ""} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : ""}</p>
+    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The Bybit key has no IP allowlist.</p>}
+    {view?.readiness.expiresAt && <p className="text-sm text-muted-foreground">Key expiry: {new Date(view.readiness.expiresAt).toLocaleString()}.</p>}
     <p className="text-sm">Coverage {view?.coverage.days ?? 0} days{view?.coverage.from ? ` from ${view.coverage.from} to ${view.coverage.to}` : ""}. Next run {view?.nextRunAt ? new Date(view.nextRunAt).toLocaleString() : "not scheduled"}. Last success {view?.lastSuccessAt ? new Date(view.lastSuccessAt).toLocaleString() : "none"}.</p>
     <div className="flex flex-wrap items-end gap-3">
       <label className="text-sm">Interval
@@ -60,10 +77,10 @@ export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
         </select>
       </label>
       <Button type="button" variant="outline" onClick={() => void save(view?.enabled ?? false)} disabled={!view || String(view.intervalMinutes) === interval}>Save interval</Button>
-      <Button type="button" onClick={() => void save(true)} disabled={view?.enabled}>Enable</Button>
+      <Button type="button" onClick={() => void save(true)} disabled={!view?.readiness.ready || view.enabled}>Enable</Button>
       <Button type="button" variant="outline" onClick={() => void save(false)} disabled={!view?.enabled}>Disable</Button>
-      <Button type="button" variant="outline" onClick={() => void run("run")}>Sync now</Button>
-      <Button type="button" variant="outline" onClick={() => void run("resume")}>Resume</Button>
+      <Button type="button" variant="outline" onClick={() => void run("run")} disabled={!view?.readiness.ready || Boolean(view.pausedReason)}>Sync now</Button>
+      <Button type="button" variant="outline" onClick={() => void run("resume")} disabled={!view?.readiness.ready || !view.pausedReason}>Resume</Button>
     </div>
     <ul className="space-y-1 text-sm">
       {view?.runs.map((run) => <li key={run.id}>{run.createdAt.slice(0, 16)} · {run.trigger} · {run.state} · {run.changedRows} changed{run.safeErrorCode ? ` · ${run.safeErrorCode}` : ""}

@@ -777,6 +777,13 @@ flowchart TD
   - Verify web typecheck, lint, and production build.
   - _Requirements: 18.9; Design: Admin shell — Navigation presentation_
 
+- [x] 35. Worker-owned Bybit connector readiness (Req 13.14)
+  - Persist the worker's secret-free readiness result and root UID guard; web
+    controls read only a fresh result and show the safe reason for failure.
+  - Keep Bybit credentials in the worker container, add the new database
+    migration, and verify enabling without web credentials on Docker Postgres.
+  - _Requirements: 13.9, 13.12, 13.14; Design: Schedule and operation_
+
 ## Notes
 
 - **[PENDING] commission dedup key** (Open decision #11): finalize
@@ -822,3 +829,4 @@ flowchart TD
 | 2026-09-26 | tasks.md | Task 33 raw landing layer: hoàn thành 33.1–33.5 (`raw_record` partition theo sàn, LOAD → TRANSFORM async, re-transform có audit, retention 30 ngày); deploy web + worker, upload/publish qua route mới | Req 6.23–6.26 | added |
 | 2026-09-27 | tasks.md | Mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file: test trên stack Docker mô phỏng Railway (`infra/docker-compose.yml`), Railway chỉ để debug/đọc dữ liệu khi được yêu cầu; các bước verify của Task 20.5, 32, 33 chuyển sang Docker | Người dùng đổi chính sách môi trường test | updated |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 34: admin nav dropdown cho Data ingest/Reports, link xếp dọc và tự mở nhóm hiện tại; typecheck/lint/build web qua | Req 18.9 và phản hồi về sidebar khó đọc | added |
+| 2026-09-27 | tasks.md | Thêm và hoàn thành Task 35: worker ghi readiness, web đọc trạng thái còn hạn, tránh yêu cầu Bybit secret trên web; Docker build/migration/integration qua; probe thật local báo IP_ALLOWLIST_REQUIRED | Req 13.14, sửa lỗi Connector is not ready giả và hiện đúng blocker | added |

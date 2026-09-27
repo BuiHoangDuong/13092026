@@ -632,6 +632,15 @@ without a usable API.
 13. THE SYSTEM SHALL purge successful sync runs without changes after 90 days, keep
     failed or quarantined runs for 1 year, keep the change history as audit, and
     apply the raw-row retention of Req 6.26.
+14. WHILE API credentials exist only on the worker, THE SYSTEM SHALL have the
+    worker check and persist a recent, secret-free connector readiness result for
+    the admin page and controls. The web service SHALL NOT require the worker's
+    API key, secret, or affiliate root UID. IF the worker has not checked recently
+    or reports a failed check, THEN THE SYSTEM SHALL prevent enabling or starting
+    a sync and show a specific safe reason (including missing credentials, key
+    permission/expiry, or IP allowlist) instead of a generic readiness error.
+    WHEN the worker's check becomes ready, THE SYSTEM SHALL allow the admin to
+    enable the schedule without copying credentials to the web service.
 
 ### Requirement 14: Cashback lookup by exchange + UID
 **User Story:** As a visitor, I want to enter my exchange and UID and immediately see the
@@ -1033,3 +1042,4 @@ tab) to do several jobs without losing my place.
 | 2026-09-26 | requirements.md | Req 6.22 chốt báo cáo khoảng: manual theo kỳ chính xác, API cộng ngày UTC rời nhau kèm coverage/partial và phân trang không mất root/source | Sửa lỗi báo cáo không thấy API nhiều ngày và bỏ dòng khi UID có nhiều nhóm | updated |
 | 2026-09-26 | requirements.md | Thêm Req 6.23–6.26: mọi nguồn ghi bản ghi nguyên trạng vào bảng raw theo sàn trước khi vào bảng đích; load mới ghi đè dữ liệu và schema của đúng slice, không fail vì đổi cột (chỉ fail vì định dạng/an toàn); transform sang bảng đích chạy async, load bị thay thế không ghi gì; raw giữ 30 ngày, không lộ payload, admin chạy lại transform; sửa 6.3, 6.16, 6.21, 13.4, 13.13 và danh sách entity cho khớp | Cấu trúc dữ liệu các sàn có thể đổi; bước import không được fail và lỗi mapping sửa được mà không cần tải lại | added |
 | 2026-09-27 | requirements.md | Req 18.9: admin nav xếp từng link một hàng; Data ingest/Reports xổ xuống, tự mở nhóm của route hiện tại và dùng được bằng bàn phím trên màn hình hẹp | Sidebar hiện tại dồn link ngang và ngắt nhãn khó đọc | added |
+| 2026-09-27 | requirements.md | Req 13.14: worker ghi readiness an toàn và còn hạn cho web; chặn Enable/Sync khi chưa sẵn sàng và hiện mã lý do cụ thể, không đưa secret sang web | Web hiện tự kiểm tra biến môi trường chỉ có trên worker nên luôn báo Connector is not ready | added |

@@ -63,6 +63,10 @@ services:
       CLIENT_IP_HEADER: x-forwarded-for
       APP_URL: http://localhost:3000
       PORT: "3000"
+      # Keep worker-only Bybit credentials out of the web container even if .env has them.
+      BYBIT_AFFILIATE_API_KEY: ""
+      BYBIT_AFFILIATE_API_SECRET: ""
+      BYBIT_AFFILIATE_MASTER_UID: ""
     ports: ["${WEB_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

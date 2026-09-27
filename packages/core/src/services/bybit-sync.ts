@@ -1,4 +1,4 @@
-import { db, Prisma, type ActivityDayState, type SyncTrigger } from "@cashback/db";
+import { db, Prisma, type ActivityDayState, type ExchangeSyncConfig, type SyncTrigger } from "@cashback/db";
 import { bybitAffiliateContract, signBybit } from "../ingest/contract.js";
 import { assessQueryApi, fetchAffiliateDay, mapAffiliateRecords, SyncError, type Readiness } from "../ingest/bybit-affiliate.js";
 import { publishApiDay } from "../ingest/api-sink.js";
@@ -6,6 +6,7 @@ import { readRawApi, readRawRows, sliceKey, writeRawLoad } from "../ingest/raw-l
 import { heartbeat, lockActivityPeriod, withJobLease, type JobLease } from "./jobs.js";
 
 const INTERVALS = [30, 60, 720, 1440] as const;
+const READINESS_MAX_AGE_MS = 5 * 60_000;
 export type SyncInterval = (typeof INTERVALS)[number];
 
 export function bybitCredentials() {
@@ -64,7 +65,8 @@ export async function bybitReadiness(fetchImpl: typeof fetch = fetch): Promise<R
       "X-BAPI-TIMESTAMP": timestamp,
       "X-BAPI-RECV-WINDOW": "5000",
       "X-BAPI-SIGN": signBybit(credentials.apiSecret, timestamp, credentials.apiKey, "5000", "")
-    }
+    },
+    signal: AbortSignal.timeout(5000)
   });
   // Transient failures must retry, not pause the connector.
   if (response.status === 429 || response.status >= 500) throw new SyncError(`HTTP_${response.status}`, "RETRY", "Bybit key check is temporarily unavailable");
@@ -75,6 +77,56 @@ export async function bybitReadiness(fetchImpl: typeof fetch = fetch): Promise<R
   if (body.retCode === 10006) throw new SyncError("BYBIT_10006", "RETRY", "Bybit key check is rate limited");
   if (body.retCode !== 0) return { ready: false, reason: `BYBIT_${body.retCode ?? response.status}`, expiresAt: null, expiryWarning: false, ipWarning: false };
   return assessQueryApi(body.result ?? null);
+}
+
+/** The worker is the only process that probes Bybit or reads its credentials. */
+export async function refreshBybitReadiness(fetchImpl: typeof fetch = fetch, now = new Date()) {
+  const exchange = await db.exchange.findUnique({ where: { slug: "bybit" }, select: { id: true } });
+  if (!exchange) return;
+  const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId: exchange.id } });
+  const credentials = bybitCredentials();
+  let check: Readiness;
+  try {
+    check = await bybitReadiness(fetchImpl);
+  } catch {
+    check = { ready: false, reason: "CHECK_UNAVAILABLE", expiresAt: null, expiryWarning: false, ipWarning: false };
+  }
+  const rootMismatch = credentials.configured && current?.rootAccount !== undefined &&
+    current.rootAccount !== "unconfigured" && current.rootAccount !== credentials.rootAccount;
+  const rootAccount = current?.rootAccount && current.rootAccount !== "unconfigured"
+    ? current.rootAccount : credentials.rootAccount || "unconfigured";
+  const data = {
+    rootAccount,
+    credentialsConfigured: credentials.configured,
+    readinessReady: check.ready && !rootMismatch,
+    readinessReason: rootMismatch ? "ROOT_MISMATCH" : check.reason,
+    readinessCheckedAt: now,
+    readinessExpiresAt: check.expiresAt && !Number.isNaN(Date.parse(check.expiresAt)) ? new Date(check.expiresAt) : null,
+    readinessIpWarning: check.ipWarning,
+    ...(rootMismatch ? { pausedReason: "ROOT_MISMATCH" } : {})
+  };
+  await db.exchangeSyncConfig.upsert({
+    where: { exchangeId: exchange.id },
+    create: { exchangeId: exchange.id, ...data },
+    update: data
+  });
+}
+
+function recentReadiness(config: ExchangeSyncConfig | null, now = new Date()) {
+  if (!config?.readinessCheckedAt) return { ready: false, reason: "NOT_CHECKED", checkedAt: null };
+  const checkedAt = config.readinessCheckedAt.toISOString();
+  if (now.getTime() - config.readinessCheckedAt.getTime() > READINESS_MAX_AGE_MS) {
+    return { ready: false, reason: "READINESS_STALE", checkedAt };
+  }
+  return { ready: config.readinessReady, reason: config.readinessReason, checkedAt };
+}
+
+function requireRecentReadiness(config: ExchangeSyncConfig | null): asserts config is ExchangeSyncConfig {
+  const status = recentReadiness(config);
+  if (!status.ready) {
+    const reason = status.reason ?? "NOT_READY";
+    throw new SyncError(reason, "PAUSE", `Connector is not ready: ${reason}`);
+  }
 }
 
 /** Pending non-backfill SYNC job. Backfill jobs are queued hours ahead and must not block scheduled runs. */
@@ -143,6 +195,10 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
   const credentials = bybitCredentials();
   if (!config || !credentials.configured) throw new SyncError("MISSING_KEY", "PAUSE", "Bybit affiliate credentials are not configured");
+  if (config.rootAccount !== credentials.rootAccount) {
+    await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: "ROOT_MISMATCH" } });
+    return withJobLease(lease, async () => {});
+  }
   if (trigger === "SCHEDULED" && (!config.enabled || config.pausedReason)) return withJobLease(lease, async () => {});
   const readiness = await bybitReadiness(fetchImpl);
   if (!readiness.ready) {
@@ -256,10 +312,15 @@ export async function getSyncConfig(exchangeId: string) {
     db.activityPeriodStatus.aggregate({ where: { exchangeId }, _min: { periodDate: true }, _max: { periodDate: true }, _count: true })
   ]);
   const failedLoads = await db.rawLoad.findMany({ where: { runId: { in: runs.map((run) => run.id) }, state: "FAILED" }, select: { id: true, runId: true, fieldNames: true, driftReport: true } });
-  const credentials = bybitCredentials();
+  const readiness = recentReadiness(config);
   return {
     exchangeId,
-    configured: credentials.configured,
+    configured: config?.credentialsConfigured ?? false,
+    readiness: {
+      ...readiness,
+      expiresAt: config?.readinessExpiresAt?.toISOString() ?? null,
+      ipWarning: config?.readinessIpWarning ?? false
+    },
     rootAccount: config?.rootAccount ?? null,
     enabled: config?.enabled ?? false,
     intervalMinutes: config?.intervalMinutes ?? 30,
@@ -278,19 +339,15 @@ export async function getSyncConfig(exchangeId: string) {
   };
 }
 
-export async function updateSyncConfig(adminId: string, exchangeId: string, patch: { enabled?: boolean; intervalMinutes?: SyncInterval }, readiness?: Readiness) {
+export async function updateSyncConfig(adminId: string, exchangeId: string, patch: { enabled?: boolean; intervalMinutes?: SyncInterval }) {
   if (patch.intervalMinutes && !INTERVALS.includes(patch.intervalMinutes)) throw new SyncError("INTERVAL", "QUARANTINE", "Interval must be 30, 60, 720, or 1440 minutes");
   const exchange = await db.exchange.findUnique({ where: { id: exchangeId } });
   if (!exchange || exchange.slug !== "bybit") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Only Bybit has an approved activity connector");
-  const credentials = bybitCredentials();
   const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
   const enabling = patch.enabled === true && !current?.enabled;
-  if (enabling) {
-    const check = readiness ?? await bybitReadiness();
-    if (!check.ready || !credentials.configured) throw new SyncError(check.reason ?? "MISSING_KEY", "PAUSE", "Connector is not ready");
-  }
+  if (enabling) requireRecentReadiness(current);
   const data = {
-    rootAccount: credentials.rootAccount || current?.rootAccount || "unconfigured",
+    rootAccount: current?.rootAccount ?? "unconfigured",
     enabled: patch.enabled ?? current?.enabled ?? false,
     intervalMinutes: patch.intervalMinutes ?? current?.intervalMinutes ?? 30,
     // Enabling queues an immediate run below, so the first scheduled slot is one interval later.
@@ -323,8 +380,7 @@ export async function updateSyncConfig(adminId: string, exchangeId: string, patc
 
 export async function requestSync(adminId: string, exchangeId: string, trigger: SyncTrigger, dates: string[]) {
   const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
-  const readiness = await bybitReadiness();
-  if (!config || !readiness.ready) throw new SyncError(readiness.reason ?? "MISSING_KEY", "PAUSE", "Connector is not ready");
+  requireRecentReadiness(config);
   if (config.pausedReason && trigger !== "RESYNC") throw new SyncError(config.pausedReason, "PAUSE", "Connector is paused");
   if (!dates.length || dates.length > 366) throw new SyncError("RANGE", "QUARANTINE", "Choose between 1 and 366 days");
   if (!await enqueue(exchangeId, config.rootAccount, trigger, dates)) throw new SyncError("ACTIVE_RUN", "RETRY", "A sync is already queued or running");
@@ -333,8 +389,8 @@ export async function requestSync(adminId: string, exchangeId: string, trigger: 
 }
 
 export async function resumeSync(adminId: string, exchangeId: string) {
-  const readiness = await bybitReadiness();
-  if (!readiness.ready) throw new SyncError(readiness.reason ?? "MISSING_KEY", "PAUSE", "Connector is not ready");
+  const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
+  requireRecentReadiness(config);
   await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: null, consecutiveFailures: 0, updatedBy: adminId } });
   await db.syncConfigAudit.create({ data: { exchangeId, adminId, action: "RESUME" } });
   return getSyncConfig(exchangeId);

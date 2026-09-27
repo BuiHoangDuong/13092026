@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
+import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
 import type { SyncTrigger } from "@cashback/db";
 import { db } from "@cashback/db";
 
@@ -7,13 +7,14 @@ const pollSeconds = Number(process.env.WORKER_POLL_SECONDS ?? 10);
 const leaseSeconds = Number(process.env.JOB_LEASE_SECONDS ?? 120);
 if (!Number.isFinite(pollSeconds) || pollSeconds < 1 || !Number.isFinite(leaseSeconds) || leaseSeconds < 10) throw new Error("Invalid worker timing configuration");
 const workerId = process.env.RAILWAY_REPLICA_ID ?? process.env.WORKER_ID ?? randomUUID();
-let stopping = false, lastSchedule = 0, lastRawPurge = 0, lastHealthReport = 0, lastAlertAt = 0, lastAlertSignature = "";
+let stopping = false, lastSchedule = 0, lastReadiness = 0, lastRawPurge = 0, lastHealthReport = 0, lastAlertAt = 0, lastAlertSignature = "";
 process.on("SIGTERM", () => { stopping = true; });
 process.on("SIGINT", () => { stopping = true; });
 
 async function tick() {
   await recordWorkerHeartbeat(workerId);
   await reapExpiredJobs();
+  if (Date.now() - lastReadiness > 60_000) { await refreshBybitReadiness(); lastReadiness = Date.now(); }
   if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); await scheduleDueSyncs(); lastSchedule = Date.now(); }
   if (Date.now() - lastRawPurge > 86_400_000) { await purgeTransformedRaw(); lastRawPurge = Date.now(); }
   const job = await claimNextJob(leaseSeconds, workerId);

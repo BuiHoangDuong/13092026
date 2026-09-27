@@ -67,7 +67,7 @@ try {
   process.env.BYBIT_AFFILIATE_MASTER_UID = "root-e2e";
   const core = await import("../packages/core/dist/index.js");
   const today = new Date().toISOString().slice(0, 10);
-  const keyInfo = { retCode: 0, result: { readOnly: 1, permissions: { Affiliate: ["Affiliate"], Spot: [] }, ips: ["*"], expiredAt: "2099-01-01T00:00:00Z" } };
+  const keyInfo = { retCode: 0, result: { readOnly: 1, permissions: { Affiliate: ["Affiliate"], Spot: [] }, ips: ["203.0.113.10"], expiredAt: "2099-01-01T00:00:00Z" } };
   const row = (uid, day, patch = {}) => ({ userId: uid, source: "123456", remarks: "", isKyc: false, registerTime: "2025-02-01", startDate: day, endDate: day,
     takerVol: "", makerVol: "", tradeVol: "", tradfiTradeVol: "0", takerVol30Day: "", makerVol30Day: "", tradeVol30Day: "", takerVol365Day: "",
     makerVol365Day: "", tradeVol365Day: "", tradfiTradeVol30Day: "", tradfiTradeVol365Day: "", depositAmount30Day: "", depositAmount365Day: "",
@@ -78,6 +78,26 @@ try {
     const list = mode === "drift" ? [row("9001", day, { tradeVol: undefined, takerVol: undefined })].map((r) => { delete r.tradeVol; return r; }) : [row("9001", day), row("9002", day)];
     return { status: 200, json: async () => ({ retCode: 0, time: Date.now(), result: { list, nextPageCursor: "" } }) };
   };
+  await core.refreshBybitReadiness(fakeBybit("normal"));
+  assert.equal((await core.getSyncConfig(exchange.id)).readiness.ready, true);
+  await db.exchangeSyncConfig.update({ where: { exchangeId: exchange.id }, data: { backfillDays: 0 } });
+  const workerKey = process.env.BYBIT_AFFILIATE_API_KEY;
+  const workerSecret = process.env.BYBIT_AFFILIATE_API_SECRET;
+  const workerRoot = process.env.BYBIT_AFFILIATE_MASTER_UID;
+  delete process.env.BYBIT_AFFILIATE_API_KEY;
+  delete process.env.BYBIT_AFFILIATE_API_SECRET;
+  delete process.env.BYBIT_AFFILIATE_MASTER_UID;
+  const enabledFromWeb = await core.updateSyncConfig("test-admin", exchange.id, { enabled: true });
+  assert.equal(enabledFromWeb.enabled, true, "web enables from the worker snapshot without its credentials");
+  assert.equal(enabledFromWeb.readiness.ready, true);
+  await db.exchangeSyncConfig.update({ where: { exchangeId: exchange.id }, data: { readinessCheckedAt: new Date(Date.now() - 10 * 60_000) } });
+  await assert.rejects(() => core.requestSync("test-admin", exchange.id, "MANUAL", [today]), (error) => error.code === "READINESS_STALE");
+  process.env.BYBIT_AFFILIATE_API_KEY = workerKey;
+  process.env.BYBIT_AFFILIATE_API_SECRET = workerSecret;
+  process.env.BYBIT_AFFILIATE_MASTER_UID = workerRoot;
+  await core.refreshBybitReadiness(fakeBybit("normal"));
+  await core.updateSyncConfig("test-admin", exchange.id, { enabled: false });
+  await db.job.deleteMany({ where: { type: "SYNC", payload: { path: ["exchangeId"], equals: exchange.id } } });
   const bybit2 = await db.exchange.create({ data: { slug: "bybit-e2e", name: "Bybit E2E", status: "PUBLISHED" } });
   await db.exchangeSyncConfig.create({ data: { exchangeId: bybit2.id, rootAccount: "root-e2e", enabled: true, intervalMinutes: 30, nextRunAt: new Date(Date.now() - 1000) } });
   await Promise.all([core.scheduleDueSyncs(), core.scheduleDueSyncs()]);

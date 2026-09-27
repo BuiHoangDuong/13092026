@@ -538,6 +538,17 @@ credentials. A worker scheduler tick claims due configs in Postgres, atomically
 enqueues one `SYNC` job and advances `nextRunAt` from the previous due time to the
 first future slot (skip missed slots, no burst after downtime). A unique active
 run/lease plus per-(exchange, root) advisory lock prevents overlap across replicas.
+The worker probes `/v5/user/query-api` at startup and at most once per minute,
+then persists `credentialsConfigured`, `readinessReady`, `readinessReason`,
+`readinessCheckedAt`, `readinessExpiresAt`, and `readinessIpWarning` on
+`ExchangeSyncConfig` (Req 13.14). A transient probe failure records a safe
+`CHECK_UNAVAILABLE` status. The web reads this snapshot only; Enable, Sync now,
+and Resume require a successful probe no older than five minutes. It reports
+`NOT_CHECKED` or `READINESS_STALE` when the worker has not provided a recent
+result. The worker remains the only holder of API credentials and rechecks
+readiness on every run. If its configured master UID differs from an established
+config root, it reports `ROOT_MISMATCH` and pauses the connector instead of
+attributing data to the wrong root.
 The worker rechecks enabled/readiness before a scheduled run and rechecks its lease
 before publish. Manual `Sync now` may run while the schedule is disabled if the
 connector is ready, but never overlaps another run. An admin schedule edit applies
@@ -2368,3 +2379,4 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-26 | design.md | Thêm Raw landing layer: mọi nguồn (file/API) ghi bản ghi nguyên trạng vào `raw_record` partition theo sàn (`raw_bybit`, `raw_mexc`, `raw_binance`, `raw_bingx`, `raw_default`) dạng `payload jsonb`, ghi đè theo slice (xoá load cũ, `RawLoad` SUPERSEDED), LOAD chỉ fail vì định dạng/an toàn; TRANSFORM chạy async (bỏ qua load đã bị thay thế), lỗi contract để lại raw và chạy lại được (UC18/UC19); bỏ key cá nhân khi load, raw giữ 30 ngày; job `LOAD`/`TRANSFORM` thay `PARSE`; model `RawLoad`; template method tách `load()`/`transform()`; recovery bằng re-transform | Sàn đổi cấu trúc dữ liệu không làm fail bước import; chọn JSONB thay vì tạo lại bảng/cột mỗi lần load (tránh DDL từ header không tin cậy, khoá bảng, lệch Prisma migrate) | updated |
 | 2026-09-27 | design.md | Environments: test/dev chạy trên Docker mô phỏng Railway (`infra/docker-compose.yml`, `infra/Dockerfile`: Postgres 18.6 trixie, UTC, max_connections 500, build/preDeploy/start/healthcheck như `.railway/railway.ts`), bỏ MinIO; Railway chỉ để debug/đọc dữ liệu; ghi chú `connect_timeout` chuyển thành hướng dẫn debug Railway | Người dùng đổi chính sách môi trường test; bảng cũ ghi "Railway only" | updated |
 | 2026-09-27 | design.md | Admin nav dùng disclosure dropdown cho Data ingest/Reports, link xếp dọc full-width, nhóm route hiện tại tự mở; giữ focus và mobile layout | Req 18.9: tránh link dồn ngang/ngắt nhãn trong sidebar | updated |
+| 2026-09-27 | design.md | Worker probe readiness định kỳ và lưu snapshot không chứa secret; web dùng kết quả còn hạn để điều khiển Enable/Sync/Resume, UI hiện mã lỗi; chặn root UID lệch | Req 13.14: sửa kiểm tra nhầm biến môi trường của web | updated |

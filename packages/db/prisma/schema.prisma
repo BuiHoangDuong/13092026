@@ -413,6 +413,12 @@ model ExchangeSyncConfig {
   lastFetchedPeriodEnd DateTime?
   consecutiveFailures  Int      @default(0)
   pausedReason         String?
+  credentialsConfigured Boolean  @default(false)
+  readinessReady        Boolean  @default(false)
+  readinessReason       String?
+  readinessCheckedAt    DateTime?
+  readinessExpiresAt    DateTime?
+  readinessIpWarning    Boolean  @default(false)
   updatedBy            String?
   updatedAt            DateTime @updatedAt
 }
