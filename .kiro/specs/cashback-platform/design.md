@@ -549,6 +549,9 @@ result. The worker remains the only holder of API credentials and rechecks
 readiness on every run. If its configured master UID differs from an established
 config root, it reports `ROOT_MISMATCH` and pauses the connector instead of
 attributing data to the wrong root.
+An `ips=["*"]` result sets `readinessIpWarning` for the admin warning but does
+not make readiness fail; a real Bybit 401/403 or key permission/expiry failure
+still prevents runs (Req 13.12).
 The worker rechecks enabled/readiness before a scheduled run and rechecks its lease
 before publish. Manual `Sync now` may run while the schedule is disabled if the
 connector is ready, but never overlaps another run. An admin schedule edit applies
@@ -567,7 +570,8 @@ labeled as activity. Public
 lookup remains wallet-only. Admin APIs enforce session/CSRF and return
 `Cache-Control: private, no-store`; secret values and raw responses never leave
 the worker. The current key has no IP allowlist (`ips=["*"]`) and therefore
-expires after 90 days (2026-12-26). Production needs a stable Railway outbound IP
+expires after 90 days (2026-12-26). Its missing allowlist is advisory; an
+operator who chooses to restrict it must configure stable Railway outbound IP
 bound to the key, which also removes the 90-day expiry. Key/secret rotation must be
 possible without changing the schedule, and `/admin/ingest/connectors` shows the key's expiry.
 
@@ -1075,7 +1079,7 @@ service additionally receives `BYBIT_AFFILIATE_API_KEY` and
 `BYBIT_AFFILIATE_API_SECRET` via local ignored `.env` or Railway service variables;
 neither belongs in source control or the browser/web service. Sync intervals are DB
 settings per exchange, not environment variables. A key with an IP allowlist needs
-stable Railway outbound egress before production sync can be enabled. The worker
+stable Railway outbound egress to remain usable. The worker
 also reads `BYBIT_AFFILIATE_MASTER_UID` (affiliate root), `BYBIT_API_BASE`, and
 `BYBIT_VOL_TIMEZONE` (set only after the `volUpdateTime` zone is confirmed).
 
@@ -2380,3 +2384,4 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | 2026-09-27 | design.md | Environments: test/dev chạy trên Docker mô phỏng Railway (`infra/docker-compose.yml`, `infra/Dockerfile`: Postgres 18.6 trixie, UTC, max_connections 500, build/preDeploy/start/healthcheck như `.railway/railway.ts`), bỏ MinIO; Railway chỉ để debug/đọc dữ liệu; ghi chú `connect_timeout` chuyển thành hướng dẫn debug Railway | Người dùng đổi chính sách môi trường test; bảng cũ ghi "Railway only" | updated |
 | 2026-09-27 | design.md | Admin nav dùng disclosure dropdown cho Data ingest/Reports, link xếp dọc full-width, nhóm route hiện tại tự mở; giữ focus và mobile layout | Req 18.9: tránh link dồn ngang/ngắt nhãn trong sidebar | updated |
 | 2026-09-27 | design.md | Worker probe readiness định kỳ và lưu snapshot không chứa secret; web dùng kết quả còn hạn để điều khiển Enable/Sync/Resume, UI hiện mã lỗi; chặn root UID lệch | Req 13.14: sửa kiểm tra nhầm biến môi trường của web | updated |
+| 2026-09-27 | design.md | Cho phép readiness với key `ips=["*"]`, giữ cảnh báo và ngày hết hạn; chỉ chặn khi Bybit thực sự trả lỗi IP/quyền/key | Req 13.12: bỏ cổng chặn IP allowlist do ứng dụng tự đặt | updated |

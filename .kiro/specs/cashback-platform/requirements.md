@@ -627,8 +627,9 @@ without a usable API.
 12. BEFORE enabling a connector and on every run, THE SYSTEM SHALL check the key via
     `/v5/user/query-api`: `readOnly = 1`, Affiliate as the only permission, and not
     expired. It SHALL refuse a key with any other permission, and SHALL alert at
-    least 14 days before `expiredAt`. A key without an IP allowlist expires after 90
-    days; production SHALL bind the key to the worker's stable outbound IP.
+    least 14 days before `expiredAt`. IF the key has no IP allowlist, THEN THE
+    SYSTEM SHALL warn the admin and show its expiry, but SHALL NOT block sync
+    solely because the allowlist is absent.
 13. THE SYSTEM SHALL purge successful sync runs without changes after 90 days, keep
     failed or quarantined runs for 1 year, keep the change history as audit, and
     apply the raw-row retention of Req 6.26.
@@ -638,7 +639,8 @@ without a usable API.
     API key, secret, or affiliate root UID. IF the worker has not checked recently
     or reports a failed check, THEN THE SYSTEM SHALL prevent enabling or starting
     a sync and show a specific safe reason (including missing credentials, key
-    permission/expiry, or IP allowlist) instead of a generic readiness error.
+    permission/expiry, or an actual Bybit IP rejection) instead of a generic
+    readiness error.
     WHEN the worker's check becomes ready, THE SYSTEM SHALL allow the admin to
     enable the schedule without copying credentials to the web service.
 
@@ -1043,3 +1045,4 @@ tab) to do several jobs without losing my place.
 | 2026-09-26 | requirements.md | Thêm Req 6.23–6.26: mọi nguồn ghi bản ghi nguyên trạng vào bảng raw theo sàn trước khi vào bảng đích; load mới ghi đè dữ liệu và schema của đúng slice, không fail vì đổi cột (chỉ fail vì định dạng/an toàn); transform sang bảng đích chạy async, load bị thay thế không ghi gì; raw giữ 30 ngày, không lộ payload, admin chạy lại transform; sửa 6.3, 6.16, 6.21, 13.4, 13.13 và danh sách entity cho khớp | Cấu trúc dữ liệu các sàn có thể đổi; bước import không được fail và lỗi mapping sửa được mà không cần tải lại | added |
 | 2026-09-27 | requirements.md | Req 18.9: admin nav xếp từng link một hàng; Data ingest/Reports xổ xuống, tự mở nhóm của route hiện tại và dùng được bằng bàn phím trên màn hình hẹp | Sidebar hiện tại dồn link ngang và ngắt nhãn khó đọc | added |
 | 2026-09-27 | requirements.md | Req 13.14: worker ghi readiness an toàn và còn hạn cho web; chặn Enable/Sync khi chưa sẵn sàng và hiện mã lý do cụ thể, không đưa secret sang web | Web hiện tự kiểm tra biến môi trường chỉ có trên worker nên luôn báo Connector is not ready | added |
+| 2026-09-27 | requirements.md | Req 13.12/13.14: bỏ điều kiện bắt buộc IP allowlist; key `ips=["*"]` vẫn được sync nếu read-only Affiliate và chưa hết hạn, chỉ cảnh báo IP/expiry; giữ chặn khi Bybit thực sự từ chối IP | Người vận hành chọn dùng key không giới hạn IP để bật ingest tự động | updated |

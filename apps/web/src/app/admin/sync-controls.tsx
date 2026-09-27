@@ -24,7 +24,6 @@ function readinessMessage(reason: string | null) {
     case "MISSING_KEY": return "Set BYBIT_AFFILIATE_API_KEY, BYBIT_AFFILIATE_API_SECRET, and BYBIT_AFFILIATE_MASTER_UID on the worker.";
     case "PERMISSION": return "The key must be read-only with Affiliate as its only permission.";
     case "EXPIRED": return "The Bybit API key has expired.";
-    case "IP_ALLOWLIST_REQUIRED": return "Bind the key to the worker's outbound IP before enabling production sync.";
     case "ROOT_MISMATCH": return "The worker master UID differs from this connector's saved root. Review the worker configuration.";
     case "CHECK_UNAVAILABLE": return "The worker could not complete the Bybit key check. It will retry shortly.";
     default: return reason ? `Bybit key check failed: ${reason}.` : "Connector is ready.";
@@ -64,7 +63,7 @@ export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <p className="text-sm text-muted-foreground">{view?.note}</p>
     <p className="text-sm" role="status">{view ? readinessMessage(view.readiness.reason) : "Loading worker readiness..."} {view?.readiness.checkedAt ? `Checked ${new Date(view.readiness.checkedAt).toLocaleString()}.` : ""} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : ""}</p>
-    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The Bybit key has no IP allowlist.</p>}
+    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The Bybit key has no IP allowlist. Sync is allowed; review the key expiry below.</p>}
     {view?.readiness.expiresAt && <p className="text-sm text-muted-foreground">Key expiry: {new Date(view.readiness.expiresAt).toLocaleString()}.</p>}
     <p className="text-sm">Coverage {view?.coverage.days ?? 0} days{view?.coverage.from ? ` from ${view.coverage.from} to ${view.coverage.to}` : ""}. Next run {view?.nextRunAt ? new Date(view.nextRunAt).toLocaleString() : "not scheduled"}. Last success {view?.lastSuccessAt ? new Date(view.lastSuccessAt).toLocaleString() : "none"}.</p>
     <div className="flex flex-wrap items-end gap-3">

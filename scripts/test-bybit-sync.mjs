@@ -67,7 +67,7 @@ try {
   process.env.BYBIT_AFFILIATE_MASTER_UID = "root-e2e";
   const core = await import("../packages/core/dist/index.js");
   const today = new Date().toISOString().slice(0, 10);
-  const keyInfo = { retCode: 0, result: { readOnly: 1, permissions: { Affiliate: ["Affiliate"], Spot: [] }, ips: ["203.0.113.10"], expiredAt: "2099-01-01T00:00:00Z" } };
+  const keyInfo = { retCode: 0, result: { readOnly: 1, permissions: { Affiliate: ["Affiliate"], Spot: [] }, ips: ["*"], expiredAt: "2099-01-01T00:00:00Z" } };
   const row = (uid, day, patch = {}) => ({ userId: uid, source: "123456", remarks: "", isKyc: false, registerTime: "2025-02-01", startDate: day, endDate: day,
     takerVol: "", makerVol: "", tradeVol: "", tradfiTradeVol: "0", takerVol30Day: "", makerVol30Day: "", tradeVol30Day: "", takerVol365Day: "",
     makerVol365Day: "", tradeVol365Day: "", tradfiTradeVol30Day: "", tradfiTradeVol365Day: "", depositAmount30Day: "", depositAmount365Day: "",
@@ -80,6 +80,7 @@ try {
   };
   await core.refreshBybitReadiness(fakeBybit("normal"));
   assert.equal((await core.getSyncConfig(exchange.id)).readiness.ready, true);
+  assert.equal((await core.getSyncConfig(exchange.id)).readiness.ipWarning, true);
   await db.exchangeSyncConfig.update({ where: { exchangeId: exchange.id }, data: { backfillDays: 0 } });
   const workerKey = process.env.BYBIT_AFFILIATE_API_KEY;
   const workerSecret = process.env.BYBIT_AFFILIATE_API_SECRET;

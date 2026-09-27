@@ -542,8 +542,8 @@ flowchart TD
     - Use worker-only `BYBIT_AFFILIATE_API_KEY/SECRET` with master UID and only
       Affiliate read permission. Readiness via `/v5/user/query-api` on every run:
       `readOnly=1`, Affiliate only, not expired; alert 14 days before `expiredAt`.
-      Bind the key to a stable Railway outbound IP before production (current key
-      is `ips=["*"]`, 90-day expiry).
+      Warn when the key has no IP allowlist (`ips=["*"]`, current key has a 90-day
+      expiry), but do not block a valid read-only Affiliate key for that reason.
     - Call `/v5/affiliate/aff-user-list` with explicit `startDate` and `endDate`
       per UTC day (never omitted), `size=100`, and every cursor page; stop on an
       empty list or empty cursor. Apply a shared limiter from `x-bapi-limit*`
@@ -784,6 +784,13 @@ flowchart TD
     migration, and verify enabling without web credentials on Docker Postgres.
   - _Requirements: 13.9, 13.12, 13.14; Design: Schedule and operation_
 
+- [x] 36. Allow Bybit sync without an IP allowlist (Req 13.12)
+  - Remove the application-side `IP_ALLOWLIST_REQUIRED` readiness gate while
+    retaining the warning and expiry display. Keep actual Bybit 401/403 failures
+    and key permission/expiry checks blocking.
+  - Verify wildcard-IP readiness and admin enable on the Docker stack.
+  - _Requirements: 13.7, 13.12, 13.14; Design: Schedule and operation_
+
 ## Notes
 
 - **[PENDING] commission dedup key** (Open decision #11): finalize
@@ -830,3 +837,4 @@ flowchart TD
 | 2026-09-27 | tasks.md | Mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file: test trên stack Docker mô phỏng Railway (`infra/docker-compose.yml`), Railway chỉ để debug/đọc dữ liệu khi được yêu cầu; các bước verify của Task 20.5, 32, 33 chuyển sang Docker | Người dùng đổi chính sách môi trường test | updated |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 34: admin nav dropdown cho Data ingest/Reports, link xếp dọc và tự mở nhóm hiện tại; typecheck/lint/build web qua | Req 18.9 và phản hồi về sidebar khó đọc | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 35: worker ghi readiness, web đọc trạng thái còn hạn, tránh yêu cầu Bybit secret trên web; Docker build/migration/integration qua; probe thật local báo IP_ALLOWLIST_REQUIRED | Req 13.14, sửa lỗi Connector is not ready giả và hiện đúng blocker | added |
+| 2026-09-27 | tasks.md | Thêm và hoàn thành Task 36: bỏ cổng chặn key không IP allowlist, giữ cảnh báo/expiry và lỗi Bybit 401/403; Docker build/unit/integration qua, probe key local báo READY với IP `*` | Req 13.12 theo yêu cầu người vận hành | added |

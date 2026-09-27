@@ -153,6 +153,5 @@ export function assessQueryApi(result: { readOnly?: number; permissions?: Record
   const ipWarning = (result.ips ?? []).includes("*");
   if (!affiliateOnly) return { ready: false, reason: "PERMISSION", expiresAt, expiryWarning, ipWarning };
   if (expired) return { ready: false, reason: "EXPIRED", expiresAt, expiryWarning, ipWarning };
-  if (process.env.NODE_ENV === "production" && ipWarning) return { ready: false, reason: "IP_ALLOWLIST_REQUIRED", expiresAt, expiryWarning, ipWarning };
   return { ready: true, reason: null, expiresAt, expiryWarning, ipWarning };
 }

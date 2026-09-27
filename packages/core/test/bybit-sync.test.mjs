@@ -61,7 +61,11 @@ test("UC12 classifies auth and rate-limit errors and checks key readiness", () =
   assert.equal(classifyBybitError(10006).action, "RETRY");
   assert.equal(classifyBybitError(610015).action, "QUARANTINE");
   assert.equal(classifyBybitError(10005).action, "PAUSE");
+  const previousEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
   const ready = assessQueryApi({ readOnly: 1, permissions: { Affiliate: ["Affiliate"] }, ips: ["*"], expiredAt: "2026-12-26T00:00:00.000Z" }, new Date("2026-09-26T00:00:00.000Z"));
+  if (previousEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = previousEnv;
   assert.equal(ready.ready, true);
   assert.equal(ready.ipWarning, true);
   const expired = assessQueryApi({ readOnly: 1, permissions: { Affiliate: ["Affiliate"], Wallet: ["Account"] }, ips: ["1.1.1.1"], expiredAt: "2026-01-01T00:00:00.000Z" }, new Date("2026-09-26T00:00:00.000Z"));
