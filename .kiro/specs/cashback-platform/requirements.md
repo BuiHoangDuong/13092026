@@ -2,9 +2,8 @@
 
 **Cashback Affiliate Platform**
 
-- **Status:** Draft v0.6 (UID-first / no customer accounts; supersedes the
-  customer-account model of v0.4–v0.5)
-- **Last updated:** 2026-09-17
+- **Status:** Draft v0.9 (UID-first; common adapter base, drift policy, change-only API writes)
+- **Last updated:** 2026-09-26
 - **Access model:** **UID-first, no customer accounts.** A visitor enters exchange + UID and
   immediately sees that UID's cashback amounts. Ownership is asserted only at withdrawal:
   the first withdrawal binds an email to that (exchange, UID) via a 6-digit OTP, and a
@@ -144,11 +143,12 @@ These are fixed decisions that requirements must respect.
   fields — so a locale can be enabled later without restructuring routes or content.
 - **Extensibility (answer 6B):** ship with Binance, MEXC, Bybit but model exchanges as
   data so new exchanges are added without code changes to core flows.
-- **Report format (answers 8B, 9, 10C):** no sample file yet; format known to be
-  tabular. Parser layer must be pluggable so multiple formats (CSV, XLSX, later others)
-  and both transaction-level and aggregate reports are supported per-exchange adapter.
+- **Report format (answers 8B, 9, 10C):** a real MEXC Referral Data XLSX sample is
+  available. Parser adapters must support native exchange exports and a documented
+  normalized CSV fallback; approved API data uses the same normalized ingest contract.
+  Referral activity snapshots and commission evidence are separate datasets.
 
-### Proposed monorepo structure (guideline, not yet created)
+### Monorepo structure
 ```
 apps/
   web/            # Next.js 15 App Router (public + lookup/withdraw + admin UI)
@@ -213,9 +213,8 @@ to the exchange while the platform records the click.
 account at all, so that operational access is controlled without adding friction for people
 claiming cashback.
 
-> **Changed in v0.6.** Customer registration, username, password, and password reset are
-> removed; end-user identity is now a UID account proven by email OTP (Requirement 15).
-> This requirement covers admin authentication only.
+> This requirement covers admin authentication only; end-user identity is a UID account
+> proven by email OTP (Requirement 15).
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL authenticate admins with email + credential and SHALL maintain admin
@@ -255,8 +254,7 @@ half-translated pages and a future market can be added without a rewrite.
 that owns its wallet and withdrawals, so that cashback can accrue and be claimed without any
 platform account.
 
-> **Changed in v0.6.** The previous customer-linking / admin-ownership-approval model is
-> removed. Cashback now accrues to the UID itself; ownership is asserted at withdrawal time
+> Cashback accrues to the UID itself; ownership is asserted at withdrawal time
 > (Requirement 15). See "Accepted risk — first claimant wins".
 
 #### Acceptance Criteria
@@ -274,27 +272,30 @@ platform account.
 6. THE SYSTEM SHALL NOT expose a UID account's bound email, payout address, or withdrawal
    history to an unauthenticated caller (Requirement 14.3).
 
-### Requirement 6: Affiliate report import pipeline (manual, MVP)
-**User Story:** As an admin, I want to upload an affiliate report, have it validated and
-previewed, then confirm it, so that verified commission data is published without
-corrupting the live dashboard.
+### Requirement 6: Affiliate data ingest pipeline
+**User Story:** As an admin, I want manual reports and approved API data normalized
+through one controlled ingest pipeline, so that referral metrics and verified
+commission data are published without corrupting the live dashboard or wallet.
 
 #### Acceptance Criteria
-1. WHEN an admin uploads a report via `POST /api/admin/imports` with source metadata
-   (exchange, root account, report type, period, timezone), THE SYSTEM SHALL validate
+1. WHEN an admin uploads a report via `POST /api/admin/ingest/batches` with source metadata
+   (exchange, root account, dataset kind, source method, report type when applicable,
+   period, timezone, source as-of time), THE SYSTEM SHALL validate
    admin permission, file type, and size, store the original file in private storage,
    create an `import_batch` and a parse job, and respond `202 Accepted` with a batch id.
 2. THE SYSTEM SHALL NOT parse the entire file within the HTTP request; parsing SHALL run
    in the worker.
-3. WHEN the worker processes a parse job, THE SYSTEM SHALL read UID as string, normalize
-   timestamps to UTC (retaining source timezone), normalize decimals, and detect error
-   rows, unmapped UIDs, duplicates, and totals into staging rows.
+3. WHEN the worker transforms a raw load (Req 6.23), THE SYSTEM SHALL read UID as
+   string, normalize timestamps to UTC (retaining source timezone), normalize
+   decimals, and detect error rows, unmapped UIDs, duplicates, and totals into
+   staging rows.
 4. THE SYSTEM SHALL NOT execute formulas or macros contained in spreadsheet files.
 5. WHILE a batch is not committed, THE SYSTEM SHALL keep its data in staging and SHALL
    NOT expose it to any public lookup or UID-session read.
-6. WHEN an admin reviews a batch, THE SYSTEM SHALL show new/duplicate/error/conflicting
-   row counts and validation totals.
-7. WHEN an admin commits a batch via `POST /api/admin/imports/:id/commit`, THE SYSTEM
+6. WHEN an admin reviews a batch, THE SYSTEM SHALL show its dataset kind, source
+   method, report period, source as-of time, new/duplicate/error/conflicting row
+   counts, validation totals, and whether it can affect cashback.
+7. WHEN an admin commits a batch via `POST /api/admin/ingest/batches/:id/commit`, THE SYSTEM
    SHALL create a publish job that upserts versioned, source-attributed records and
    commits the whole batch atomically.
 8. IF a publish job fails midway, THEN THE SYSTEM SHALL NOT leave the dashboard reading
@@ -303,12 +304,116 @@ corrupting the live dashboard.
    duplicate data (idempotent commit).
 10. THE SYSTEM SHALL support per-exchange parser adapters and multiple file formats
     (CSV, XLSX, extensible — answers 8B, 9), and SHALL distinguish transaction-level
-    reports from aggregate reports (answer 10C).
+    reports from aggregate reports (answer 10C). Every file or API source SHALL be a
+    subclass of one common adapter base that enforces the same read → validate →
+    minimize → normalize steps; adding an exchange (e.g. Binance, BingX) SHALL
+    require only a new subclass with its field contract, not changes to the ingest
+    pipeline, schema, or publish path.
 11. IF a report lacks stable identity keys for transaction-level dedup, THEN THE SYSTEM
     SHALL fall back to aggregate handling rather than guessing per-transaction records.
+12. WHEN ingesting a MEXC Referral Data export, THE SYSTEM SHALL classify it as a
+    period-scoped referral activity snapshot, retain the supplied report period and
+    export/as-of time separately, and map `Referral` to an opaque UID string,
+    `Trading volume`/`Trading token` to volume, and `Your Earnings`/`Commission token`
+    to a reported earnings metric. The worker SHALL reject a file that lacks a required
+    header, contains a formula, or has missing/duplicate UIDs, non-numeric or negative
+    volume, unsupported units, a missing source timezone or source as-of time, or a sheet
+    period that disagrees with admin-supplied metadata. Extra columns SHALL be accepted
+    and listed as preview warnings.
+13. WHEN a referral activity snapshot is published, THE SYSTEM SHALL make its UID metrics
+    available through an admin-only paginated report by exchange and period without creating or changing CommissionRecord,
+    CommissionVersion, cashback wallet balances, or withdrawal eligibility. Zero-valued
+    rows SHALL remain distinguishable from missing data.
+14. WHEN an admin imports the same MEXC period again, THE SYSTEM SHALL preserve the
+    original and publish a new version of that period's snapshot without adding its
+    volume or earnings to the previous version. The version with the latest source as-of
+    time SHALL be current, and an older export SHALL be rejected. Currency applies to the
+    whole period: a UID absent from the current version SHALL show as having no data for
+    that period, not a value from an older version. A snapshot exported before its
+    period ended SHALL be marked partial. Overlapping but different periods SHALL
+    remain separate and SHALL NOT be summed as disjoint activity.
+15. WHEN commission evidence for an exchange is mapped and verified, THE SYSTEM SHALL
+    normalize it to the existing commission publish path; a manually prepared normalized
+    CSV and any approved official API commission source SHALL obey the same identity,
+    preview, correction, and audit rules as a native export. Referral snapshot `Your
+    Earnings` alone SHALL NOT be treated as settled, payable commission.
+16. WHEN transforming an exchange export, THE SYSTEM SHALL copy into staging rows and
+    snapshots only the columns it maps. Personal columns (for example MEXC nickname,
+    user tag, identification level, asset band) SHALL be dropped before the raw layer
+    and remain only in the private original file; they SHALL NOT appear in raw
+    tables, previews or APIs.
+17. WHEN ingesting Bybit Affiliate `aff-user-list`, THE SYSTEM SHALL request an
+    explicit `startDate` and `endDate` (without them Bybit returns no period metrics)
+    and SHALL preserve each customer's master UID as text, the `source` referral
+    code, `tradeVol`, `takerVol`, `makerVol`, and `tradfiTradeVol` in USDT, and
+    `commissionsVol` by asset for the requested UTC period as reported activity.
+    THE SYSTEM SHALL NOT label `commissionsVol` as the portal's pending or settled
+    commission, nor SHALL it credit or reverse cashback from this dataset.
+18. WHEN one source row reports several commission assets, THE SYSTEM SHALL retain
+    each amount and its asset without duplicating the UID's trading volume. Zero,
+    empty, and absent values SHALL remain distinguishable: for API data, a complete
+    day plus a known UID without a stored metric means "reported no activity", and a
+    day without a complete fetch means "no data". THE SYSTEM MAY therefore omit
+    zero/empty API metrics from storage. A partial or failed API page sequence SHALL
+    NOT change previously published data.
+19. THE SYSTEM SHALL store the fetch completion time (`fetchedAt`) and the response
+    `time` separately from source freshness. WHEN `aff-customer-info` returns
+    `volUpdateTime` and its timezone has been confirmed, THE SYSTEM SHALL use it as
+    the batch `sourceAsOf`, sampling a bounded number of UIDs per run independent
+    of roster size; if the samples disagree or fail, `sourceAsOf` SHALL stay
+    unknown. A successful request alone SHALL NOT set `sourceAsOf`.
+    An admin-published activity correction for the same exact period SHALL take
+    precedence over later automatic fetches until the admin releases that override.
+20. WHEN reading Bybit Affiliate APIs, THE SYSTEM SHALL NOT store fields outside
+    Req 6.17 unless a documented purpose is approved (NĐ 13/2023 data
+    minimization). Excluded by default: `depositAmount30Day/365Day`,
+    `totalWalletBalance`, `isKyc`/`KycLevel`, `vipLevel`, `remarks`,
+    `paySendAmount30Day`, `payFtt`, `cardFtt`. Rolling `*30Day`/`*365Day` values are
+    derivable from daily snapshots and SHALL NOT be stored as separate periods.
+    `registerTime` is pending an attribution-use decision (Open decisions).
+21. WHEN a file header or API response differs from the adapter's field contract,
+    THE SYSTEM SHALL classify the difference and SHALL NOT alter published data on
+    a breaking change: a new unknown field or asset SHALL be accepted with a warning
+    (field names only, never values); a declared alias SHALL be accepted with a
+    warning; a missing required field, a type change, or an unparseable required
+    value SHALL fail the manual batch, or quarantine the API run and pause that
+    exchange's connector with an alert, keeping the last published data visible as
+    stale. The difference SHALL be judged when transforming the raw load, not when
+    loading it. After a fix, an admin SHALL be able to re-run the transform from the
+    stored raw rows; re-fetching API days or re-loading a stored manual original
+    SHALL be needed only after those raw rows have expired.
+22. WHEN an admin requests activity for a date range, THE SYSTEM SHALL keep each
+    manual report at its exact declared period and SHALL aggregate disjoint UTC API
+    day buckets overlapping the requested range by exchange, root account, UID,
+    metric kind and asset. Since daily API values cannot be prorated, THE SYSTEM
+    SHALL mark a report partial when either boundary cuts through a UTC day.
+    THE SYSTEM SHALL report day coverage and partial
+    status, distinguish a complete day with no activity from an unfetched day,
+    and paginate without losing any source/root group for a UID.
+23. WHEN any source (manual file or official API) delivers data, THE SYSTEM SHALL
+    first store its records unchanged, one payload per record, in the raw table of
+    that exchange (`raw_<exchange>`, e.g. `raw_bybit`, `raw_mexc`, `raw_bingx`), with
+    load id, load time and source metadata, before any mapping into target tables.
+    An exchange without its own raw table SHALL still load into a default raw table.
+24. WHEN a new load arrives for the same exchange, dataset kind, source method, root
+    account and exact period (for API: one UTC day), THE SYSTEM SHALL replace that
+    slice's raw rows and recorded schema with the new load in one transaction, and
+    SHALL NOT touch other periods or roots. Loading SHALL NOT fail because columns or
+    fields were added, removed, renamed or re-typed; it MAY fail only on format and
+    safety rules (unsupported or corrupt file, size/row limits, formulas or macros,
+    archive bombs, API transport or authorization errors).
+25. WHEN a load is stored, THE SYSTEM SHALL map raw records into the target tables
+    in a separate asynchronous worker job. A transform of a load that has since been
+    replaced SHALL write nothing. A failed transform SHALL leave published data and
+    the raw rows unchanged and record the reason (drift report or safe error code).
+26. THE SYSTEM SHALL keep raw rows of a successfully transformed load for 30 days
+    (or until the slice is replaced), SHALL never return raw payload values through
+    admin or public APIs (field names and counts only), and SHALL let an admin re-run
+    the transform of a failed load, with the action audited.
 
-> The concrete dedup/reconciliation key is **pending decision (answer 11)** and will be
-> finalized against a real sample file.
+> Commission dedup/reconciliation keys remain pending a real nonzero, UID-level
+> commission report. The available MEXC Referral Data sample establishes the activity
+> schema only; every volume and earnings value in it is zero.
 
 ### Requirement 7: Commission attribution & cashback calculation
 **User Story:** As the operator, I want imported commission attributed to the right
@@ -438,8 +543,10 @@ withdrawals, so that I can operate the platform.
    together unless those pages are each open (Requirement 18.4).
 3. WHILE an import batch is processing, THE SYSTEM SHALL let the admin UI poll batch
    status roughly every 5 seconds until it settles.
-4. THE SYSTEM SHALL provide a sync-status view showing import/API state, last success
-   time, and source data "as-of" time, without returning secrets or full raw reports.
+4. THE SYSTEM SHALL provide a sync-status view showing each exchange's connector
+   availability, enabled state, selected interval, last attempt/success, latest
+   fetched period, source data "as-of" time when provided, and failure state,
+   without returning secrets or full raw reports.
 5. THE SYSTEM SHALL provide admin views for attributed vs unattributed commission and
    for the withdrawal queue.
 6. THE SYSTEM SHALL return private admin/dashboard responses with
@@ -466,22 +573,65 @@ web requests stay fast and imports/attribution run reliably.
 6. THE SYSTEM SHALL use a PostgreSQL-backed job queue for launch scale; Redis/BullMQ is
    only to be evaluated if throughput/backlog grows.
 
-### Requirement 13: Data freshness (deferred API sync)
-**User Story:** As the operator, I want to later add automatic API sync, so that data
-refreshes without manual uploads once suitable exchange APIs/permissions exist.
+### Requirement 13: Scheduled affiliate API sync
+**User Story:** As the operator, I want supported exchanges to refresh their affiliate
+data automatically at a schedule I choose, while retaining manual imports for exchanges
+without a usable API.
 
 #### Acceptance Criteria
-1. THE SYSTEM SHALL support future scheduled sync jobs (every 15 or 30 minutes) that feed
-   the **same** normalization, dedup, and publish path as manual imports.
-2. WHILE no suitable exchange API/permission is confirmed, THE SYSTEM SHALL keep the
-   scheduled API sync **disabled**.
-3. THE SYSTEM SHALL store `last_success_at` and `source_as_of` (when the source provides
-   it); a successful API call SHALL NOT be treated as proof of newer source data.
-4. THE SYSTEM SHALL take a per-source lock so scheduled runs do not overlap.
-5. IF two consecutive sync cycles fail or a job exceeds its allowed time, THEN THE SYSTEM
-   SHALL alert and continue showing the last successful data labeled as stale.
-6. (Optional future) THE SYSTEM MAY add SSE (`PostgreSQL NOTIFY → backend → client
-   refetch`) for near-real-time UI updates; not required for MVP.
+1. WHEN an admin configures a supported exchange, THE SYSTEM SHALL offer intervals of
+   30 minutes (default), 1 hour, 12 hours, and 24 hours, plus enable/disable and
+   "Sync now" controls. The interval SHALL be stored per exchange, not globally.
+2. WHILE an exchange lacks an approved official connector or usable credentials,
+   THE SYSTEM SHALL keep its API schedule disabled and explain that state to the
+   admin. Manual imports SHALL remain available. Bybit Affiliate is the first
+   supported connector; MEXC and Binance remain manual until separately verified.
+3. WHEN a Bybit schedule is due, THE SYSTEM SHALL enqueue a worker `SYNC` job that
+   reads the official Affiliate User List using the affiliate-only, read-only key,
+   follows every cursor page, respects Bybit's response rate-limit headers, and
+   does not call Bybit during a public or admin page render.
+4. WHEN a complete Bybit period fetch succeeds, THE SYSTEM SHALL load it into
+   `raw_bybit` as one slice per UTC day (Req 6.23–6.24) and then, asynchronously,
+   normalize it through the same adapter and validation boundary as manual reports and write
+   only what changed: identical data SHALL write no metric row; a changed value
+   SHALL replace the current value for that exact UID/day/metric (never add to it)
+   and record the old and new value with the run in an append-only change history;
+   a UID missing from a complete fetch SHALL be marked absent for that day. API
+   runs SHALL NOT create a full snapshot copy per run. The admin correction
+   precedence in Req 6.19 applies.
+5. THE SYSTEM SHALL store last attempt, last successful fetch, fetched period,
+   response observation time, and source as-of time only when Bybit provides one.
+   A successful request SHALL NOT be presented as proof that Bybit's underlying
+   volume or commission settlement data is current.
+6. THE SYSTEM SHALL serialize runs per exchange and affiliate root, prevent
+   duplicate queued/running cycles, and recover from a worker crash without
+   publishing a partial result.
+7. IF a sync fails twice consecutively or exceeds its allowed time, THEN THE
+   SYSTEM SHALL alert, show the last published data as stale, and retry transient
+   failures with bounded backoff. Permission, signature, expired-key, and IP
+   whitelist failures SHALL pause the connector until configuration is fixed.
+8. WHEN an admin changes an interval, disables a schedule, or starts a manual
+   run, THE SYSTEM SHALL record the actor and change, apply it without restarting
+   Railway, and prevent the control from exposing API credentials.
+9. THE SYSTEM SHALL keep API keys on the worker as server-side secrets, minimize
+   stored client fields, and never expose credentials, full source responses, or
+   other customers' private data through public APIs or logs.
+10. (Optional future) THE SYSTEM MAY add SSE (`PostgreSQL NOTIFY → backend → client
+    refetch`) for near-real-time UI updates; polling remains sufficient for this plan.
+11. WHEN enabling Bybit sync, THE SYSTEM SHALL backfill a bounded initial period
+    (default 365 completed UTC days, the history verified on 2026-09-26, in daily
+    jobs), expose its coverage to the admin, revisit recent completed periods for
+    late corrections, and mark an in-progress calendar day as partial. A short
+    interval SHALL NOT imply that Bybit's T+1 volume data has refreshed; commission
+    for a day can appear before that day's volume.
+12. BEFORE enabling a connector and on every run, THE SYSTEM SHALL check the key via
+    `/v5/user/query-api`: `readOnly = 1`, Affiliate as the only permission, and not
+    expired. It SHALL refuse a key with any other permission, and SHALL alert at
+    least 14 days before `expiredAt`. A key without an IP allowlist expires after 90
+    days; production SHALL bind the key to the worker's stable outbound IP.
+13. THE SYSTEM SHALL purge successful sync runs without changes after 90 days, keep
+    failed or quarantined runs for 1 year, keep the change history as audit, and
+    apply the raw-row retention of Req 6.26.
 
 ### Requirement 14: Cashback lookup by exchange + UID
 **User Story:** As a visitor, I want to enter my exchange and UID and immediately see the
@@ -610,13 +760,15 @@ tab) to do several jobs without losing my place.
 1. WHILE an admin is authenticated, THE SYSTEM SHALL render a **left navigation
    shell** on all admin operations pages except `/admin/login`.
 2. THE SYSTEM SHALL split today's stacked `/admin` blocks into **separate
-   routes**, one primary job per page. The nav SHALL include at least:
-   Overview (analytics), Bybit imports, Withdrawal queue, Exchanges, Offers,
-   Referral links, Guides.
+   routes**, one primary job per page. The nav SHALL group pages by operator job,
+   not by exchange or file format, and SHALL include at least: Overview
+   (analytics); **Data ingest** → Uploads (`/admin/ingest/uploads`) and API
+   connectors (`/admin/ingest/connectors`); **Reports** → Referral activity
+   (`/admin/reports/activity`); Withdrawal queue; Exchanges; Offers; Referral
+   links; Guides.
 3. WHEN the admin selects a nav item, THE SYSTEM SHALL show only that section
-   in the main pane. THE SYSTEM SHALL keep using the existing `/api/admin/*`
-   endpoints; this requirement SHALL NOT add money-engine, schema, or worker
-   changes.
+   in the main pane. This requirement SHALL NOT add money-engine, schema, or
+   worker changes.
 4. WHILE a section is not mounted, THE SYSTEM SHALL NOT poll that section's
    APIs. Visible-tab polling rules in Requirement 11 apply **per open page**,
    not to every section at once.
@@ -630,6 +782,20 @@ tab) to do several jobs without losing my place.
 6. English labels only. Parallel work is **multiple browser tabs** of different
    admin routes (same session cookie), not a split-pane or background keep-alive
    of every form on one URL.
+7. WHEN an admin uploads a file, THE SYSTEM SHALL offer one upload page for every
+   exchange, dataset kind, and file format. The form SHALL show the metadata
+   fields and accepted file types of the source adapter registered for the chosen
+   exchange and dataset kind; the file format SHALL be taken from the file, not
+   chosen from a separate page. Registering a new source adapter (for example a
+   JSON file or another exchange) SHALL NOT require a new admin page or route.
+   Every batch in the upload list SHALL state its dataset kind and whether it can
+   affect cashback.
+8. WHEN a request uses a retired admin route (`/admin/imports`,
+   `/admin/crawl-data`, `/admin/referrals`, `/admin/sync`), THE SYSTEM SHALL
+   redirect it to its replacement after the admin session check. Retired admin API
+   paths (`/api/admin/imports*`, `/api/admin/referral-snapshots`,
+   `/api/admin/sync-config/*`) SHALL remain aliases with identical behavior and
+   authorization until an explicit removal is recorded in the changelog.
 
 ---
 
@@ -712,12 +878,18 @@ tab) to do several jobs without losing my place.
 | `POST /api/uid/withdrawals` | Request withdrawal of available balance. | UID session |
 | `POST /api/uid/withdrawals/:id/cancel` | Cancel a not-yet-paid withdrawal. | UID session |
 | `GET /api/uid/withdrawals` | Withdrawal history/status for the session's UID. | UID session |
-| `POST /api/admin/imports` | Upload report, create batch + parse job. | Admin (202) |
-| `GET /api/admin/imports/:id` | Batch status, preview, error rows. | Admin |
-| `POST /api/admin/imports/:id/commit` | Publish a validated batch (idempotent). | Admin |
+| `GET /api/admin/ingest/adapters` | Registered source adapters: exchange, dataset kind, source method, accepted file types, required metadata fields, cashback impact. No credentials. | Admin |
+| `POST /api/admin/ingest/batches` | Upload any supported file, create batch + parse job. | Admin (202) |
+| `GET /api/admin/ingest/batches` | List batches, filter by exchange, dataset kind, source method, status. | Admin |
+| `GET /api/admin/ingest/batches/:id` | Batch status, preview, error rows, drift warnings. | Admin |
+| `POST /api/admin/ingest/batches/:id/commit` | Publish a validated batch (idempotent). | Admin |
+| `GET /api/admin/reports/activity` | Paginated referral activity by exchange and exact period, manual and API sources combined. | Admin |
 | `GET /api/admin/accounts/:id/activity` | Published activity per account/UID. | Admin |
 | `GET /api/admin/analytics` | Click metrics for dashboard. | Admin |
-| `GET /api/admin/sync-status` | Import/API status, last success, as-of. | Admin |
+| `GET /api/admin/sync-status` | Per-exchange schedule/readiness, last attempt/success, fetched period, source as-of if known, safe error. | Admin |
+| `GET/PATCH /api/admin/ingest/connectors/:exchangeId` | Read/update enabled state and one of four allowed intervals. | Admin |
+| `POST /api/admin/ingest/connectors/:exchangeId/run` | Queue one immediate run or re-sync range when the connector is available. | Admin |
+| `POST /api/admin/ingest/connectors/:exchangeId/resume` | Clear a pause after the cause is fixed. | Admin |
 | `POST /api/admin/withdrawals/:id/decision` | Approve/reject/mark-paid. | Admin |
 
 ---
@@ -740,8 +912,12 @@ tab) to do several jobs without losing my place.
 - **RateLimitCounter** — per-IP (and per-UID) counter windows backing lookup and OTP limits
   (Req 14.4, 15.6–15.7). Stores a hashed IP and a window, not a lookup history.
 - **Session** — admin server session (subject id, hashed token, expiry); replaced if a managed auth provider is chosen.
-- **ImportBatch** — source metadata, file ref, status, totals.
+- **ImportBatch** — exchange/root, dataset kind, source method, report period,
+  timezone, source as-of time, private payload ref, status, totals.
 - **StagingRow** — batch ref, parsed row, validation flags.
+- **RawLoad / raw_<exchange>** — one load of one slice (exchange, dataset kind, source method, root, period); unchanged source records as payloads, replaced by the next load of the same slice.
+- **ReferralSnapshot** — versioned UID-level volume and reported earnings for an exact
+  source period; separate from commission and wallet records.
 - **CommissionRecord** — stable identity (exchange, UID, dedup key, period, asset), current
   reconciled amount, attributed UID account (nullable), snapshot offer + cashback rate,
   cashback already credited.
@@ -763,9 +939,9 @@ tab) to do several jobs without losing my place.
 
 | # | Topic | Answer given | What's still needed |
 |---|-------|--------------|---------------------|
-| 11 | Dedup / reconciliation key | Decide later | Real sample report to fix per-exchange keys. |
-| 12 | Customer visibility of UID-level detail | **Updated (2026-09-17)** | Anyone entering exchange + UID sees `pending`/`available` **and** per-period exchange-paid commission vs cashback share (Req 14.2, 14.7). Email, payout address, withdrawals, and wallet-movement types still need a UID session (Req 14.3). |
-| 13 | Auth solution | **Narrowed (2026-09-16)** | End users have no accounts, so this now only covers **admin** auth. Interim email+password + `Session` stays until a provider is chosen. |
+| 11 | Commission dedup / reconciliation key | Decide later | Real nonzero UID-level commission report; the MEXC Referral Data sample is an activity snapshot, not payout evidence. |
+| 12 | Visitor visibility of UID-level detail | **Decided (2026-09-17)** | Anyone entering exchange + UID sees `pending`/`available` **and** per-period exchange-paid commission vs cashback share (Req 14.2, 14.7). Email, payout address, withdrawals, and wallet-movement types still need a UID session (Req 14.3). |
+| 13 | Admin auth solution | Pending | Covers **admin** auth only (end users have no accounts). Interim email+password + `Session` stays until a provider is chosen. |
 | 20 | Outbound email transport | **Resolved (2026-09-16): Resend** | Remaining prerequisites are operational, not design: verify an operator-owned domain with SPF/DKIM (the shared testing domain only delivers to the Resend account owner), set API key + from-address env vars, and confirm the send quota fits expected withdrawal volume (Req 16). |
 | 21 | Ownership dispute handling | **Accepted as-is (2026-09-16)** | First claimant wins; there is no ownership proof and no recourse for a displaced true owner. Revisit if losses occur or an exchange-side proof becomes available. |
 | 19 | Compliance (KYC/AML, retention, GDPR) | Unclear | Confirm payout KYC and data-retention obligations. |
@@ -773,7 +949,11 @@ tab) to do several jobs without losing my place.
 | — | Withdrawal auto-approval threshold & assets/networks | Proposed | Confirm threshold, supported assets (USDT?) and networks. |
 | — | Lookup rate limit values | Rule decided (per-IP) | Confirm requests-per-window; proposed 5/min, 30/hour per IP. |
 | — | OTP tuning values | Rule decided (hashed, single-use, attempt- and send-limited) | Confirm TTL (proposed 5 min), max wrong attempts (proposed 5), resend cooldown, per-UID daily send cap. |
-| — | Sample report: format, columns, granularity, timezone | No file yet (8B) | Needed to finalize parser adapters (Req 6). |
+| — | MEXC Referral Data semantics | XLSX sample received 2026-09-25: 46 unique UIDs, sheet period 2026-09-18 through 2026-09-25, all volume/earnings zero | Confirm source timezone and whether `Trading volume`/`Your Earnings` are period values with a nonzero export before treating them as financial evidence. |
+| — | Bybit API commission settlement | `commissionsVol` is available per UID/asset/period; the API does not expose the Affiliate Portal's pending/settled state | Reconcile a nonzero portal export and decide separately whether API amounts can ever drive automatic cashback. The scheduled connector in Req 13 publishes admin activity only. |
+| — | Bybit `volUpdateTime` timezone | Probe 2026-09-26 03:03 UTC: every UID in the roster (54 at the time) returned the same `volUpdateTime = 2026-09-26 00:00:00` with no zone, so it is a dataset-wide mark; the connector samples up to 3 UIDs per run regardless of roster size | Confirm UTC vs UTC+8 before using it as `sourceAsOf` (Req 6.19). |
+| — | Bybit `registerTime` / `isKyc` | Available per UID in `aff-user-list`; excluded by Req 6.20 | Store `registerTime` only if attribution needs sign-up date vs click; `isKyc` needs a stated purpose. |
+| — | Bybit key IP binding | Current key: read-only, Affiliate only, IP `*`, expires 2026-12-26 | Provide stable Railway egress IP and rebind before production sync (Req 13.12). |
 | — | Enabling a second locale | English-only decided; Vietnamese excluded | If a market is ever requested, confirm the locale plus who supplies translated UI copy and content. |
 
 ---
@@ -783,26 +963,28 @@ tab) to do several jobs without losing my place.
 - **Phase 0 — Smoke/seed (answer 7A):** monorepo scaffold, Next.js 15 + worker + Postgres
   on local and Railway; public site with seeded exchanges/offers; redirect + click
   tracking; admin login (interim auth). No real affiliate data.
-- **Phase 1 — Import & attribution:** manual report import pipeline, staging/preview/
+- **Phase 1 — Import & attribution:** manual native/normalized report import,
+  dataset-specific staging/preview/
   commit, UID accounts, commission attribution.
 - **Phase 2 — Lookup, cashback & withdrawals:** cashback lookup by exchange + UID, wallet
   balances + holding period, email OTP + UID session, withdrawal request + admin approval +
   manual payout.
 - **Phase 3 — Hardening:** analytics depth, KYC/compliance controls,
   observability/backups. No locale rollout is planned (Requirement 4).
-- **Phase 4 — Automation (deferred):** scheduled API sync + optional SSE, once exchange
-  APIs/permissions are confirmed.
+- **Phase 4 — Automation:** scheduled Bybit Affiliate API activity sync with
+  per-exchange admin intervals; add other official connectors only after their
+  permissions and data semantics are verified. SSE remains optional.
 
 ---
 
 ## Out of scope for MVP
 - Any non-English locale, including Vietnamese (Requirement 4). Only the i18n seams ship.
-- Real-time exchange API integration and market-data WebSockets (Phase 4).
+- Real-time exchange event streaming and market-data WebSockets.
 - Bot filtering / unique-click analytics (answer 18).
 - Automated on-chain payout execution (manual in MVP).
 - Multi-tier admin roles (single role — answer 14A).
-- Customer accounts: registration, username, password, password reset, and account-based
-  login (removed in v0.6 — end users are identified by UID + email OTP).
+- End-user accounts (registration, username, password, password reset); end users are
+  identified by UID + email OTP.
 - Outbound email beyond the withdrawal OTP: payout notifications, marketing, and
   balance alerts.
 - Changing a UID's bound email, and any recourse for a UID claimed by the wrong person
@@ -829,25 +1011,17 @@ tab) to do several jobs without losing my place.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
-| 2026-09-15 | requirements.md | Tạo bộ requirement EARS đầu tiên cho cashback-platform | Khởi tạo spec | added |
-| 2026-09-15 | requirements.md | Reserved balance + withdrawal event audit (Req 8/9); rule cashback rate + snapshot (Req 7.3, thêm 7.8); best-effort click (Req 2.2); versioned commission + partial-unique UID trong data model; thêm Changelog | Khắc phục review #1,#2,#3,#4,#8 và bổ sung truy vết | updated |
-| 2026-09-15 | requirements.md | Chính sách reversal sau khi tiền đã available/withdrawn (receivable/clawback, chặn rút, offset credit sau) + Req 8.7/9.10; customer cancel withdrawal (Req 9.9) + endpoint; rate chỉ tin nguồn hệ thống + ràng buộc cùng exchange (Req 7.3); interim credential + Session, version unique, opKey trong data model | Khắc phục review round 2 (#1,#2,#3,#4,#5,#6) | updated |
-| 2026-09-15 | requirements.md | Chốt English-only: Req 4 đổi thành "Language policy & i18n readiness" (4.1 chỉ enable `en`, thêm 4.3 locale registry, 4.5 locale lạ → 404); Req 10.5 admin chỉ author locale đang enable; sửa header ngôn ngữ, ràng buộc i18n (answer 4), Phase 3 bỏ locale rollout, thêm out-of-scope + open decision cho locale thứ hai | Sản phẩm không phục vụ tiếng Việt; giữ seam i18n nhưng không ship locale nào ngoài English | updated |
-| 2026-09-16 | requirements.md | Chốt mô hình Hybrid: thêm Req 1.6–1.8 (quick lookup trả boolean, rate limit theo IP, read-only), mục "Access model — hybrid", `POST /api/lookup` vào API surface, `LookupAttempt` vào data model, và "Anti-fraud invariant" nêu rõ quick lookup + admin ownership approval không được nới lỏng đồng thời | Cho khách vãng lai biết mình có cashback để tăng chuyển đổi, nhưng không lộ số tiền nên không tạo đường dò UID có tiền | added |
-| 2026-09-16 | requirements.md | Bác phương án UID-first/no-account (bỏ Customer/Session, bind email bằng OTP): giữ nguyên Req 3 (customer account) và Req 5.2 (admin xác nhận ownership) | Mô hình đó xoá lớp chống gian lận đã build/test và buộc re-key Wallet/Withdrawal, đổi lấy bảo mật yếu hơn | updated |
-| 2026-09-16 | requirements.md | Thêm Req 3.1 (email+username+password), Req 3.6 (username unique, chỉ để hiển thị, không dùng để auth/authz), Req 3.7 (email là recovery anchor duy nhất; reset password ngoài phạm vi MVP) | Plan Hybrid thu thập username; nêu rõ hệ quả là mất mật khẩu phải nhờ support vì chưa có hạ tầng email | added |
-| 2026-09-16 | requirements.md | Thêm Open decision #20 (outbound email transport) và giá trị rate limit quick lookup | Chưa có provider email trong codebase — chặn reset password và mọi mail thông báo; không viết thành SHALL khi chưa chốt | added |
-| 2026-09-16 | requirements.md | (v0.5, đã bị v0.6 thay thế) Mô hình Hybrid: quick lookup trả boolean + giữ customer account với username | Ghi lại để không bị đề xuất lại như ý mới | removed |
-| 2026-09-16 | requirements.md | **Chuyển sang UID-first (v0.6).** Req 3 viết lại thành "Admin authentication & principal separation" (bỏ đăng ký/username/password/reset cho end user); Req 5 viết lại thành "UID accounts" (bỏ luồng link UID + admin duyệt ownership); Req 1.6–1.8 bỏ vì đã tách sang Req 14 | Chốt mô hình không cần tài khoản: nhập UID + chọn sàn là xem tiền, chỉ xác thực khi rút | updated |
-| 2026-09-16 | requirements.md | Thêm Req 14 (lookup theo exchange + UID, trả số tiền thật, bắt buộc có cả sàn, rate limit per-IP, read-only), Req 15 (OTP 6 số hashed/single-use/giới hạn attempt + cooldown + session 30 phút chỉ cho 1 UID), Req 16 (gửi email qua Resend, bắt buộc domain đã verify) | Hiện thực luồng nghiệp vụ đã chốt: search UID → withdraw → nhập email lấy mã → lần sau chỉ nhận mã qua email đã bind | added |
-| 2026-09-16 | requirements.md | Cập nhật Req 7 (attribute về UidAccount, tự tạo khi chưa có), Req 8 (wallet theo UidAccount; history chỉ khi có UID session), Req 9 (bắt buộc UID session; lệnh rút ĐẦU TIÊN luôn phải admin duyệt bất kể số tiền) | Tác động chéo của việc bỏ Customer; giữ một lớp kiểm soát cuối trước khi tiền ra | updated |
-| 2026-09-16 | requirements.md | Thêm mục "Accepted risk — first claimant wins" và "Known exposure (accepted)" trong Security; API surface đổi sang `/api/lookup`, `/api/otp/*`, `/api/uid/*`; data model đổi sang UidAccount/EmailOtp/UidSession/RateLimitCounter | Chủ dự án chấp nhận rủi ro không xác minh được chủ UID — ghi thành quyết định có ý thức kèm phạm vi thiệt hại, không che | added |
-| 2026-09-16 | requirements.md | Open decision #12 resolved, #13 thu hẹp còn admin auth, #20 chốt Resend (còn việc verify domain + quota), thêm #21 (không có đường cứu tranh chấp UID) | Đồng bộ trạng thái quyết định sau khi chốt mô hình | updated |
-| 2026-09-17 | requirements.md | Trỏ sang `happy-path-scenarios.md` (runbook S0–S16) | Testers/admin cần kịch bản nghiệp vụ chính; không đổi hành vi | updated |
-| 2026-09-17 | requirements.md | Thêm Requirement 17: Online Rebate Ledger trên home, tối đa 100 credit gần nhất, animation, mask UID, không bịa hàng demo | Marketing social proof; thay bảng illustrative giả | added |
-| 2026-09-17 | requirements.md | Req 17: interim **fake 100 hàng cashback lớn** (deterministic, badge illustrative), không đọc wallet live cho đến khi operator chuyển | Dump thật quá ít credit; cần ticker hấp dẫn ngay | updated |
-| 2026-09-17 | requirements.md | Req 14.2/14.7 + 8.5/8.6: lookup trả bảng giao dịch (sàn trả `reconciledAmount` vs chia `creditedCashback`); vẫn giấu email/address/withdrawal/reserved. Xoá dòng API Hybrid boolean | Visitor cần thấy sàn trả bao nhiêu và mình nhận bao nhiêu | updated |
-| 2026-09-17 | requirements.md | NFR scale: 5,000 UID giao dịch/ngày → fact partition theo thời gian, dim không partition, số dư ví không partition | Tránh heap click/commission/wallet-entry phình làm chậm lookup/analytics | added |
+| 2026-09-15 | requirements.md | Tạo bộ requirement EARS đầu tiên: reserved balance + withdrawal event audit (Req 8/9), rule cashback rate + snapshot (Req 7.3, 7.8), best-effort click (Req 2.2), versioned commission, receivable/clawback + chặn rút (Req 8.7, 9.11), cancel withdrawal (Req 9.10); English-only + locale registry (Req 4, 10.5) | Khởi tạo spec, khắc phục review round 1–2; sản phẩm không phục vụ tiếng Việt nhưng giữ seam i18n | added |
+| 2026-09-16 | requirements.md | Chốt mô hình UID-first, không tài khoản end user: Req 3 chỉ còn admin auth, Req 5 thành UID accounts, thêm Req 14 (lookup exchange + UID trả số tiền thật, rate limit per-IP, read-only), Req 15 (OTP 6 số + UID session 30 phút), Req 16 (email qua Resend); cập nhật Req 7/8/9 theo UidAccount, lệnh rút đầu tiên luôn admin duyệt; thêm "Accepted risk — first claimant wins"; đồng bộ API surface, data model, Open decision #12/#13/#20/#21 | Nhập UID + chọn sàn là xem tiền, chỉ xác thực khi rút; chủ dự án chấp nhận rủi ro không xác minh được chủ UID. Mô hình customer account/Hybrid trước đó đã bỏ | updated |
+| 2026-09-17 | requirements.md | Trỏ sang `happy-path-scenarios.md`; thêm Req 17 (Online Rebate Ledger, interim 100 hàng fake có badge illustrative); Req 14.2/14.7 + 8.5/8.6 lookup trả bảng commission vs cashback; NFR scale 5,000 UID/ngày (fact partition theo thời gian) | Social proof, visitor cần thấy sàn trả bao nhiêu và mình nhận bao nhiêu, tránh heap phình | updated |
 | 2026-09-19 | requirements.md | Thêm Requirement 18: admin left-nav + tách route; poll theo trang; API/schema/worker không đổi. Sửa 11.2 poll theo section | `/admin` một trang quá dài; không đụng kiến trúc tiền | added |
-| 2026-09-22 | requirements.md | Req 18.5: chặn `/admin` trước khi render, kể cả RSC không cookie; mỗi page kiểm tra session. Req 10.6: form không được gỡ offer/exchange đang chọn khi id nằm ngoài trang đã tải. Req 14.7: lookup hiện commission của version đã có bút toán `attr:{versionId}`, không hiện `reconciledAmount` đang chờ ATTRIBUTE | Ba lỗ hổng P2: lộ RSC admin, gỡ nhầm offer, bảng lookup lệch phiên bản | updated |
-| 2026-09-22 | requirements.md | Req 14.7: không có bút toán thì commission là 0, không fallback `reconciledAmount`. Thêm `hasMore` khi quá 100 dòng | Review: fallback vẫn lộ số chưa attribute | updated |
+| 2026-09-22 | requirements.md | Req 18.5 chặn `/admin` trước khi render (kể cả RSC không cookie), mỗi page kiểm tra session; Req 10.6 giữ offer/exchange đang chọn ngoài trang đã tải; Req 14.7 lookup hiện commission của version đã có bút toán `attr:{versionId}`, không có thì 0, thêm `hasMore` | Ba lỗ hổng P2 và review: lộ RSC admin, gỡ nhầm offer, lộ số chưa attribute | updated |
+| 2026-09-25 | requirements.md | Req 6 tách referral activity snapshot khỏi commission evidence; native MEXC XLSX (thiếu header mới reject, cột thừa chỉ cảnh báo, bắt buộc tz + as-of, reject formula), current theo as-of và theo cả period, cờ partial, normalized CSV fallback và API tương lai qua cùng ingest contract; thêm 6.16 tối thiểu hóa dữ liệu cá nhân; cập nhật Open decision #11. Compact tài liệu, bỏ lịch sử mô hình cũ | File MEXC thật có 46 UID nhưng toàn bộ volume/earnings bằng 0, chưa chứng minh hoa hồng được trả | updated |
+| 2026-09-26 | requirements.md | Req 13 chốt Bybit Affiliate API sync theo lịch riêng từng sàn (30m mặc định, 1h/12h/24h), admin điều khiển và xem freshness; Req 6.17–6.18 giữ UID/volume/commission nhiều tài sản như activity, không ghi ví; MEXC/Binance vẫn manual | Key Affiliate read-only đã gọi được; API không cung cấp pending/settled commission | updated |
+| 2026-09-26 | requirements.md | Probe Bybit API thật (read-only): Req 6.17 thêm takerVol/makerVol/tradfiTradeVol và bắt buộc startDate+endDate; 6.19 dùng `volUpdateTime` của aff-customer-info làm sourceAsOf khi xác nhận timezone; thêm 6.20 danh sách field loại trừ (deposit, wallet balance, KYC, VIP, remarks); 13.11 backfill mặc định 365 ngày; thêm 13.12 kiểm tra key qua query-api, cảnh báo hết hạn, bind IP; thêm 3 open decision | Key hiện tại IP `*` hết hạn 2026-12-26; lịch sử ≥ 1 năm; tổng theo ngày khớp truy vấn khoảng; freshness có sẵn trong API | updated |
+| 2026-09-26 | requirements.md | Req 6.10 mọi nguồn file/API kế thừa một adapter base chung, thêm sàn chỉ cần subclass; 6.18 cho phép không lưu metric 0/rỗng của API, nghĩa "không hoạt động" suy từ ngày đầy đủ + roster; thêm 6.21 chính sách schema drift (thêm field/asset cảnh báo, alias cảnh báo, breaking thì fail/quarantine + pause, re-parse/re-fetch sau khi sửa); 13.4 API chỉ ghi phần thay đổi + change history, không chép snapshot mỗi run; thêm 13.13 retention | Sync 30 phút không sinh rác; sàn đổi format không hỏng dữ liệu đã publish | updated |
+| 2026-09-26 | requirements.md | Req 18.2 đổi nhãn điều hướng sang Commission imports và Sync schedules; tên sàn nằm trong nội dung connector/importer đang hỗ trợ | Menu admin mô tả chức năng chung, không cố định theo Bybit | updated |
+| 2026-09-26 | requirements.md | Req 18.2 đổi Referral activity thành Crawl data tại `/admin/crawl-data` | Tên menu dễ hiểu hơn cho dữ liệu affiliate từ các sàn | updated |
+| 2026-09-26 | requirements.md | Req 18.2 nhóm menu theo việc vận hành: Data ingest (Uploads, API connectors) và Reports (Referral activity), bỏ Commission imports/Crawl data/Sync schedules; 18.3 bỏ ràng buộc giữ nguyên `/api/admin/*`; thêm 18.7 một trang upload cho mọi sàn/loại dữ liệu/định dạng, form dựng theo adapter đã đăng ký, thêm adapter không cần trang mới; thêm 18.8 redirect route cũ và giữ API cũ làm alias; Req 6.1/6.7 và bảng API dùng `/api/admin/ingest/*`, `/api/admin/reports/activity` | Tách theo định dạng (crawl-data/xlsx, /api, /json) nhân bản UI và vô hiệu hóa adapter framework; "crawl" sai nghĩa vì hệ thống không scrape | updated |
+| 2026-09-26 | requirements.md | Req 6.22 chốt báo cáo khoảng: manual theo kỳ chính xác, API cộng ngày UTC rời nhau kèm coverage/partial và phân trang không mất root/source | Sửa lỗi báo cáo không thấy API nhiều ngày và bỏ dòng khi UID có nhiều nhóm | updated |
+| 2026-09-26 | requirements.md | Thêm Req 6.23–6.26: mọi nguồn ghi bản ghi nguyên trạng vào bảng raw theo sàn trước khi vào bảng đích; load mới ghi đè dữ liệu và schema của đúng slice, không fail vì đổi cột (chỉ fail vì định dạng/an toàn); transform sang bảng đích chạy async, load bị thay thế không ghi gì; raw giữ 30 ngày, không lộ payload, admin chạy lại transform; sửa 6.3, 6.16, 6.21, 13.4, 13.13 và danh sách entity cho khớp | Cấu trúc dữ liệu các sàn có thể đổi; bước import không được fail và lỗi mapping sửa được mà không cần tải lại | added |

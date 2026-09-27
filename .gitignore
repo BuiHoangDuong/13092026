@@ -12,3 +12,5 @@ infra/data/
 *.tsbuildinfo
 .kiro/skills
 cashback/
+data/*
+.env.example

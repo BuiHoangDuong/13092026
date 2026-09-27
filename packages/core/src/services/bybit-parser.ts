@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { parse } from "csv-parse/sync";
 import { Prisma, type ImportBatch } from "@cashback/db";
+import { bybitCsvContract, canonicalizeRecord, classifyHeaders } from "../ingest/contract.js";
 
 export type NormalizedCommission = {
   uid: string; asset: string; amount: string; dedupKey: string;
@@ -10,22 +11,32 @@ export type NormalizedCommission = {
 export type ParsedRow = { raw: Record<string, string>; normalized: NormalizedCommission | null; flags: string[] };
 type Metadata = Pick<ImportBatch, "rootAccount" | "periodStart" | "periodEnd" | "sourceTz" | "reportType">;
 
-/** Explicit Bybit normalized CSV v1; never guess proprietary export columns. */
+/** Explicit Bybit normalized CSV v1. Unknown columns warn; they are not stored. */
 export function parseBybitCsv(bytes: Uint8Array, batch: Metadata): ParsedRow[] {
-  if (batch.sourceTz !== "UTC") throw new Error("Bybit CSV v1 requires UTC timestamps");
   const records = parse(Buffer.from(bytes), { bom: true, skip_empty_lines: true, trim: true,
     max_record_size: 16_384, columns: (headers: string[]) => {
-      const allowed = ["uid", "asset", "commission", "transaction_id", "occurred_at", "referral_link_id"];
-      if (new Set(headers).size !== headers.length || headers.some(h => !allowed.includes(h)) ||
-          ["uid", "asset", "commission"].some(h => !headers.includes(h))) {
+      if (new Set(headers).size !== headers.length || ["uid", "asset", "commission"].some((header) => !headers.includes(header))) {
         throw new Error("Use Bybit CSV v1 headers: uid,asset,commission[,transaction_id,occurred_at,referral_link_id]");
       }
       return headers;
     }
   }) as Record<string, string>[];
+  return parseBybitRecords(records, batch);
+}
+
+export function parseBybitRecords(records: Record<string, unknown>[], batch: Metadata): ParsedRow[] {
+  if (batch.sourceTz !== "UTC") throw new Error("Bybit CSV v1 requires UTC timestamps");
   if (!records.length || records.length > 5000) throw new Error("Upload between 1 and 5000 rows per batch");
+  const names = [...new Set(records.flatMap((record) => Object.keys(record)))];
+  const drift = classifyHeaders(names, bybitCsvContract);
+  if (drift.class === "BREAKING") throw new Error(`BREAKING: ${drift.fields.join(", ")}`);
+  const known = new Set(bybitCsvContract.fields.map((field) => field.source));
+  const extra = names.filter((name) => !known.has(name));
   const seen = new Set<string>();
-  return records.map(raw => {
+  const rows = records.map(record => {
+    const canonical = canonicalizeRecord(record, bybitCsvContract);
+    const raw = Object.fromEntries(Object.entries(canonical).filter(([name]) => known.has(name)).map(([name, value]) => [name, String(value ?? "").trim()])) as Record<string, string>;
+    for (const header of extra) delete raw[header];
     const flags: string[] = [];
     const uid = raw.uid ?? "", asset = (raw.asset ?? "").toUpperCase(), amount = raw.commission ?? "";
     if (!/^\d{1,128}$/.test(uid)) flags.push("INVALID_UID");
@@ -54,6 +65,12 @@ export function parseBybitCsv(bytes: Uint8Array, batch: Metadata): ParsedRow[] {
       periodStart: start, periodEnd: end, reportType, referralLinkId: raw.referral_link_id || null
     } };
   });
+  return Object.assign(rows, { warnings: extra.map((header) => `Extra column: ${header}`), schemaFingerprint: drift.fingerprint, contractVersion: drift.contractVersion, driftReport: { class: drift.class, fields: drift.fields } }) as ParsedRow[];
 }
 
-export const parserRegistry = { bybit: parseBybitCsv } as const;
+export function assertBybitCsvUpload(file: { bytes: Uint8Array; extension: string }, batch: { sourceTz: string; reportType?: string | null }) {
+  if (file.extension !== "csv" || batch.sourceTz !== "UTC") throw new Error("Use normalized Bybit CSV v1 in UTC; XLSX is not supported yet");
+  if (!file.bytes.length || file.bytes.length > 10 * 1024 * 1024) throw new Error("CSV must be between 1 byte and 10 MiB");
+  if (file.bytes.includes(0)) throw new Error("CSV contains a NUL byte");
+  if (batch.reportType !== "TRANSACTION" && batch.reportType !== "AGGREGATE") throw new Error("Commission imports require a report type");
+}

@@ -113,3 +113,15 @@ Workspace này KHÔNG dùng database local. Mọi thao tác dev/test và product
 
 Quy tắc này bổ sung cho `production-safety` steering; khi hai bên chồng lấn, chọn diễn
 giải nghiêm ngặt hơn.
+
+## 8. Tổng hợp file đã thay đổi khi hoàn thành
+
+- Cuối mỗi phản hồi hoàn thành công việc có sửa file, thêm mục **File đã thay đổi** ở
+  cuối câu trả lời. Chỉ liệt kê những file agent đã sửa, tạo mới hoặc xoá trong công
+  việc đó; không nhận các thay đổi có sẵn của người dùng là do agent thực hiện.
+- Nêu tổng số file theo từng loại: sửa, tạo mới, xoá. Với mỗi file sửa, tóm tắt ngắn
+  nội dung đã đổi và mục đích. Với mỗi file tạo mới, ghi rõ lý do cần thêm file đó.
+  Với file xoá, ghi lý do xoá. Có thể nhóm các file cùng mục đích để dễ đọc nhưng
+  vẫn phải nhận diện được từng file.
+- Phần tổng hợp này phải nằm trong phản hồi cuối cùng để người dùng nắm được thay đổi
+  mà không cần đọc các cập nhật giữa chừng hoặc tự xem `git diff`.

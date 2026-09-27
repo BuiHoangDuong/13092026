@@ -1,29 +1,37 @@
 import { randomUUID } from "node:crypto";
-import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
+import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
+import type { SyncTrigger } from "@cashback/db";
 import { db } from "@cashback/db";
 
 const pollSeconds = Number(process.env.WORKER_POLL_SECONDS ?? 10);
 const leaseSeconds = Number(process.env.JOB_LEASE_SECONDS ?? 120);
 if (!Number.isFinite(pollSeconds) || pollSeconds < 1 || !Number.isFinite(leaseSeconds) || leaseSeconds < 10) throw new Error("Invalid worker timing configuration");
 const workerId = process.env.RAILWAY_REPLICA_ID ?? process.env.WORKER_ID ?? randomUUID();
-let stopping = false, lastSchedule = 0, lastHealthReport = 0, lastAlertAt = 0, lastAlertSignature = "";
+let stopping = false, lastSchedule = 0, lastRawPurge = 0, lastHealthReport = 0, lastAlertAt = 0, lastAlertSignature = "";
 process.on("SIGTERM", () => { stopping = true; });
 process.on("SIGINT", () => { stopping = true; });
 
 async function tick() {
   await recordWorkerHeartbeat(workerId);
   await reapExpiredJobs();
-  if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); lastSchedule = Date.now(); }
+  if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); await scheduleDueSyncs(); lastSchedule = Date.now(); }
+  if (Date.now() - lastRawPurge > 86_400_000) { await purgeTransformedRaw(); lastRawPurge = Date.now(); }
   const job = await claimNextJob(leaseSeconds, workerId);
   if (!job?.lockedBy) return;
   const lease = { id: job.id, lockedBy: job.lockedBy };
   const timer = setInterval(() => { void Promise.all([heartbeat(lease, leaseSeconds), recordWorkerHeartbeat(workerId)]).catch(error => console.error("heartbeat_failed", error)); }, leaseSeconds * 1000 / 3);
   try {
     const payload = job.payload as Record<string, unknown>;
-    if (job.type === "PARSE" && typeof payload.batchId === "string") await parseImportJob(lease, payload.batchId);
+    if ((job.type === "PARSE" || job.type === "LOAD") && typeof payload.batchId === "string") await parseImportJob(lease, payload.batchId);
+    else if (job.type === "TRANSFORM" && typeof payload.loadId === "string") {
+      const load = await db.rawLoad.findUniqueOrThrow({ where: { id: payload.loadId } });
+      if (load.sourceMethod === "OFFICIAL_API") await transformApiJob(lease, load.id);
+      else await transformImportJob(lease, load.id);
+    }
     else if (job.type === "PUBLISH" && typeof payload.batchId === "string") await publishImportJob(lease, payload.batchId);
     else if (job.type === "ATTRIBUTE" && typeof payload.exchangeId === "string") await attributeJob(lease, payload.exchangeId);
     else if (job.type === "RELEASE_HOLDS") await releaseHoldsJob(lease);
+    else if (job.type === "SYNC") await runSyncJob(lease, { exchangeId: typeof payload.exchangeId === "string" ? payload.exchangeId : undefined, trigger: typeof payload.trigger === "string" ? payload.trigger as SyncTrigger : undefined, dates: Array.isArray(payload.dates) ? payload.dates.filter((date): date is string => typeof date === "string") : [] });
     else throw new Error(`NO_HANDLER:${job.type}`);
   } catch (error) { await failJob(lease, job.attempts, error); }
   finally { clearInterval(timer); }

@@ -67,6 +67,15 @@ export async function withJobLease<T>(lease: JobLease, work: (tx: Prisma.Transac
   }, { maxWait: 10_000, timeout: 60_000 });
 }
 
+/** Fence a write made in its own transaction: fail if this worker no longer owns the job. */
+export async function assertLease(tx: Prisma.TransactionClient, lease: JobLease) {
+  const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id FROM "Job" WHERE id = ${lease.id} AND "lockedBy" = ${lease.lockedBy}
+      AND state = 'CLAIMED' AND "leaseUntil" > clock_timestamp() FOR SHARE
+  `);
+  if (!owned.length) throw new Error("LEASE_LOST");
+}
+
 export async function failJob(lease: JobLease, attempts: number, error: unknown) {
   return db.$transaction(async tx => {
     const updated = await tx.job.updateMany({ where: { ...lease, state: JobState.CLAIMED, leaseUntil: { gt: new Date() } }, data: {
@@ -77,11 +86,19 @@ export async function failJob(lease: JobLease, attempts: number, error: unknown)
     if (updated.count && attempts >= 5) {
       const job = await tx.job.findUniqueOrThrow({ where: { id: lease.id } });
       const payload = job.payload as Record<string, unknown>;
-      if (["PARSE", "PUBLISH"].includes(job.type) && typeof payload.batchId === "string") {
+      if (["PARSE", "LOAD", "PUBLISH"].includes(job.type) && typeof payload.batchId === "string") {
         const batch = await tx.importBatch.findUnique({ where: { id: payload.batchId } });
         if (batch && batch.status !== "PUBLISHED") await tx.importBatch.update({ where: { id: batch.id }, data: {
           status: "FAILED", totals: { ...(batch.totals as Record<string, Prisma.InputJsonValue> ?? {}), error: job.lastError }
         } });
+      }
+      if (job.type === "TRANSFORM" && typeof payload.loadId === "string") {
+        const load = await tx.rawLoad.findUnique({ where: { id: payload.loadId } });
+        if (load && load.state === "LOADED") {
+          await tx.rawLoad.update({ where: { id: load.id }, data: { state: "FAILED", safeErrorCode: "TRANSFORM_RETRY_EXHAUSTED" } });
+          if (load.batchId) await tx.importBatch.update({ where: { id: load.batchId }, data: { status: "FAILED", totals: { error: "Transform failed after retries" } } });
+          if (load.runId) await tx.syncRun.update({ where: { id: load.runId }, data: { state: "FAILED", safeErrorCode: "TRANSFORM_RETRY_EXHAUSTED", finishedAt: new Date() } });
+        }
       }
     }
     return updated;
@@ -91,4 +108,9 @@ export async function failJob(lease: JobLease, attempts: number, error: unknown)
 /** Low-volume MVP: serialize ledger/publish/UID decisions across workers. */
 export async function lockCashback(tx: Prisma.TransactionClient) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(16092026)`;
+}
+
+/** Referral snapshots version per exchange, root and exact period, without blocking wallet work. */
+export async function lockActivityPeriod(tx: Prisma.TransactionClient, key: string) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(16092027, hashtext(${key}))`;
 }

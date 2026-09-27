@@ -18,6 +18,17 @@ enum ReportType {
   AGGREGATE
 }
 
+enum IngestDatasetKind {
+  REFERRAL_ACTIVITY
+  COMMISSION
+}
+
+enum IngestSourceMethod {
+  NATIVE_FILE
+  NORMALIZED_FILE
+  OFFICIAL_API
+}
+
 enum BatchStatus {
   UPLOADED
   PARSING
@@ -56,10 +67,19 @@ enum ActorType {
 
 enum JobType {
   PARSE
+  LOAD
+  TRANSFORM
   PUBLISH
   ATTRIBUTE
   RELEASE_HOLDS
   SYNC
+}
+
+enum RawLoadState {
+  LOADED
+  TRANSFORMED
+  FAILED
+  SUPERSEDED
 }
 
 enum JobState {
@@ -67,6 +87,57 @@ enum JobState {
   CLAIMED
   DONE
   FAILED
+}
+
+enum ActivityMetricKind {
+  TRADE_VOLUME
+  TAKER_VOLUME
+  MAKER_VOLUME
+  TRADFI_VOLUME
+  REPORTED_COMMISSION
+}
+
+enum MetricValueState {
+  VALUE
+  EMPTY
+  ABSENT
+}
+
+enum ActivityDayState {
+  OPEN
+  SETTLING
+  SEALED
+  QUARANTINED
+}
+
+enum RosterState {
+  ACTIVE
+  GONE
+}
+
+enum SyncTrigger {
+  SCHEDULED
+  MANUAL
+  BACKFILL
+  RECONCILE
+  RESYNC
+}
+
+enum SyncRunState {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  QUARANTINED
+  PAUSED
+}
+
+enum SyncAuditAction {
+  UPDATE_CONFIG
+  RUN_NOW
+  RESUME
+  RESYNC_RANGE
+  RELEASE_OVERRIDE
 }
 
 model Exchange {
@@ -81,6 +152,7 @@ model Exchange {
   offers              Offer[]
   links               ReferralLink[]
   guides              Guide[]
+  syncConfig          ExchangeSyncConfig?
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
 }
@@ -213,7 +285,9 @@ model ImportBatch {
   id           String              @id @default(cuid())
   exchangeId   String
   rootAccount  String
-  reportType   ReportType
+  datasetKind  IngestDatasetKind
+  sourceMethod IngestSourceMethod
+  reportType   ReportType?
   periodStart  DateTime
   periodEnd    DateTime
   sourceTz     String
@@ -223,11 +297,56 @@ model ImportBatch {
   publishedAt  DateTime?
   status       BatchStatus         @default(UPLOADED)
   totals       Json?
+  schemaFingerprint String?
+  adapterId         String?
+  contractVersion   String?
+  driftReport       Json?
   createdAt    DateTime            @default(now())
   rows         StagingRow[]
   versions     CommissionVersion[]
+  snapshots    ReferralSnapshot[]
+  rawLoads     RawLoad[]
 
   @@index([exchangeId, createdAt])
+}
+
+model RawLoad {
+  id                String       @id @default(cuid())
+  exchangeId        String
+  sourceSystem      String
+  datasetKind       IngestDatasetKind
+  sourceMethod      IngestSourceMethod
+  rootAccount       String
+  periodStart       DateTime
+  periodEnd         DateTime
+  batchId           String?
+  batch             ImportBatch? @relation(fields: [batchId], references: [id])
+  runId             String?
+  state             RawLoadState @default(LOADED)
+  rowCount          Int
+  fieldNames        Json
+  schemaFingerprint String
+  sourceMetadata    Json?
+  driftReport       Json?
+  safeErrorCode     String?
+  loadedAt          DateTime     @default(now())
+  transformedAt     DateTime?
+  audits            RawTransformAudit[]
+
+  @@index([exchangeId, datasetKind, sourceMethod, rootAccount, periodStart, periodEnd])
+  @@index([state, loadedAt])
+  @@index([batchId])
+  @@index([runId])
+}
+
+model RawTransformAudit {
+  id        String   @id @default(cuid())
+  loadId    String
+  load      RawLoad  @relation(fields: [loadId], references: [id])
+  adminId   String
+  createdAt DateTime @default(now())
+
+  @@index([loadId, createdAt])
 }
 
 model StagingRow {
@@ -239,6 +358,178 @@ model StagingRow {
   flags      Json?
 
   @@index([batchId])
+}
+
+/// Period referral metrics. Not payable commission and not a wallet balance.
+model ReferralSnapshot {
+  id               String      @id @default(cuid())
+  batchId          String
+  batch            ImportBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  exchangeId       String
+  rootAccount      String
+  uid              String
+  periodStart      DateTime
+  periodEnd        DateTime
+  tradingVolume    Decimal     @db.Decimal(30, 10)
+  tradingAsset     String
+  reportedEarnings Decimal     @db.Decimal(30, 10)
+  earningsAsset    String
+  referralCode     String?
+  partial          Boolean     @default(false)
+  current          Boolean     @default(true)
+  importedAt       DateTime    @default(now())
+  metrics          ReferralMetric[]
+
+  @@unique([batchId, uid])
+  @@index([exchangeId, rootAccount, periodStart, periodEnd, current])
+  @@index([exchangeId, uid, periodEnd])
+  // One current row per (exchange, root, uid, exact period) is a partial unique
+  // index WHERE current = true, added in SQL because Prisma cannot declare it.
+}
+
+/// Manual snapshot metrics. API sync uses ActivityMetricCurrent instead.
+model ReferralMetric {
+  id         String             @id @default(cuid())
+  snapshotId String
+  snapshot   ReferralSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  kind       ActivityMetricKind
+  asset      String
+  valueState MetricValueState
+  amount     Decimal?           @db.Decimal(30, 10)
+
+  @@unique([snapshotId, kind, asset])
+}
+
+model ExchangeSyncConfig {
+  exchangeId           String   @id
+  exchange             Exchange @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
+  rootAccount          String
+  enabled              Boolean  @default(false)
+  intervalMinutes      Int      @default(30)
+  backfillDays         Int      @default(365)
+  nextRunAt            DateTime?
+  lastAttemptAt        DateTime?
+  lastSuccessAt        DateTime?
+  lastFetchedPeriodEnd DateTime?
+  consecutiveFailures  Int      @default(0)
+  pausedReason         String?
+  updatedBy            String?
+  updatedAt            DateTime @updatedAt
+}
+
+model SyncRun {
+  id              String       @id @default(cuid())
+  exchangeId      String
+  rootAccount     String
+  trigger         SyncTrigger
+  state           SyncRunState
+  contractVersion String
+  changedRows     Int          @default(0)
+  driftReport     Json?
+  checkpoint      Json?
+  daysWritten     Json?
+  safeErrorCode   String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime     @default(now())
+
+  @@index([exchangeId, createdAt])
+}
+
+model ActivityPeriodOverride {
+  exchangeId    String
+  rootAccount   String
+  periodStart   DateTime
+  periodEnd     DateTime
+  manualBatchId String
+  active        Boolean  @default(true)
+  updatedBy     String
+  updatedAt     DateTime @updatedAt
+
+  @@id([exchangeId, rootAccount, periodStart, periodEnd])
+}
+
+model SyncConfigAudit {
+  id         String          @id @default(cuid())
+  exchangeId String
+  adminId    String
+  action     SyncAuditAction
+  before     Json?
+  after      Json?
+  createdAt  DateTime        @default(now())
+
+  @@index([exchangeId, createdAt])
+}
+
+model ActivityRoster {
+  exchangeId   String
+  rootAccount  String
+  uid          String
+  referralCode String?
+  state        RosterState @default(ACTIVE)
+  missedRuns   Int         @default(0)
+  firstSeenAt  DateTime
+  lastSeenAt   DateTime
+
+  @@id([exchangeId, rootAccount, uid])
+}
+
+model ActivityPeriodStatus {
+  exchangeId         String
+  rootAccount        String
+  periodDate         DateTime         @db.Date
+  state              ActivityDayState
+  contentDigest      String?
+  schemaFingerprint  String?
+  contractVersion    String
+  rowCount           Int
+  fetchedAt          DateTime?
+  responseObservedAt DateTime?
+  sourceAsOf         DateTime?
+  lastCheckedAt      DateTime
+  lastChangedRunId   String?
+
+  @@id([exchangeId, rootAccount, periodDate])
+}
+
+model ActivityMetricCurrent {
+  exchangeId       String
+  rootAccount      String
+  uid              String
+  periodDate       DateTime           @db.Date
+  kind             ActivityMetricKind
+  asset            String
+  valueState       MetricValueState
+  amount           Decimal?           @db.Decimal(30, 10)
+  lastChangedRunId String
+  updatedAt        DateTime           @updatedAt
+
+  @@id([exchangeId, rootAccount, uid, periodDate, kind, asset])
+  @@index([exchangeId, rootAccount, periodDate])
+}
+
+model ActivityMetricChange {
+  id          String             @id @default(cuid())
+  runId       String
+  exchangeId  String
+  rootAccount String
+  uid         String
+  periodDate  DateTime           @db.Date
+  kind        ActivityMetricKind
+  asset       String
+  oldState    MetricValueState?
+  oldAmount   Decimal?           @db.Decimal(30, 10)
+  newState    MetricValueState
+  newAmount   Decimal?           @db.Decimal(30, 10)
+  changedAt   DateTime           @default(now())
+
+  @@index([exchangeId, rootAccount, periodDate])
+  @@index([runId])
+}
+
+model SyncRateSlot {
+  id            String   @id
+  nextRequestAt DateTime @default(now())
 }
 
 model CommissionRecord {

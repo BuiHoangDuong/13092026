@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import dotenv from 'dotenv';
@@ -21,21 +21,23 @@ let db;
 try {
   await control.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
   const dbRequire = createRequire(path.join(root, 'packages/db/package.json'));
-  const migrated = spawnSync(process.execPath, [dbRequire.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
-    cwd: path.join(root, 'packages/db'), env: process.env, encoding: 'utf8', timeout: 60000
-  });
+  const migrated = await new Promise((resolve, reject) => {
+    execFile(process.execPath, [dbRequire.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
+      cwd: path.join(root, 'packages/db'), env: process.env, timeout: 180000, maxBuffer: 8 * 1024 * 1024
+    }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr }));
+  }).catch((error) => ({ stdout: String(error.stdout ?? ''), stderr: String(error.stderr ?? error.message ?? ''), failed: true }));
   // Prisma 6.x may exit non-zero when the deprecated package.json#prisma field triggers a
   // warning that routes through stderr, even if the migration itself succeeded. We treat
-  // exit 0 OR stdout containing "applied" as success to tolerate that edge case.
-  const migrateOk = migrated.status === 0 || (migrated.stdout ?? '').includes('applied') || (migrated.stdout ?? '').includes('No pending migrations');
-  if (!migrateOk) throw new Error('Migration failed in isolated schema: ' + (migrated.stderr ?? '').replaceAll(originalUrl, '[database]'));
+  // a clean exit OR stdout containing "applied" as success to tolerate that edge case.
+  const migrateOk = !migrated.failed || migrated.stdout.includes('applied') || migrated.stdout.includes('No pending migrations');
+  if (!migrateOk) throw new Error('Migration failed in isolated schema: ' + migrated.stderr.replaceAll(originalUrl, '[database]'));
   ({ db } = await import('../packages/db/dist/index.js'));
   console.log('PASS: migrations applied to isolated schema');
   const core = await import('../packages/core/dist/index.js');
   const exchange = await db.exchange.create({ data: { slug: 'bybit', name: 'Bybit', status: 'PUBLISHED', defaultCashbackRate: '0.3', logoUrl: '/exchange-logos/bybit.png' } });
   const offer = await db.offer.create({ data: { exchangeId: exchange.id, cashbackRate: '0.5', status: 'PUBLISHED' } });
   const referral = await db.referralLink.create({ data: { exchangeId: exchange.id, offerId: offer.id, destination: 'https://www.bybit.com/' } });
-  const base = { exchangeId: exchange.id, rootAccount: 'bybit-test-root', reportType: 'AGGREGATE', periodStart: '2026-09-01T00:00:00Z', periodEnd: '2026-09-01T23:59:59Z', sourceTz: 'UTC' };
+  const base = { exchangeId: exchange.id, rootAccount: 'bybit-test-root', datasetKind: 'COMMISSION', sourceMethod: 'NORMALIZED_FILE', reportType: 'AGGREGATE', periodStart: '2026-09-01T00:00:00Z', periodEnd: '2026-09-01T23:59:59Z', sourceTz: 'UTC' };
   async function runNext(expected) {
     const job = await core.claimNextJob(120, 'test');
     assert(job && job.lockedBy); if (expected) assert.equal(job.type, expected);
@@ -71,7 +73,7 @@ try {
   const racePeriodStart = new Date('2026-08-01T00:00:00Z');
   const racePeriodEnd = new Date('2026-08-01T23:59:59Z');
   const raceBatch = await db.importBatch.create({ data: {
-    exchangeId: exchange.id, rootAccount: 'race-root', reportType: 'AGGREGATE', periodStart: racePeriodStart,
+    exchangeId: exchange.id, rootAccount: 'race-root', datasetKind: 'COMMISSION', sourceMethod: 'NORMALIZED_FILE', reportType: 'AGGREGATE', periodStart: racePeriodStart,
     periodEnd: racePeriodEnd, sourceTz: 'UTC', fileRef: 'test:race', status: 'PUBLISHED', publishedAt: new Date()
   } });
   const raceRecord = await db.commissionRecord.create({ data: {

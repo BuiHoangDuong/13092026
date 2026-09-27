@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export { inclusivePeriodUtc, wallDateTimeToUtc, wallTimeToUtc } from "./period.js";
+
 export const assetSchema = z.string().trim().min(1).max(16).transform((value) => value.toUpperCase());
 export const decimalStringSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/, "Must be a decimal string");
 export const rateSchema = z.string()
@@ -172,22 +174,66 @@ export const operationalHealthResponseSchema = z.object({
 });
 export type OperationalHealthResponse = z.infer<typeof operationalHealthResponseSchema>;
 
-export const importMetadataSchema = z.object({
-  exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),
+const importMetadataBase = {
+  exchangeId: z.string().min(1), rootAccount: z.string().trim().min(1).max(200),
   periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string().trim().min(1).max(100),
-  sourceAsOf: z.iso.datetime().optional()
-});
+  sourceMethod: z.enum(["NATIVE_FILE", "NORMALIZED_FILE"])
+};
+export const importMetadataSchema = z.discriminatedUnion("datasetKind", [
+  z.object({ ...importMetadataBase, datasetKind: z.literal("COMMISSION"), reportType: z.enum(["TRANSACTION", "AGGREGATE"]), sourceAsOf: z.iso.datetime().optional() }),
+  z.object({ ...importMetadataBase, datasetKind: z.literal("REFERRAL_ACTIVITY"), sourceAsOf: z.iso.datetime() })
+]);
 export type ImportMetadata = z.infer<typeof importMetadataSchema>;
 export const importAcceptedSchema = z.object({ batchId: z.string(), status: z.literal("UPLOADED") });
 export const importPreviewSchema = z.object({
   batch: z.object({
-    id: z.string(), exchangeId: z.string(), rootAccount: z.string(), reportType: z.enum(["TRANSACTION", "AGGREGATE"]),
+    id: z.string(), exchangeId: z.string(), rootAccount: z.string(),
+    datasetKind: z.enum(["REFERRAL_ACTIVITY", "COMMISSION"]),
+    sourceMethod: z.enum(["NATIVE_FILE", "NORMALIZED_FILE", "OFFICIAL_API"]),
+    reportType: z.enum(["TRANSACTION", "AGGREGATE"]).nullable(),
+    affectsCashback: z.boolean(),
     status: z.enum(["UPLOADED", "PARSING", "PREVIEW", "COMMITTING", "PUBLISHED", "FAILED"]),
     periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceTz: z.string(), sourceAsOf: z.iso.datetime().nullable(),
     totals: z.unknown().nullable(), createdAt: z.iso.datetime()
   }),
   preview: z.object({ totalRows: z.number().int().nonnegative(), flaggedRows: z.number().int().nonnegative(), rows: z.array(z.object({ id: z.string(), raw: z.unknown(), normalized: z.unknown().nullable(), flags: z.unknown().nullable() })) })
+  ,rawLoad: z.object({ id: z.string(), state: z.enum(["LOADED", "TRANSFORMED", "FAILED", "SUPERSEDED"]), rowCount: z.number().int(), fieldNames: z.array(z.string()), driftReport: z.unknown().nullable(), safeErrorCode: z.string().nullable() }).nullable()
 });
 export type ImportPreview = z.infer<typeof importPreviewSchema>;
+
+export const referralSnapshotQuerySchema = z.object({
+  exchangeId: z.string().min(1),
+  periodStart: z.iso.datetime(),
+  periodEnd: z.iso.datetime(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+export const referralSnapshotSchema = z.object({
+  id: z.string(), uid: z.string(), exchangeId: z.string(), rootAccount: z.string(),
+  periodStart: z.iso.datetime(), periodEnd: z.iso.datetime(), sourceAsOf: z.iso.datetime().nullable(),
+  tradingVolume: decimalStringSchema, tradingAsset: z.string(),
+  reportedEarnings: decimalStringSchema, earningsAsset: z.string(),
+  referralCode: z.string().nullable(), partial: z.boolean()
+});
+export const referralSnapshotsResponseSchema = z.object({
+  snapshots: z.array(referralSnapshotSchema),
+  nextCursor: z.string().nullable(),
+  note: z.literal("Reported earnings are referral-export metrics, not cashback wallet credit.")
+});
+export type ReferralSnapshotsResponse = z.infer<typeof referralSnapshotsResponseSchema>;
+
+export const activityReportResponseSchema = z.object({
+  note: z.string(),
+  nextCursor: z.string().nullable(),
+  coverageDays: z.array(z.object({ rootAccount: z.string(), expected: z.number().int().nonnegative(), fetched: z.number().int().nonnegative(), open: z.number().int().nonnegative(), missing: z.number().int().nonnegative() })),
+  activity: z.array(z.object({
+    uid: z.string(), source: z.enum(["MANUAL", "API"]), rootAccount: z.string(),
+    referralCode: z.string().nullable(), partial: z.boolean(),
+    sourceAsOf: z.iso.datetime().nullable(), fetchedAt: z.iso.datetime().nullable(),
+    dataState: z.enum(["REPORTED", "NO_ACTIVITY", "INCOMPLETE"]),
+    metrics: z.array(z.object({ kind: z.string(), asset: z.string(), valueState: z.string(), amount: decimalStringSchema.nullable() }))
+  }))
+});
+export type ActivityReportResponse = z.infer<typeof activityReportResponseSchema>;
 
 export const jobPayloadSchema = z.object({ type: z.string(), payload: z.record(z.string(), z.unknown()) });

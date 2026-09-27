@@ -1,0 +1,75 @@
+"use client";
+import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+
+type SyncView = {
+  configured: boolean; enabled: boolean; intervalMinutes: number; nextRunAt: string | null;
+  lastAttemptAt: string | null; lastSuccessAt: string | null; pausedReason: string | null;
+  consecutiveFailures: number; note: string;
+  coverage: { from: string | null; to: string | null; days: number };
+  runs: Array<{ id: string; trigger: string; state: string; changedRows: number; safeErrorCode: string | null; createdAt: string; failedLoads: Array<{ id: string; fieldNames: string[] }> }>;
+};
+
+async function read(response: Response) {
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error?.message ?? "Request failed");
+  return body as SyncView;
+}
+
+export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
+  const [view, setView] = useState<SyncView | null>(null);
+  const [error, setError] = useState("");
+  const [interval, setIntervalValue] = useState("30");
+  const refresh = useCallback(async () => {
+    if (!exchangeId) return;
+    try { const next = await fetch(`/api/admin/ingest/connectors/${exchangeId}`, { cache: "no-store" }).then(read); setView(next); setIntervalValue(String(next.intervalMinutes)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load sync"); }
+  }, [exchangeId]);
+  useEffect(() => { void refresh(); const timer = setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 30000); return () => clearInterval(timer); }, [refresh]);
+  async function save(enabled: boolean) {
+    if (!exchangeId) return;
+    setError("");
+    try {
+      setView(await fetch(`/api/admin/ingest/connectors/${exchangeId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled, intervalMinutes: Number(interval) }) }).then(read));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Update failed"); }
+  }
+  async function run(path: string) {
+    if (!exchangeId) return;
+    setError("");
+    try { await fetch(`/api/admin/ingest/connectors/${exchangeId}/${path}`, { method: "POST" }).then(read); await refresh(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Sync request failed"); }
+  }
+  async function retransform(loadId: string) {
+    setError("");
+    try { await fetch(`/api/admin/ingest/loads/${loadId}/retransform`, { method: "POST" }).then(read); await refresh(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to re-run transform"); }
+  }
+  if (!exchangeId) return <p className="mt-8">Publish the Bybit exchange before configuring sync.</p>;
+  return <section className="mt-8 space-y-4">
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    <p className="text-sm text-muted-foreground">{view?.note}</p>
+    <p className="text-sm">{view?.configured ? "Worker credentials are configured." : "Set BYBIT_AFFILIATE_API_KEY, BYBIT_AFFILIATE_API_SECRET, and BYBIT_AFFILIATE_MASTER_UID on the worker."} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : "Not paused."}</p>
+    <p className="text-sm">Coverage {view?.coverage.days ?? 0} days{view?.coverage.from ? ` from ${view.coverage.from} to ${view.coverage.to}` : ""}. Next run {view?.nextRunAt ? new Date(view.nextRunAt).toLocaleString() : "not scheduled"}. Last success {view?.lastSuccessAt ? new Date(view.lastSuccessAt).toLocaleString() : "none"}.</p>
+    <div className="flex flex-wrap items-end gap-3">
+      <label className="text-sm">Interval
+        <select className="mt-1 block rounded-md border border-border bg-background p-2" value={interval} onChange={(event) => setIntervalValue(event.target.value)}>
+          <option value="30">30 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="720">12 hours</option>
+          <option value="1440">24 hours</option>
+        </select>
+      </label>
+      <Button type="button" variant="outline" onClick={() => void save(view?.enabled ?? false)} disabled={!view || String(view.intervalMinutes) === interval}>Save interval</Button>
+      <Button type="button" onClick={() => void save(true)} disabled={view?.enabled}>Enable</Button>
+      <Button type="button" variant="outline" onClick={() => void save(false)} disabled={!view?.enabled}>Disable</Button>
+      <Button type="button" variant="outline" onClick={() => void run("run")}>Sync now</Button>
+      <Button type="button" variant="outline" onClick={() => void run("resume")}>Resume</Button>
+    </div>
+    <ul className="space-y-1 text-sm">
+      {view?.runs.map((run) => <li key={run.id}>{run.createdAt.slice(0, 16)} · {run.trigger} · {run.state} · {run.changedRows} changed{run.safeErrorCode ? ` · ${run.safeErrorCode}` : ""}
+        {run.failedLoads?.map((load) => <span key={load.id}> · {load.fieldNames.join(", ")} <Button type="button" variant="outline" onClick={() => void retransform(load.id)}>Re-run transform</Button></span>)}
+      </li>)}
+      {!view?.runs.length && <li className="text-muted-foreground">No sync runs yet.</li>}
+    </ul>
+  </section>;
+}

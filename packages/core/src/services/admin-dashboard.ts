@@ -54,9 +54,18 @@ export async function getAdminAnalytics(rangeDays = 30) {
   };
 }
 
+async function apiSyncState() {
+  const configs = await db.exchangeSyncConfig.findMany({ select: { enabled: true, pausedReason: true, consecutiveFailures: true } });
+  const running = await db.syncRun.count({ where: { state: "RUNNING" } });
+  const enabled = configs.some((config) => config.enabled);
+  const failed = configs.some((config) => config.pausedReason || config.consecutiveFailures >= 2);
+  const state = !enabled ? "DISABLED" : running ? "RUNNING" : failed ? "FAILED" : "IDLE";
+  return { enabled, state: state as "DISABLED" | "IDLE" | "RUNNING" | "FAILED" };
+}
+
 export async function getAdminSyncStatus() {
   const [latestSuccess, imports, jobs, exchanges] = await Promise.all([
-    db.importBatch.findFirst({ where: { status: "PUBLISHED" }, orderBy: { publishedAt: "desc" }, select: { publishedAt: true, sourceAsOf: true } }),
+    db.importBatch.findFirst({ where: { status: "PUBLISHED", datasetKind: "COMMISSION" }, orderBy: { publishedAt: "desc" }, select: { publishedAt: true, sourceAsOf: true } }),
     db.importBatch.findMany({ take: 20, orderBy: { createdAt: "desc" }, select: {
       id: true, exchangeId: true, rootAccount: true, status: true, createdAt: true, publishedAt: true, sourceAsOf: true
     } }),
@@ -65,7 +74,7 @@ export async function getAdminSyncStatus() {
   ]);
   const exchangeNames = new Map(exchanges.map(exchange => [exchange.id, exchange.name]));
   return {
-    generatedAt: new Date().toISOString(), apiSync: { enabled: false, state: "DISABLED" as const },
+    generatedAt: new Date().toISOString(), apiSync: await apiSyncState(),
     lastSuccessfulImportAt: latestSuccess?.publishedAt?.toISOString() ?? null,
     sourceAsOf: latestSuccess?.sourceAsOf?.toISOString() ?? null,
     jobs: jobs.map(row => ({ state: row.state, count: row._count._all })),

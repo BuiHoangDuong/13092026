@@ -1,5 +1,5 @@
 import { ZodError, type ZodType } from "zod";
-import { auth, PublicAccessError, type Principal } from "@cashback/core";
+import { auth, PublicAccessError, SyncError, type Principal } from "@cashback/core";
 import { NextResponse } from "next/server";
 import { sessionToken } from "./auth";
 import { sameOrigin } from "./uid-api";
@@ -35,6 +35,7 @@ export async function withAdmin(handler: (principal: Principal) => Promise<Respo
       const message = error instanceof Error ? error.message : "Content operation failed";
       return adminJson({ error: { code: domainCode, message } }, { status });
     }
+    if (error instanceof SyncError) return adminJson({ error: { code: error.code, message: error.message } }, { status: 400 });
     if (domainCode && ["IMPORT_INVALID", "IMPORT_NOT_FOUND"].includes(domainCode)) {
       const message = error instanceof Error ? error.message : "Import operation failed";
       return adminJson({ error: { code: domainCode, message } }, { status: domainCode === "IMPORT_NOT_FOUND" ? 404 : 400 });

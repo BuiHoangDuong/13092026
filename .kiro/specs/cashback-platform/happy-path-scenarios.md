@@ -1,7 +1,7 @@
 # Happy-path scenarios — Cashback Affiliate Platform
 
 - **Status:** Draft v1.1 (main success paths; numbers from the live Railway dump)
-- **Last updated:** 2026-09-17
+- **Last updated:** 2026-09-26
 - **Based on:** `requirements.md` (Draft v0.6), `design.md` (Draft v0.7), and
   Railway Postgres (`public`) as of 2026-09-17. A Bybit test report for UID
   `001234567` was published the same day so lookup has a real balance.
@@ -104,7 +104,7 @@ the same UID on Binance/MEXC, still shows no-data.
 | Referral redirect | `/go/[linkId]` |
 | Claimant withdraw (OTP → wallet) | `/withdraw` |
 | Admin login | `/admin/login` (no sidebar) |
-| Admin operations | Left nav shell: `/admin` overview, `/admin/imports`, `/admin/withdrawals`, `/admin/exchanges`, `/admin/offers`, `/admin/links`, `/admin/guides` |
+| Admin operations | Left nav: `/admin` overview; Data ingest → `/admin/ingest/uploads`, `/admin/ingest/connectors`; Reports → `/admin/reports/activity`; `/admin/withdrawals`, `/admin/exchanges`, `/admin/offers`, `/admin/links`, `/admin/guides`. Old `/admin/imports`, `/admin/crawl-data`, `/admin/referrals`, `/admin/sync` redirect after login |
 
 ---
 
@@ -135,7 +135,7 @@ These are configuration and seed conditions, not scenarios.
 | `CLIENT_IP_HEADER` | `x-forwarded-for` on Railway | Lookup/OTP fail closed in production without a trusted IP header |
 | Test UID | Bybit `001234567` — already attributed (pending 30 USDT). Keep leading zeros. | S7–S12 |
 | Test payout address | Valid checksum address for the chosen network (EVM or TRON) | S9 |
-| Normalized Bybit CSV v1 | See S4. Native Bybit export / XLSX is not a happy path yet | S4 |
+| Normalized Bybit CSV v1 | See S4. Native Bybit export is not a cashback path yet. MEXC Referral Data XLSX is an admin activity snapshot and does not credit wallets | S4 |
 
 ---
 
@@ -182,6 +182,9 @@ First withdrawal: admin reviews → approves → sends USDT off-platform → mar
 | S14 | Second withdrawal auto-approves | Claimant + Admin | 9.5, 9.6 |
 | S15 | Claimant cancels before paid | Claimant | 9.7, 9.10 |
 | S16 | Admin reads the operations dashboard | Admin | 11 |
+| S17 | Admin uploads a MEXC Referral Data XLSX | Admin + Worker | 6.12, 6.16 |
+| S18 | Admin publishes and reads the MEXC snapshot | Admin + Worker | 6.13, 6.15 |
+| S19 | Admin re-imports the same MEXC period with a newer export | Admin + Worker | 6.14 |
 
 ---
 
@@ -214,8 +217,9 @@ First withdrawal: admin reviews → approves → sends USDT off-platform → mar
 ### Expected
 - Unauthenticated admin routes are denied (redirect or 401 on APIs).
 - After login, `/admin` is the **overview** (analytics) inside a **left nav**.
-  Nav links: Overview, Bybit imports, Withdrawals, Exchanges, Offers, Referral
-  links, Guides. Login has no sidebar.
+  Nav groups: Overview; Data ingest (Uploads, API connectors); Reports
+  (Referral activity); Withdrawals, Exchanges, Offers, Referral links, Guides.
+  Login has no sidebar.
 - Admin session cannot be used on `/api/uid/*`. A UID session cannot be used on
   `/api/admin/*`.
 
@@ -268,13 +272,14 @@ ones).
 
 **Actor:** Admin + Worker  
 **Preconditions:** S1. Dump already has Bybit `PUBLISHED`
-(`cmu3lhxdu000enb5cb3zd72lp`). Worker is healthy. **Dump has no import
-batches yet** — this scenario creates the first one.
+(`cmu3lhxdu000enb5cb3zd72lp`). Worker is healthy. The 2026-09-17 dump
+already contains a published report for the sample UID and period below;
+uploading the same values again is a correction, not a second cashback credit.
 
 ### CSV to upload (normalized v1, UTF-8)
 
-The UID is **created by this file**. It is not in the dump. After S5, lookup
-**this same UID on Bybit** — not a UID you have not published.
+Use the same UID on Bybit for S5–S7. It is already present in the 2026-09-17
+dump; use a new UID and period if testing the first import into a fresh DB.
 
 Aggregate happy path (Bybit default rate in dump is **0.3** → `100` commission
 credits **30** USDT cashback):
@@ -297,17 +302,25 @@ the dump id `cmu3lhxdu000enb5cb3zd72lp` (the form fills this when Bybit is
 published).
 
 ### Steps
-1. Open `/admin/imports` (left nav **Bybit imports**).
-2. Fill: root affiliate account, period start/end (UTC dates), optional source
-   as-of, report type (`AGGREGATE` or `TRANSACTION`), and the CSV.
-3. Submit **Upload for preview**.
-4. Wait while the UI polls (~5s while the batch is `UPLOADED` / `PARSING`).
-5. Open the new row under **Recent reports**.
+1. Copy the **aggregate** CSV block above into a local text file named
+   `bybit-happy-path.csv`. Save it as UTF-8 with the `.csv` extension (not
+   `.csv.txt`); keep `001234567` exactly, including both leading zeros.
+2. Open `/admin/ingest/uploads` (left nav **Data ingest → Uploads**).
+3. Choose exchange **Bybit** and dataset **Commission**. Fill **Root affiliate account** = `bybit-happy-path`, **Period start** =
+   `2026-09-01`, **Period end** = `2026-09-16`, and **Report type** =
+   `Period totals` (`AGGREGATE`). Commission uploads use UTC.
+4. In **CSV file**, click the file picker and select `bybit-happy-path.csv` from
+   your computer. Check that the selected filename appears in the form.
+5. Click **Upload for preview**. Wait while the UI polls (~5s while the batch
+   is `UPLOADED` / `PARSING`): the worker performs LOAD, then TRANSFORM.
+6. Open the new row in the upload list and verify status `PREVIEW` and
+   **0 flagged** before continuing to S5.
 
 ### Expected
 - API returns `202` with a `batchId`. The HTTP request does **not** parse the
   whole file.
-- Worker writes staging rows and the batch becomes `PREVIEW`.
+- Worker stores raw rows in `raw_bybit`, then asynchronously transforms them
+  into staging rows and sets the batch to `PREVIEW`.
 - Preview shows totals, flagged-row count `0`, and no blocking errors.
 - Staging data is **not** visible on public lookup yet.
 - Original file is stored privately (not a public URL).
@@ -320,7 +333,7 @@ published).
 **Preconditions:** S4 batch is `PREVIEW` with zero flagged rows.
 
 ### Steps
-1. On the same preview panel, click **Publish verified report**.
+1. On the batch preview page, click **Publish**.
 2. Wait until status is `PUBLISHED` (UI polls ~5s while `COMMITTING`).
 
 ### Expected
@@ -335,8 +348,8 @@ published).
   commission is `100` and the dump Bybit default rate `0.3` is used (no
   `referral_link_id` in the sample CSV → exchange default, not the offer).
 - Re-clicking **Publish** on the same batch does not credit twice.
-- Until this step, `/` lookup of Bybit + `001234567` is no-data — that is the
-  dump, not a product bug.
+- Before this repeat upload is published, `/` lookup of Bybit + `001234567`
+  still shows the balance from the report already published on 2026-09-17.
 - After status is `PUBLISHED` but before the ATTRIBUTE job finishes, lookup
   still shows the previous credited commission, not the new `reconciledAmount`.
   The row matches `creditedCashback`. After ATTRIBUTE, lookup shows the new
@@ -576,7 +589,7 @@ dashboard also shows new clicks and the first import.
 
 ### Expected
 - Numbers come from internal data, not live exchange APIs.
-- Visible-tab poll ~30s **on that page only**; `/admin/imports` polls ~5s while
+- Visible-tab poll ~30s **on that page only**; `/admin/ingest/uploads` polls ~5s while
   a batch is processing. Closed sections do not poll.
 - Polling pauses when the tab is hidden.
 - Responses are `Cache-Control: private, no-store`.
@@ -584,9 +597,118 @@ dashboard also shows new clicks and the first import.
 
 ---
 
+## S17 — Admin uploads a MEXC Referral Data XLSX
+
+> S17–S19 are a **separate admin loop**. A referral activity snapshot is an
+> export metric, not commission: it never credits a wallet, never appears in `/`
+> lookup, and never changes withdrawal eligibility (Req 6.13, 6.15).
+
+**Actor:** Admin + Worker
+
+**Preconditions:** S1. MEXC is `PUBLISHED` in the dump
+(`cmu3lhxd60007nb5cemasvui7`). Worker is healthy. Migration
+`202609250001_ingest_envelope` has been applied on the target DB.
+
+### File to upload
+
+Use the committed synthetic fixture
+`packages/core/test/fixtures/mexc-referral-activity.xlsx` (fake UIDs). Do not
+upload or commit a real export from `data/mexc/` on a shared test environment.
+
+| Property | Fixture value |
+|----------|---------------|
+| Worksheet | exactly one, named `_2026-09-18~2026-09-25` |
+| Mapped columns | `Referral`, `Referral Code`, `Trading volume`, `Trading token`, `Your Earnings`, `Commission token` |
+| Extra columns | `Nickname`, `Prediction Markets Fee-Sharing Rate` → preview warnings only |
+| Rows | 2: UID `00123456` and `10000002`, all volume/earnings `0` USDT |
+
+A real MEXC export works the same way (its sheet name gives the period, its
+file name `Referral Data Export-YYYY-MM-DD HH_MM_SS.xlsx` gives the as-of time).
+
+### Steps
+1. Open `/admin/ingest/uploads` (left nav **Data ingest → Uploads**). Choose exchange **MEXC** and dataset **Referral activity**.
+2. Fill **Root affiliate account** = `mexc-happy-path`, **Source timezone** =
+   `UTC`, **Period start** = `2026-09-18`, **Period end** = `2026-09-25`,
+   **Source as of** = `2026-09-25 14:22:39` (in the source timezone).
+3. In **File (.xlsx)**, select the fixture file. (With a real export
+   the as-of field is prefilled from the file name; confirm it before upload.)
+4. Click **Upload for preview**. The list polls ~5s while the batch is
+   `UPLOADED` / `PARSING`: the worker performs LOAD, then TRANSFORM.
+5. Click the `mexc-happy-path` row in the upload list.
+
+### Expected
+- API returns `202` with a `batchId`; parsing happens in the worker.
+- Raw load status becomes `TRANSFORMED`, then batch preview status `PREVIEW`,
+  **2 rows · 0 flagged**.
+- Preview shows **Partial export** (as-of 2026-09-25 14:22:39 is before the
+  period ends at 2026-09-25 23:59:59.999 UTC) and **Does not affect cashback**.
+- `Nickname` is removed before the raw table. The warning lists
+  `Extra column: Prediction Markets Fee-Sharing Rate`.
+- The preview JSON never contains the nickname value (`Do Not Store`) or any
+  unmapped column (Req 6.16).
+- Filtering the upload list to Commission does not show this activity batch. The row is labeled so it does not affect cashback.
+
+---
+
+## S18 — Admin publishes and reads the MEXC snapshot
+
+**Actor:** Admin + Worker
+
+**Preconditions:** S17 batch in `PREVIEW` with 0 flagged rows.
+
+### Steps
+1. Open the S17 batch at `/admin/ingest/uploads/[id]` and click **Publish**.
+2. Wait for the status to become `PUBLISHED`.
+3. Open `/admin/reports/activity`. Choose **MEXC**, timezone `UTC`,
+   **Period start** = `2026-09-18`, **Period end** = `2026-09-25`, then click
+   **Show activity**.
+4. Open `/`, choose **MEXC**, and look up UID `00123456`.
+
+### Expected
+- Batch goes `PREVIEW` → `COMMITTING` → `PUBLISHED`. Clicking Publish again
+  does not create a second snapshot.
+- Table shows 2 rows: `00123456` and `10000002` (leading zeros kept), volume
+  `0.0000000000 USDT`, earnings `0.0000000000 USDT`, **Partial = Yes**,
+  **Source as of** `2026-09-25 14:22:39`, root `mexc-happy-path`.
+- The note above the table says reported earnings are not wallet credit. A row
+  of zeroes means the export reported zero, not missing data.
+- `/` lookup of MEXC + `00123456` is still **no-data**: no `UidAccount`,
+  `CommissionRecord`, or wallet was created.
+- Bybit `001234567` balance from S5 is unchanged.
+
+---
+
+## S19 — Admin re-imports the same MEXC period with a newer export
+
+**Actor:** Admin + Worker
+
+**Preconditions:** S18 published.
+
+### Steps
+1. On `/admin/ingest/uploads`, upload the same fixture again with the same root
+   account, timezone and period, but **Source as of** = `2026-09-26 00:10:00`
+   (after the period end, and not in the future).
+2. Open the new batch: expect `PREVIEW`, 0 flagged, **Covers the full period**.
+3. Click **Publish**, wait for `PUBLISHED`.
+4. Open `/admin/reports/activity` again for MEXC, `UTC`, `2026-09-18` / `2026-09-25`.
+
+### Expected
+- Still exactly 2 rows (the new version **replaces** the old one; volumes and
+  earnings are not added together).
+- **Partial = No**, **Source as of** `2026-09-26 00:10:00`.
+- The S17 batch stays in the list as history; only the newest snapshot is current.
+- Only the new load's raw rows remain for that exact root and period; other
+  periods and roots are unchanged.
+- Uploading a file with an **older** as-of than the current one ends with every
+  row flagged `OLDER_REPORT` and Publish disabled — expected guardrail, not part
+  of this happy path.
+
+---
+
 ## Suggested full-loop test data
 
-Grounded in the 2026-09-17 dump. The UID is **not** pre-funded; S4 creates it.
+Grounded in the 2026-09-17 dump. The UID already has a published Bybit report;
+repeating S4 with the same report values must not create another credit.
 
 | Field | Value in / from dump |
 |-------|----------------------|
@@ -610,7 +732,7 @@ Grounded in the 2026-09-17 dump. The UID is **not** pre-funded; S4 creates it.
 - First-claimant-wins dispute (no recourse by design — see requirements
   “Accepted risk”).
 - Downward CSV correction, clawback, `receivable > 0` blocking withdrawals.
-- Native Bybit export / XLSX (still pending a real sample).
+- Native Bybit export (still pending a real commission sample). MEXC Referral Data XLSX is an admin-only activity snapshot: it must not be checked as cashback credit.
 - Scheduled exchange API sync and SSE (Phase 4).
 - Automated on-chain payout (manual mark-paid in MVP).
 - Changing a UID’s bound email.
@@ -626,3 +748,9 @@ Grounded in the 2026-09-17 dump. The UID is **not** pre-funded; S4 creates it.
 | 2026-09-17 | happy-path-scenarios.md | Publish CSV test Bybit UID `001234567` (commission 100 → cashback 30 pending). Lookup live `hasData=true`. `available` vẫn 0 vì chưa set HOLDING_PERIOD_HOURS | Tester thấy no-data vì dump trống; import qua pipeline thật | updated |
 | 2026-09-19 | happy-path-scenarios.md | S1/S4/S10/S13/S16 dùng left-nav routes (`/admin/imports`, `/withdrawals`, `/exchanges`, …) | Req 18 — chờ duyệt rồi code | updated |
 | 2026-09-22 | happy-path-scenarios.md | S5: giữa PUBLISHED và ATTRIBUTE, lookup vẫn hiện commission đã cộng, chưa hiện số mới | Req 14.7 — tránh tester tưởng lệch số là lỗi sổ | updated |
+| 2026-09-25 | happy-path-scenarios.md | Ghi rõ XLSX Referral Data của MEXC là snapshot admin, không phải đường cashback | Tránh tester cộng Your Earnings vào ví | updated |
+| 2026-09-25 | happy-path-scenarios.md | S4 hướng dẫn tạo file CSV UTF-8, chọn file trong form và điền metadata cụ thể; sửa mô tả UID đã có trong dump | Tester có thể thực hiện upload và không kỳ vọng cộng tiền lần hai | updated |
+| 2026-09-26 | happy-path-scenarios.md | Thêm S17–S19: admin upload XLSX Referral Data MEXC (fixture synthetic), preview partial/cảnh báo cột thừa, publish snapshot, xem bảng current, re-import as-of mới thay thế không cộng dồn; thêm route `/admin/referrals` | Có runbook test tay cho chức năng MEXC referral activity trước khi deploy | added |
+| 2026-09-26 | happy-path-scenarios.md | Cập nhật đường dẫn S17–S19 thành `/admin/crawl-data` và nhãn menu Crawl data | Runbook dùng đúng URL hiện tại | updated |
+| 2026-09-26 | happy-path-scenarios.md | S4–S5, S17–S19 dùng trang Uploads/Reports hiện tại và trạng thái LOAD → TRANSFORM → PREVIEW; bỏ cảnh báo cột cá nhân khỏi raw/preview | Đồng bộ Task 32–33 và luồng kiểm chứng mới | updated |
+| 2026-09-26 | happy-path-scenarios.md | S1/S4/S16–S19 dùng Uploads, API connectors và Referral activity; route cũ redirect | Req 18.2, 18.7, 18.8 | updated |

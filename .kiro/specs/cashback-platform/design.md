@@ -1,13 +1,12 @@
 # Design — Cashback Affiliate Platform
 
-- **Status:** Draft v0.7 (UID-first: no customer accounts; email OTP + UID session)
-- **Last updated:** 2026-09-17
-- **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.6), `architecture.html` v0.4 (context only)
+- **Status:** Draft v1.0 (UID-first; adapter framework, drift policy, API write model)
+- **Last updated:** 2026-09-26
+- **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.9), `architecture.html` v0.4 (context only)
 - **Audience:** implementers and AI coding agents (Kiro / Claude / Codex)
 
 > This document turns the requirements into a concrete technical design: component
-> boundaries, data model, flows, and cross-cutting concerns. Nothing here is implemented
-> yet. Items marked **[PENDING]** map to open decisions in the requirements and must be
+> boundaries, data model, flows, and cross-cutting concerns. Items marked **[PENDING]** map to open decisions in the requirements and must be
 > confirmed before their dependent code is built. Per spec governance, `requirements.md`
 > and `design.md` are the source of truth; `architecture.html` is background context only.
 >
@@ -24,7 +23,7 @@ database:
   (lookup/OTP/withdraw), and admin area. Contains all HTTP route handlers (`/api/*`,
   `/go/:linkId`).
 - **`apps/worker`** — long-running Node.js process. Parses reports, attributes
-  commission, releases holds, and runs (future) scheduled sync jobs.
+  commission, releases holds, and runs scheduled affiliate API sync jobs.
 
 Shared logic lives in packages so web and worker never diverge:
 
@@ -110,7 +109,7 @@ packages/
   core/                         # services, cashback engine, normalization
   db/                           # prisma schema + migrations + repositories
 infra/
-  docker-compose.yml            # local Postgres + storage (SIT)
+  docker-compose.yml            # legacy; its Postgres service must not be used (steering: Railway DB only)
   railway/                      # railway service config
 architecture.html
 .kiro/specs/cashback-platform/  # this spec
@@ -124,10 +123,74 @@ Dependency rule (enforced by lint/boundaries): `web` and `worker` may import
 
 #### Report import → publish (Req 6)
 
+Ingest is source-neutral after parsing. A source adapter emits either
+`REFERRAL_ACTIVITY` (UID metrics, no wallet effect) or `COMMISSION` (eligible for the
+existing versioned commission path). Each batch records exchange, root affiliate
+account, source method (`NATIVE_FILE`, `NORMALIZED_FILE`, `OFFICIAL_API`),
+dataset kind, report period, source timezone, available source as-of time, and
+private minimized evidence. Every source is a subclass of the same abstract adapter
+(see "Source adapter framework") and emits the same `NormalizedEnvelope`. An admin
+previews manual rows before publish (manual sink: `ImportBatch` + versioned
+snapshot); the scheduled connector validates a complete period and writes through
+the API sink (in-place metrics + change log, no per-run `ImportBatch`). Both paths
+first land unchanged records in the raw layer and transform asynchronously (see
+"Raw landing layer").
+
+**MEXC native referral adapter.** The inspected file
+`data/mexc/Referral Data Export-2026-09-25 14_22_39.xlsx` has one worksheet named
+`_2026-09-18~2026-09-25`, 27 headers, and 46 distinct `Referral` UIDs. Its
+`Trading volume` and `Your Earnings` columns are zero for every row, so it cannot
+validate nonzero calculations or settlement. Every cell in the sample is an inline
+string (numbers included, e.g. `"0"`), and it contains no formulas.
+
+- **Workbook safety.** Accept `.xlsx` only (no `.xlsm`/`.xls`), exactly one
+  worksheet, no external links. Before parsing, bound the decompressed size (e.g.
+  50 MiB) and row/column counts; the 10 MiB upload limit only bounds compressed bytes.
+  Read cell values only; a cell that contains a formula fails the batch (Req 6.4)
+  rather than being silently evaluated or skipped. Use a maintained parser that does
+  not evaluate formulas; the npm `xlsx` registry package is outdated and must not be used.
+- **Headers.** Require `Referral`, `Trading volume`, `Trading token`, `Your Earnings`,
+  and `Commission token` by name, not position. Extra or new columns are tolerated and
+  listed as preview warnings (MEXC added columns such as
+  `Prediction Markets Fee-Sharing Rate`); a missing required header fails the batch.
+- **Values.** Keep UID text unchanged (the sample has UIDs with leading zeroes).
+  Parse amounts from strict decimal text into Decimal; reject empty, non-numeric, or
+  negative volume. Token columns must be a supported asset.
+- **Period.** The sheet name gives inclusive calendar dates in the source timezone.
+  Store `periodStart` = first day 00:00 and `periodEnd` = last day 23:59:59.999 in
+  `sourceTz`, converted to UTC, matching the inclusive overlap rule used by the
+  commission path. A sheet period that disagrees with admin metadata, or a missing
+  `sourceTz`, fails the batch. The workbook does not state a timezone, so the admin
+  must supply it.
+- **As-of.** `sourceAsOf` is required for manual MEXC activity batches; the admin may prefill it
+  from the filename timestamp only after confirming its timezone. When
+  `sourceAsOf < periodEnd` (the sample was exported at 14:22 on the period's last day),
+  mark the snapshot `partial` in preview and reports.
+- **Data minimization (NĐ 13/2023).** Copy only mapped columns (UID, volume, earnings,
+  tokens, referral code) plus the source row number into `StagingRow.raw` and
+  `ReferralSnapshot`. Nickname, user tag, identification (KYC level) and asset band
+  are `contract.personal`: dropped before the raw layer and kept only in the private
+  original file, subject to the import retention policy. Other unmapped columns
+  (e.g. sharing rate) stay in `raw_mexc` for 30 days, then only in the original file.
+
+The adapter outputs one activity row per UID and period; `Your Earnings` is a
+reported metric, not a CommissionVersion.
+
+**Ingest choices.** (1) Native exchange XLSX/CSV exports are the preferred manual
+input when their columns and semantics have been verified. (2) A documented
+normalized CSV is the manual fallback for unsupported export formats; it carries
+explicit dataset kind, exchange, UID, UTC period and units. For commission imports,
+the original exchange evidence must also be retained privately. (3) The approved
+Bybit Affiliate API connector produces activity rows and batch metadata through
+the same ingest boundary without a separate ledger path. Screen scraping
+or browser-session cookies are not an ingest source. For MEXC, a UID-level commission
+export with nonzero data and period/settlement meaning must be inspected before
+enabling the `COMMISSION` adapter; referral activity import may proceed earlier.
+
 ```mermaid
 sequenceDiagram
   participant A as Admin (web)
-  participant API as web /api/admin/imports
+  participant API as web /api/admin/ingest/batches
   participant S as Object storage
   participant DB as PostgreSQL
   participant W as Worker
@@ -135,23 +198,151 @@ sequenceDiagram
   A->>API: POST report + metadata
   API->>API: authz + file type/size check
   API->>S: store original file (private)
-  API->>DB: create ImportBatch + PARSE job
+  API->>DB: create ImportBatch + LOAD job
   API-->>A: 202 { batchId }
-  W->>DB: claim PARSE job (SKIP LOCKED)
-  W->>S: read file
-  W->>DB: write StagingRow (normalized + flags)
+  W->>DB: claim LOAD job (SKIP LOCKED)
+  W->>S: read file (format + safety checks only)
+  W->>DB: overwrite raw_<exchange> slice + RawLoad; enqueue TRANSFORM
+  W->>DB: claim TRANSFORM job (async)
+  W->>DB: adapter contract → write StagingRow (normalized + flags)
   W->>DB: batch.status = PREVIEW
   A->>API: GET /imports/:id (poll ~5s)
   API-->>A: counts (new/dup/error/conflict) + totals
   A->>API: POST /imports/:id/commit
   API->>DB: create PUBLISH job
   W->>DB: claim PUBLISH job
-  W->>DB: per row -> upsert CommissionRecord identity (exchangeId, dedupKey)
-  W->>DB: upsert CommissionVersion (unique commissionId+batchId); recompute reconciledAmount (latest supersedes)
-  W->>DB: enqueue ATTRIBUTE job; batch.status = PUBLISHED
+  alt referral activity
+    W->>DB: version ReferralSnapshot per UID and exact period
+    W->>DB: batch.status = PUBLISHED (no wallet job)
+  else commission evidence
+    W->>DB: upsert CommissionRecord identity (exchangeId, dedupKey)
+    W->>DB: upsert CommissionVersion; recompute reconciledAmount
+    W->>DB: enqueue ATTRIBUTE job; batch.status = PUBLISHED
+  end
 ```
 
-Versioned publish (Req 6.7, 7.8): a commission has a **stable identity**
+#### Raw landing layer — `raw_<exchange>` before the target tables (Req 6.23–6.26)
+
+Every source, file or API, first lands **unchanged records** in a raw table of its
+exchange, then an **asynchronous transform** maps raw records into the target tables
+(`StagingRow` → `ReferralSnapshot`/`CommissionRecord` for manual files,
+`ActivityMetricCurrent` for API). Loading never depends on the adapter's field
+contract, so an exchange that renames, adds or drops columns cannot make the import
+step fail; the difference is judged later, at transform, and can be re-run after a
+fix without asking the exchange or the admin for the data again.
+
+```mermaid
+flowchart LR
+  subgraph EXTRACT_LOAD["LOAD job (worker) — format-level only"]
+    F[File upload<br/>xlsx / csv / json] --> R
+    A[Official API<br/>Bybit, later others] --> R
+    R["raw_record partitions<br/>raw_bybit · raw_mexc · raw_binance · raw_bingx · raw_default<br/>payload jsonb, overwrite per slice"]
+  end
+  subgraph TRANSFORM["TRANSFORM job (async) — contract-level"]
+    R --> T[adapter.transform:<br/>fingerprint → drift → alias → map → validate → minimize]
+    T -->|manual file| S[StagingRow → admin preview → publish]
+    T -->|API| M[digest gate → ActivityMetricCurrent + change log]
+  end
+  S --> TG[(Target tables / referral_activity_v)]
+  M --> TG
+```
+
+**Why JSONB rows instead of re-creating a typed table per load.** The requested
+behavior is "each load overwrites the data and the schema, so import never fails".
+Storing each source record as one `jsonb` payload gives exactly that: the schema of a
+load is whatever keys its records carry, recorded as a fingerprint on the load.
+Re-creating real columns on every load (dynamic `DROP/CREATE TABLE` from uploaded
+headers) is not used, because it turns untrusted header text into DDL (injection
+risk), takes `ACCESS EXCLUSIVE` locks that block the transform reading the previous
+load, guesses column types from strings, and puts tables outside Prisma migrations
+so `prisma migrate` reports drift.
+
+**Physical layout.** One parent table partitioned by exchange, so each exchange has
+its own table and the code has one path:
+
+```sql
+CREATE TABLE raw_record (
+  id              bigint GENERATED ALWAYS AS IDENTITY,
+  _source_system  text        NOT NULL,             -- exchange slug; partition key
+  _load_id        text        NOT NULL,             -- RawLoad.id
+  _loaded_at      timestamptz NOT NULL DEFAULT now(),
+  row_no          integer     NOT NULL,             -- file row or API position (page, index)
+  payload         jsonb       NOT NULL,             -- one source record, keys as delivered
+  PRIMARY KEY (_source_system, id)
+) PARTITION BY LIST (_source_system);
+CREATE TABLE raw_bybit   PARTITION OF raw_record FOR VALUES IN ('bybit');
+CREATE TABLE raw_mexc    PARTITION OF raw_record FOR VALUES IN ('mexc');
+CREATE TABLE raw_binance PARTITION OF raw_record FOR VALUES IN ('binance');
+CREATE TABLE raw_bingx   PARTITION OF raw_record FOR VALUES IN ('bingx');
+CREATE TABLE raw_default PARTITION OF raw_record DEFAULT;   -- an exchange without its own partition still loads
+CREATE INDEX ON raw_record (_load_id, row_no);
+```
+
+A new exchange gets its partition in the same migration that registers its adapter;
+until then its loads go to `raw_default` and still succeed. Column names follow the
+Helios convention (snake_case, `_`-prefixed audit columns). Prisma does not model
+partitions, so the tables live in raw SQL migrations and are accessed with
+`$queryRaw`; `RawLoad` is a normal Prisma model.
+
+**Slice and overwrite.** A *slice* is (exchange, dataset kind, source method, root
+account, period start, period end); for API it is one UTC day. Each load of a slice
+runs in one transaction under the slice advisory lock:
+1. insert a new `RawLoad` (state `LOADED`, row count, `fieldNames` = sorted union of
+   payload keys, `schemaFingerprint`, source metadata: sheet name, filename as-of,
+   response time, page count);
+2. `DELETE FROM raw_record WHERE _load_id IN (previous loads of the slice)` and mark
+   those loads `SUPERSEDED`;
+3. insert the new rows; commit; enqueue `TRANSFORM { loadId }`.
+Only the latest load of a slice keeps raw rows ("overwrite"). History is not lost: a
+manual file's original bytes stay in `ImportBatch.originalFile`, and API changes are
+kept in `ActivityMetricChange`. Overwrite never touches other slices, other periods
+or other roots of the same exchange.
+
+**What may still fail at LOAD.** Only format and safety rules, never the contract:
+unsupported extension, wrong file signature, size/row/column limits, ZIP bomb,
+formulas or macros, unreadable workbook/CSV/JSON, more than one worksheet when the
+adapter reads one, API transport/auth errors (Req 6.4, 6.24, 13.7). Header and value
+problems (missing/renamed/extra columns, bad decimals, duplicate UIDs, sheet period
+mismatch) are recorded and judged at TRANSFORM. The reader keys each record by its
+header text; a duplicate header gets a `__2` suffix and an empty header becomes
+`__col_<n>`, so every header layout can be stored.
+
+**Personal data at LOAD (NĐ 13/2023).** Before insert, the reader drops keys listed
+in the adapter's `contract.personal` (for example MEXC `Nickname`, `User tag`,
+`Identification`; Bybit `isKyc`, `KycLevel`, `depositAmount*`, `totalWalletBalance`,
+`remarks`). Unknown keys are kept, because they are exactly the drift a later
+contract version may need, and they are covered by retention: raw rows of a load
+that is `TRANSFORMED` are deleted after 30 days (or at the next overwrite). Raw
+payloads are never returned by an admin or public API; admins see field names and
+counts only.
+
+**Asynchronous TRANSFORM.** A `TRANSFORM { loadId }` job:
+1. stops as a no-op if the load is not the slice's current load (`SUPERSEDED`), so a
+   slow transform can never publish older data over a newer load;
+2. resolves the adapter (`ingestRegistry`, pinned `adapterId`/`contractVersion` for a
+   manual batch), reads the raw rows in `row_no` order, and runs the contract steps
+   (fingerprint → drift → alias → map → validate → minimize);
+3. manual file: writes `StagingRow` rows and sets the batch to `PREVIEW` (admin
+   publish unchanged); API: runs the API write model below (digest gate, diff upsert,
+   change log, roster);
+4. sets the load `TRANSFORMED`, or `FAILED` with the drift report (`BREAKING`) or a
+   safe error code; raw rows stay for a re-transform.
+Transform runs under the target's existing locks (activity period lock; `lockCashback`
+only at commission publish) and job lease fencing, so it never blocks the load of the
+next slice.
+
+**Re-transform (recovery).** After a developer adds an alias or a new contract
+version, an admin action "Re-run transform" enqueues `TRANSFORM` for the selected
+failed or quarantined loads (audited). This replaces re-uploading a file or
+re-fetching from the exchange; re-fetch is only needed when raw rows have expired.
+
+**Job flow.** Manual: `POST /api/admin/ingest/batches` → `LOAD` (was `PARSE`) →
+`TRANSFORM` → `PREVIEW` → admin commit → `PUBLISH` → (commission) `ATTRIBUTE`. API:
+`SYNC` fetches all pages of a day and performs the LOAD step in-process (so a
+partial page sequence never becomes a load), then enqueues `TRANSFORM`. `PARSE`
+jobs still queued at deploy are handled as `LOAD`.
+
+Versioned commission publish (Req 6.7, 7.8): a commission has a **stable identity**
 (`exchangeId, dedupKey`) and one **version per import occurrence** (`CommissionVersion`,
 unique per `(commissionId, batchId)`). Re-committing the same batch — or two publish
 workers racing on the same batch — upserts the same version and changes no
@@ -159,7 +350,486 @@ workers racing on the same batch — upserts the same version and changes no
 prior one; the identity's `reconciledAmount` is recomputed (default rule: **latest version
 supersedes**) and only the delta flows to cashback. Prior versions are retained for audit.
 (`dedupKey` composition is **[PENDING]** — Open decision #11, finalized against a real
-sample.)
+nonzero UID-level commission sample.)
+
+Referral activity publish is separate: identify a snapshot by exchange, root
+account, UID, and exact report period. Re-import of the same period versions the
+snapshot; it never adds period values. Rules:
+
+- **Which manual MEXC version is current.** The batch with the latest `sourceAsOf`
+  (tie: latest `createdAt`) is current. Preview and publish reject an export older
+  than the current one (`OLDER_REPORT`). Bybit API data does not use snapshot
+  versions; see "API write model", subject to the manual override rule below.
+- **Currency is per period, not per UID.** Publishing a new version sets
+  `current = false` on every snapshot row of the same (exchange, root, periodStart,
+  periodEnd) before inserting the new rows. A UID absent from the new export therefore
+  becomes "no data" for that period instead of keeping a stale value from an older export.
+- **Locking.** Activity publish takes a transaction advisory lock keyed on (exchange,
+  root, period), not `lockCashback`, so it never blocks wallet work, and it never
+  enqueues ATTRIBUTE. An admin-published correction for a Bybit period has precedence
+  over later API versions until the admin releases that override; API observations must
+  not silently undo an operator correction.
+
+Different overlapping periods remain individually queryable, not summed. An activity
+snapshot can show zero volume/earnings but cannot credit or reverse cashback. Keep
+`sourceAsOf` (when the source was exported) separate from `periodEnd` (what dates it
+covers) and `importedAt` (when this platform received it).
+
+#### Scheduled Bybit Affiliate activity sync (Req 6.17–6.20, 11.4, 13)
+
+**Scope and source semantics.** Use the official
+[Affiliate User List](https://bybit-exchange.github.io/docs/v5/affiliate/affiliate-user-list)
+endpoint with a master-account key that has only Affiliate read permission. Request
+`startDate` and `endDate` explicitly for each inclusive UTC calendar day and `size=100`;
+follow `nextPageCursor` until the list is empty or the cursor is empty (Bybit returns a
+cursor on the last full page, then one empty page). Map `userId` to opaque UID,
+`source` to the referral code, `tradeVol`/`takerVol`/`makerVol`/`tradfiTradeVol` to
+volume metrics in USDT, and each key/value of
+`commissionsVol` to reported commission in that asset. Do not sum BTC, USDT, etc.
+without a separate conversion rule. Do not map `commissionsVol` to the portal's
+pending balance, a settled commission, `CommissionRecord`, `CommissionVersion`,
+wallet, or withdrawal eligibility. Bybit documents volume updates at T+1; a
+30-minute fetch schedule means 30-minute *observation*, not 30-minute source data
+freshness. The API response `time` is a response observation time, not a source
+`as-of` or settlement timestamp.
+
+**Periods and correction window.** Each run fetches today and the previous two UTC
+days as separate exact periods. On first enable, backfill the previous 365 completed
+UTC days (configurable) as daily jobs. Cost grows with the roster size N:
+about `365 × (⌈N/100⌉ + 1)` requests (the `+1` is the trailing empty page), e.g.
+~18,600 requests (~31 min at 10 req/s) for 5,000 UIDs, so the backfill runs at low
+priority behind scheduled runs. Expose the earliest covered date and allow an admin to
+request older date ranges later. Revisit the most recent 30 completed days once per
+day for late source corrections. Do not combine a rolling 30-day response with daily
+rows, and do not claim a lifetime total when historical coverage is incomplete.
+Current-day rows are `partial` until the calendar day ends; completed days may still
+change with Bybit's T+1 update. Store `fetchedAt` and `responseObservedAt` separately.
+For `sourceAsOf`, each run samples up to 3 UIDs from the roster it has just fetched
+(whatever its size) with `GET /v5/user/aff-customer-info` and reads `volUpdateTime`.
+The probe found one identical value across every UID, so it is treated as a
+dataset-wide freshness mark, not a per-UID value; the request count stays constant
+as the roster grows. If the samples disagree, the call fails, or the roster is
+empty, keep `sourceAsOf = null` and record a safe warning. Use the value only after
+its timezone is confirmed (Open decision); until then, keep `sourceAsOf = null`. Daily periods are additive: the probe's sum of 30 daily
+responses equalled the 30-day range response, so admin range reports may sum
+disjoint daily API snapshots (never overlapping ones, Req 6.14).
+
+**Verified API behavior (read-only probe, 2026-09-26).** Evidence only: the roster
+held 54 UIDs at probe time. No design rule depends on that number.
+
+| Call | Result | Design consequence |
+|------|--------|--------------------|
+| `GET /v5/user/query-api` | `readOnly=1`, only `Affiliate` permission, `ips=["*"]`, `deadlineDay=90`, `expiredAt=2026-12-26` | Readiness check on every run; alert 14 days before expiry; bind a stable Railway egress IP for production (Req 13.12) |
+| `aff-user-list`, no dates/flags | identity fields only; all volumes `""`, `commissionsVol={}` | Always send `startDate` and `endDate` |
+| `aff-user-list` + `startDate`/`endDate` | `takerVol`, `makerVol`, `tradeVol`, `tradfiTradeVol`, `commissionsVol{BTC,ETH,MNT,USDC,USDT}`; dates echoed | Mapped fields (Req 6.17). Inactive UIDs return `""` volume (EMPTY, not an error); commission assets return `"0"` |
+| `+ needDeposit/need30/need365` | adds `depositAmount*`, rolling `*30Day`/`*365Day`, `commissions30Day/365Day` | Not requested (Req 6.20); rolling values are derivable |
+| Date ranges | 1 day to 366 days accepted; data present one year back; future `endDate` accepted; `startDate > endDate` → `610015 Params Err`; `startDate` alone accepted but `endDate` not echoed | Daily explicit periods; treat 610015 as a permanent bug, not a retry |
+| Same day, T+1 | Yesterday had nonzero commission while every UID's volume was still empty | Revisit window must cover volume arriving after commission |
+| `GET /v5/user/aff-customer-info?uid=` | 30/365-day aggregates, `totalWalletBalance` band, `KycLevel`, `vipLevel`, `volUpdateTime`, `depositUpdateTime`, pay/card fields | Used only for `volUpdateTime`; store nothing else from it |
+| Rate-limit headers | `x-bapi-limit: 10`, `x-bapi-limit-status`, `x-bapi-limit-reset-timestamp` per endpoint | Shared limiter from headers |
+| `/v5/broker/earnings-info`, `/v5/broker/account-info` | `3500403 Only available to exchange broker main-account` | Broker earnings are not a source for this account |
+
+The probe stored raw responses only under the gitignored `data/bybit/` folder. Its
+output recorded field shapes and counts, never customer values.
+
+**Adapter boundary.** `BybitAffiliateApiAdapter` (a subclass of `ApiSourceAdapter`,
+see "Source adapter framework") signs the request using worker-only credentials. It
+uses the documented rate-limit response headers (`x-bapi-limit*`, 10 req/s per
+endpoint observed) and bounded backoff for transient/10006 failures, with a shared
+per-key limiter across worker replicas. A trailing empty page is normal;
+"suspiciously empty" applies to the whole period, not one page. Validate `retCode`,
+requested date echo, cursor progress, unique nonempty UID per period, valid asset
+codes, and nonnegative decimal strings before producing normalized rows. Hold all
+pages of one period in worker memory (bounded by roster size), then validate the
+complete period. An interrupted, repeated-cursor, malformed, or suspiciously empty
+fetch (0 rows when the roster had rows) is quarantined and writes nothing. Persist
+only the mapped fields, never unrelated Bybit profile, KYC, deposit, or remark
+fields. Full API responses are not stored: Bybit keeps at least one year of daily
+history, so re-fetching the period replaces replaying a stored payload.
+
+**API write model (in place + change log, no per-run copy).** A 30-minute schedule
+over three open days would create up to 144 full snapshot copies a day if every
+changed fetch became a new version. API data therefore uses a different sink from
+manual files, behind the same adapter/envelope/validation code:
+
+0. **Input.** The `TRANSFORM` job of the day's current `RawLoad` supplies the
+   mapped rows; `SYNC` itself only fetches and loads raw.
+1. **Period digest gate.** `ActivityPeriodStatus` holds one row per (exchange, root,
+   UTC day) with `contentDigest` (SHA-256 of sorted UID, referral code, metric
+   kind/asset/value state/amount; request time and page order excluded), state,
+   row count, `fetchedAt`, `responseObservedAt`, `sourceAsOf`, and schema
+   fingerprint. An equal digest updates only `lastCheckedAt`/`SyncRun`; no metric
+   row is touched. Completed days usually end here.
+2. **Row-level diff upsert.** A changed digest loads the normalized rows into a
+   transaction-scoped temp table (`ON COMMIT DROP`) and runs, under the (exchange,
+   root, day) advisory lock and lease fencing:
+
+   ```sql
+   INSERT INTO activity_metric_current AS t
+     (exchange_id, root_account, uid, period_date, kind, asset, value_state, amount, last_changed_run_id)
+   SELECT exchange_id, root_account, uid, period_date, kind, asset, value_state, amount, $run_id
+   FROM tmp_sync_rows
+   ON CONFLICT (exchange_id, root_account, uid, period_date, kind, asset)
+   DO UPDATE SET value_state = EXCLUDED.value_state, amount = EXCLUDED.amount,
+                 last_changed_run_id = EXCLUDED.last_changed_run_id, updated_at = now()
+   WHERE (t.value_state, t.amount) IS DISTINCT FROM (EXCLUDED.value_state, EXCLUDED.amount)
+   RETURNING t.*;
+   ```
+
+   followed by one `UPDATE … SET value_state = 'ABSENT', amount = NULL` for rows of
+   that day missing from `tmp_sync_rows` (only for a complete fetch). Every row
+   returned by either statement is appended to `ActivityMetricChange` (old → new,
+   run id). `INSERT … ON CONFLICT` is chosen over `MERGE`: it is atomic under
+   concurrent inserts on any PostgreSQL version, whereas `MERGE` can raise a unique
+   violation when two sessions both take the NOT MATCHED branch (safe here only
+   because of the advisory lock) and needs PostgreSQL 17 for `WHEN NOT MATCHED BY
+   SOURCE`. Prisma cannot express either, so the statements live in
+   `packages/core` via `$executeRaw`/`$queryRaw` with bound parameters.
+3. **Sparse rows.** A metric row is inserted only when its value is nonzero; a row
+   that already exists is updated even to zero (a real correction). The 5 commission
+   assets that Bybit always returns as `"0"` and the `""` volume of inactive UIDs
+   (about 94% of rows in the probe) are not stored. Meaning is carried by
+   completeness: day status `COMPLETE` + UID in `ActivityRoster` + no metric row =
+   "reported no activity"; no complete day status = "no data" (Req 6.18).
+4. **Roster.** `ActivityRoster` keeps one row per (exchange, root, UID) with
+   referral code, `firstSeenAt`, `lastSeenAt`, and state `ACTIVE | GONE`. A UID
+   missing from 3 consecutive complete roster fetches becomes `GONE` (history
+   kept); a returning UID becomes `ACTIVE` again. Roster size is not a daily row count.
+5. **Day lifecycle.** `OPEN` (today, `partial`) → `SETTLING` (D-1, D-2, refreshed
+   every run because T+1 volume can arrive after commission) → `SEALED` (≥ D+3,
+   touched only by the daily 30-day reconcile when its digest changes). The history
+   of any day is its `ActivityMetricChange` rows; no snapshot copies.
+6. **Manual override.** An admin-published manual activity batch for the same exact
+   period sets `ActivityPeriodOverride`; the read view prefers it until an admin
+   releases it. API runs still update `activity_metric_current` and the change log
+   meanwhile, so releasing the override shows current API data immediately.
+7. **Retention.** `SyncRun` rows with state `SUCCEEDED` and no change are purged
+   after 90 days; failed/quarantined runs are kept 1 year; `ActivityMetricChange`
+   is kept as audit history (partitioned by month once Task 29 applies).
+
+No automatic API write enqueues ATTRIBUTE or touches commission/wallet tables.
+Manual files keep the full-snapshot versioning above (`ReferralSnapshot` +
+`ReferralMetric`, current by latest `sourceAsOf`). Admin reads go through one SQL
+view, `referral_activity_v`, that unions current manual snapshots and API current
+metrics with a `source` column and applies overrides.
+
+The new admin range report selects manual rows only for their exact declared
+`periodStart`/`periodEnd`. For API rows it includes UTC calendar day buckets
+that overlap the requested range, sums
+non-overlapping daily amounts by (exchange, root, UID, kind, asset), and returns
+`coverageDays` plus `partial` when either boundary falls inside a UTC day, a requested day is OPEN or lacks a complete
+`ActivityPeriodStatus`. The roster and completed day status identify a known UID
+with no stored metric as no activity; an unfetched day is unknown. Page boundaries
+are distinct UIDs, and each UID page contains all source/root groups for those UIDs.
+The UI should explain that a partial local-time boundary includes the entire
+overlapping UTC bucket; Bybit's daily data cannot be prorated.
+
+**Schedule and operation.** `ExchangeSyncConfig` is one row per exchange, with
+`enabled` (false until connector, key and network access pass a readiness check),
+`intervalMinutes` constrained to `30 | 60 | 720 | 1440` (default 30), `nextRunAt`,
+`lastAttemptAt`, `lastSuccessAt`, `lastFetchedPeriodEnd`, `consecutiveFailures`,
+`pausedReason`, and actor/timestamps. The configured affiliate root is referenced
+server-side; a future multi-root connector may add root-specific configuration
+without changing the admin's exchange interval choice. `SyncRun` records one
+attempt's exchange/root, trigger (`SCHEDULED` or `MANUAL`), state, page/period
+checkpoint, start/end, safe error code, changed-row count and days written. Neither table stores
+credentials. A worker scheduler tick claims due configs in Postgres, atomically
+enqueues one `SYNC` job and advances `nextRunAt` from the previous due time to the
+first future slot (skip missed slots, no burst after downtime). A unique active
+run/lease plus per-(exchange, root) advisory lock prevents overlap across replicas.
+The worker rechecks enabled/readiness before a scheduled run and rechecks its lease
+before publish. Manual `Sync now` may run while the schedule is disabled if the
+connector is ready, but never overlaps another run. An admin schedule edit applies
+on the next tick without a Railway restart and is written to `SyncConfigAudit`.
+
+**Failure and UI.** Retry only transient network/429/5xx failures with jitter and
+rate-limit reset headers. Pause on invalid signature, missing Affiliate permission,
+expired key, or IP allowlist rejection until credentials/network are fixed. After two
+consecutive failures or timeout, alert the operator and keep the last complete
+snapshot visible with its measured age. `/admin/ingest/connectors` shows readiness, enabled
+state, interval, next run, last attempt/success, covered period, partial/source
+freshness distinction, safe failure code, and run history per exchange; it never
+fetches Bybit on render. `/admin/reports/activity` shows UID, referral code, trade volume
+(taker/maker/TradFi on expand) and asset-keyed reported commissions, clearly
+labeled as activity. Public
+lookup remains wallet-only. Admin APIs enforce session/CSRF and return
+`Cache-Control: private, no-store`; secret values and raw responses never leave
+the worker. The current key has no IP allowlist (`ips=["*"]`) and therefore
+expires after 90 days (2026-12-26). Production needs a stable Railway outbound IP
+bound to the key, which also removes the 90-day expiry. Key/secret rotation must be
+possible without changing the schedule, and `/admin/ingest/connectors` shows the key's expiry.
+
+#### Source adapter framework (Req 6.10, 6.21)
+
+Every exchange source (XLSX/CSV file or official API) is a subclass of one abstract
+base, so Bybit, Binance, MEXC, BingX and later exchanges only declare their field
+contract and override the exchange-specific hooks. The pattern is the same as a
+Python `abc.ABC` hierarchy, but it is written in **TypeScript** inside
+`packages/core`: the worker, Prisma client, Decimal handling and `@cashback/contracts`
+schemas are already TypeScript, and a separate Python runtime would add a second
+Railway service, a second copy of the normalization rules, and an RPC boundary in
+the middle of the publish transaction.
+
+```mermaid
+classDiagram
+  class SourceAdapter~TRecord~ {
+    <<abstract>>
+    +id: string
+    +exchangeSlug: string
+    +datasetKind: DatasetKind
+    +sourceMethod: SourceMethod
+    +contractVersion: string
+    +contract: FieldContract
+    +ingest(input) NormalizedEnvelope
+    #readRecords(input)* AsyncIterable~TRecord~
+    #fieldNames(record)* string[]
+    #mapRecord(record, fields)* NormalizedRow
+    #checkPeriod(input, meta)
+    #fingerprint(fieldNames) SchemaFingerprint
+    #classifyDrift(fp, previous) DriftReport
+    #parseDecimal(text) Decimal
+    #normalizeUid(text) string
+    #minimize(row) NormalizedRow
+  }
+  class FileSourceAdapter~TRecord~ {
+    <<abstract>>
+    +maxBytes: number
+    +maxRows: number
+    +assertUpload(file, metadata)*
+    +parse(bytes, batch)* NormalizedEnvelope
+    #assertFileSafe(bytes)
+  }
+  class XlsxSourceAdapter {
+    <<abstract>>
+    #assertSafeXlsx()
+    #readRecords()
+    #sheetPeriod(name)*
+  }
+  class CsvSourceAdapter {
+    <<abstract>>
+    #readRecords()
+  }
+  class ApiSourceAdapter~TRecord~ {
+    <<abstract>>
+    #sign(request)*
+    #fetchPage(period, cursor)* Page
+    #nextCursor(page)* string
+    #classifyError(code)* ErrorClass
+    #readiness()* ReadinessReport
+    #sourceAsOf(records)
+    #readRecords()
+  }
+  SourceAdapter <|-- FileSourceAdapter
+  SourceAdapter <|-- ApiSourceAdapter
+  FileSourceAdapter <|-- XlsxSourceAdapter
+  FileSourceAdapter <|-- CsvSourceAdapter
+  XlsxSourceAdapter <|-- MexcReferralXlsxAdapter
+  CsvSourceAdapter <|-- BybitNormalizedCsvAdapter
+  ApiSourceAdapter <|-- BybitAffiliateApiAdapter
+  XlsxSourceAdapter <|-- BinanceReferralXlsxAdapter : future
+  ApiSourceAdapter <|-- BingxAffiliateApiAdapter : future
+```
+
+- **Template methods, split at the raw layer.** `load()` (format level: read
+  records, key by header, drop `contract.personal`, write the raw slice) and
+  `transform()` (contract level: collect field names → fingerprint → classify drift
+  against the last accepted fingerprint → resolve aliases → map each record →
+  validate (decimal, UID text, asset code, duplicates) → minimize to mapped fields →
+  emit a `NormalizedEnvelope`) are final. Subclasses override only readers/hooks
+  (`readRecords`, `sheetPeriod`, `fetchPage`, `sign`, `mapRecord`…) and cannot skip
+  validation or minimization. `load()` may fail only on format/safety rules;
+  everything else is a transform result.
+- **Field contract.** Each adapter declares data, not code, for its columns:
+
+  ```ts
+  const contract: FieldContract = {
+    version: "bybit-affiliate@1",
+    fields: [
+      { target: "uid",          source: "userId",   aliases: [],            type: "uidText",  required: true },
+      { target: "referralCode", source: "source",   aliases: [],            type: "text",     required: false },
+      { target: "TRADE_VOLUME", source: "tradeVol", aliases: ["tradingVolume"], type: "decimalOrEmpty", unit: "USDT", required: true },
+      { target: "REPORTED_COMMISSION", source: "commissionsVol", type: "assetMap", required: true },
+    ],
+    ignored: ["registerTime", "startDate", "endDate", "tradeVol30Day"],   // known, not mapped; kept in raw (30 days)
+    personal: ["remarks", "isKyc", "KycLevel", "depositAmount30Day", "totalWalletBalance"], // dropped at LOAD, never stored (Req 6.20)
+  };
+  ```
+
+  A rename that the exchange announces is a new alias or a new contract version, not
+  new parsing code. Fields listed in `ignored` are known and silent; any other
+  unknown field is additive drift.
+- **Descriptor.** Each file adapter also declares `accept` (file extensions),
+  `uploadFields` (metadata the form must collect) and `affectsCashback` (true only
+  for `COMMISSION`). `describe()` turns these into the JSON returned by
+  `GET /api/admin/ingest/adapters`, so the admin form follows the registry (Req 18.7).
+- **File dispatch.** `FileSourceAdapter.assertUpload()` and `parse()` own the
+  source-specific validation and parser call. Upload and worker parse resolve the
+  same registered adapter; they do not branch on adapter ID or use a second registry.
+  The route derives allowed extensions from active descriptors; the adapter checks
+  file content. Persist adapter ID and contract version when creating the batch so
+  replay selects that exact version. New uploads select the latest active version;
+  the form lists each active adapter separately when one dataset has several formats.
+- **Registry.** Adapters register themselves in `ingestRegistry` keyed by
+  (exchange, dataset kind, source method, format, contract version).
+  Registration rejects duplicate keys and a file adapter whose `accept` extensions
+  disagree with its format. Older contract versions stay registered for replay
+  from `originalFile`; only the latest active version appears in upload choices.
+- **Layout.** `packages/core/src/ingest/base/` (abstract classes, contract, drift,
+  decimal/UID helpers), `ingest/file/` (XLSX safety, CSV reader), `ingest/api/`
+  (signing, limiter, pagination, retry), `ingest/exchanges/<slug>/` (one file per
+  adapter plus its fixtures), `ingest/sinks/` (manual snapshot sink, API in-place
+  sink). The existing `mexc-parser.ts`, `bybit-parser.ts` and `xlsx-safe.ts` move
+  into this layout without behavior change first, then gain drift reporting.
+
+#### Schema drift policy (Req 6.21)
+
+Exchanges change exports and APIs without notice. A change must never corrupt
+published data or fail silently.
+
+- **Fingerprint.** `SchemaFingerprint` = SHA-256 of the sorted `name:type` pairs of
+  the header row (file) or the union of record keys across all pages (API), plus the
+  sorted key set of nested asset maps (`commissionsVol`). It is stored on
+  `ImportBatch.schemaFingerprint` (manual) or `ActivityPeriodStatus.schemaFingerprint`
+  (API) and compared with the last *accepted* fingerprint for the same adapter.
+- **Classification and action.**
+
+  | Class | Detected when | Manual file | API sync |
+  |-------|---------------|-------------|----------|
+  | `SAME` | fingerprint equal | normal | normal |
+  | `ADDITIVE` | new unknown field or new asset key; all required fields valid | preview warning, publish allowed | continue; warning on run and `/admin/ingest/connectors`; new asset stored as new metric rows |
+  | `ALIASED` | a required field is missing but a declared alias is present | preview warning naming the alias | continue with warning |
+  | `BREAKING` | required field missing without alias, type change (e.g. number → object), unparseable decimal in a required field, date echo mismatch | batch `FAILED` with the drift report; nothing staged for publish | run `QUARANTINED`, connector `PAUSED` with `SCHEMA_DRIFT`, alert; last complete data stays visible as stale |
+  | `SEMANTIC` | meaning changed, names unchanged (not detectable by schema) | — | daily reconcile compares a sampled UID/day with an admin-entered portal value; mismatch beyond tolerance alerts |
+
+- **Consistency.** Bybit normalized CSV currently rejects any unknown header; it
+  moves to the same rule as MEXC (unknown = `ADDITIVE` warning, missing required =
+  `BREAKING`).
+- **Recovery.** A developer adds an alias or a new contract version and deploys.
+  The admin runs "Re-run transform" on the failed loads; their raw rows are still
+  stored, so neither a re-upload nor a re-fetch is needed. The admin then resumes
+  the connector. Only when raw rows have expired (30 days) does a "re-sync range"
+  re-fetch API days (Bybit history ≥ 1 year) or a manual file get re-loaded from its
+  stored `originalFile`.
+- **Accepted fingerprint** advances only after a batch/period is published, so a
+  quarantined drift is reported again on every run until fixed.
+
+#### Use cases: data that differs from the initial load
+
+**A. Scheduled API sync**
+
+```mermaid
+flowchart LR
+  sched(("⏱ Scheduler"))
+  admin(("👤 Admin"))
+
+  subgraph API["API sync — REFERRAL_ACTIVITY only, never wallet/commission"]
+    direction TB
+    UC0(["UC0 Initial load:<br/>enable + backfill 365 days"])
+    UCR(["Run sync:<br/>open days D, D-1, D-2"])
+    UCF(["Fetch all pages<br/>+ validate period"])
+    UCD(["Detect schema drift<br/>(fingerprint)"])
+    UCW(["Write changes<br/>(digest gate + diff upsert)"])
+    UC15(["UC15 Resume after fix<br/>→ re-sync quarantined days"])
+    UC16(["UC16 Manual override of an API day"])
+    UC17(["UC17 Release override"])
+
+    subgraph DATA["Data differs from last load"]
+      UC1(["UC1 Unchanged → no write"])
+      UC2(["UC2 Value corrected / T+1 volume<br/>→ upsert + change log"])
+      UC3(["UC3 New UID → roster + metrics"])
+      UC4(["UC4 UID missing → ABSENT;<br/>GONE after 3 runs"])
+      UC13(["UC13 Sealed day changed<br/>in daily reconcile"])
+    end
+    subgraph DRIFT["Schema differs from contract"]
+      UC5(["UC5 New asset → ADDITIVE"])
+      UC6(["UC6 New field → ADDITIVE, ignored"])
+      UC7(["UC7 Renamed with alias → ALIASED"])
+      UC8(["UC8 Required missing / type change<br/>→ BREAKING: quarantine + pause"])
+    end
+    subgraph FAIL["Fetch rejected — nothing written"]
+      UC9(["UC9 Page failure / timeout /<br/>repeated cursor"])
+      UC10(["UC10 0 rows, roster non-empty"])
+      UC11(["UC11 Duplicate UID"])
+      UC12(["UC12 Key expired / permission / IP<br/>→ pause"])
+    end
+    UC14(["UC14 Semantic change<br/>(reconcile mismatch)"])
+  end
+
+  bybit(("🏦 Exchange API"))
+  ops(("🚨 Operator alert"))
+
+  sched --> UCR
+  admin --> UC0
+  admin --> UC15
+  admin --> UC16
+  admin --> UC17
+  UC0 -. include .-> UCF
+  UC15 -. include .-> UCF
+  UCR -. include .-> UCF
+  UCF -. include .-> UCD
+  UCD -. include .-> UCW
+  UCF --- bybit
+  DATA -. extend .-> UCW
+  DRIFT -. extend .-> UCD
+  FAIL -. extend .-> UCF
+  UC14 -. extend .-> UCR
+  UC8 --> ops
+  FAIL --> ops
+  UC14 --> ops
+```
+
+**B. Manual file import (XLSX/CSV)**
+
+```mermaid
+flowchart LR
+  admin(("👤 Admin"))
+  subgraph FILE["Manual file import — any exchange adapter"]
+    direction TB
+    UF1(["UF1 Upload file + preview"])
+    UFP(["Publish snapshot version"])
+    UF2(["UF2 Same period, newer as-of<br/>→ replace version"])
+    UF3(["UF3 Older as-of<br/>→ OLDER_REPORT, publish blocked"])
+    UF4(["UF4 Extra column / new asset<br/>→ ADDITIVE warning"])
+    UF5(["UF5 Missing header / bad sheet period<br/>→ loads raw, TRANSFORM FAILED; formula → LOAD FAILED"])
+    UF6(["UF6 Bad rows (UID, decimal, duplicate)<br/>→ row flags, publish blocked"])
+    UF7(["UF7 Re-parse stored original<br/>with newer contract version"])
+    UC16(["UC16 Same exact period as an API day<br/>→ manual override"])
+  end
+  admin --> UF1
+  admin --> UFP
+  admin --> UF7
+  UF3 -. extend .-> UF1
+  UF4 -. extend .-> UF1
+  UF5 -. extend .-> UF1
+  UF6 -. extend .-> UF1
+  UF2 -. extend .-> UFP
+  UC16 -. extend .-> UFP
+  UF7 -. include .-> UF1
+```
+
+| UC | Trigger | Detected by | System action | Data written | Admin sees |
+|----|---------|-------------|---------------|--------------|------------|
+| UC0 | Admin enables a ready connector | readiness passes | backfill 365 completed days as low-priority daily jobs, then schedule | roster, sparse metrics, day status `SEALED`/`SETTLING`/`OPEN`, change log (initial insert) | coverage bar, earliest covered day |
+| UC1 | Scheduled run | period digest equal | skip writes | `SyncRun`, `lastCheckedAt` only | "checked, no change" |
+| UC2 | T+1 volume, late commission, source correction | digest differs; row `IS DISTINCT FROM` | upsert changed rows | changed metric rows + `ActivityMetricChange` | changed-row count per run |
+| UC3 | Customer signs up via referral | UID not in roster | insert roster row; metrics only if nonzero | `ActivityRoster`, metrics | new UID count |
+| UC4 | UID removed / unlinked at exchange | UID absent from a complete fetch | existing metric rows → `ABSENT`; roster `GONE` after 3 complete runs | metric update + change log, roster state | "UID no longer reported" |
+| UC5 | Exchange adds an asset (e.g. `SOL`) | new key in asset map | store as new `REPORTED_COMMISSION` asset | metric rows | `ADDITIVE` warning |
+| UC6 | Exchange adds a field | unknown key, not in `ignored` | ignore value | fingerprint only | `ADDITIVE` warning with field name (never its values) |
+| UC7 | Announced rename | alias matched | map via alias | as normal | `ALIASED` warning |
+| UC8 | Breaking change | required field missing/type change | quarantine run, pause connector | `SyncRun` quarantined, drift report | `SCHEMA_DRIFT` alert, stale label |
+| UC9 | Network/5xx/429 mid-period | missing pages, timeout, cursor repeat | discard period, retry with backoff | nothing for that period | failure count; alert after 2 in a row |
+| UC10 | Empty response anomaly | 0 rows vs non-empty roster | quarantine | nothing | alert |
+| UC11 | Source bug | same UID twice in one period | quarantine period | nothing | alert |
+| UC12 | Key expired, permission removed, IP not allowed | `classifyError` → `PAUSE`; readiness | pause connector | `pausedReason` | pause banner, expiry warning 14 days ahead |
+| UC13 | Daily reconcile of 30 sealed days | digest differs | diff upsert | changed rows + change log | "late correction on day X" |
+| UC14 | Meaning changed silently | sampled portal value ≠ API value | alert, no auto action | reconcile record | mismatch alert |
+| UC15 | Admin resumes after deploy fix | new contract version registered | re-fetch quarantined range | as UC2/UC3 | quarantine cleared |
+| UC16 | Admin uploads manual activity for an API day | same exact period | publish manual snapshot + override | manual snapshot, override row | "manual override active" |
+| UC17 | Admin releases override | explicit action (audited) | view switches to API data | override inactive, audit | API values |
+| UF1–UF7 | Manual upload | LOAD (format/safety) then TRANSFORM (contract + drift) | preview, flags, publish rules above | raw slice overwritten; staging rows; snapshot version on publish | preview warnings / errors |
+| UC18 | Admin re-runs transform after a fix | load `FAILED`/quarantined, raw rows present | enqueue `TRANSFORM` for selected loads (audited) | as UC2/UF1 from the stored raw rows | load `TRANSFORMED`; no re-upload or re-fetch |
+| UC19 | A newer load arrives while an older one is still transforming | `RawLoad` not current | older `TRANSFORM` exits as no-op | nothing from the older load | only the newer load's result |
 
 #### Cashback lookup by exchange + UID (Req 14)
 
@@ -259,22 +929,19 @@ sequenceDiagram
   withdrawal per UID still goes to admin review regardless of amount (Req 9.5, 15.9).
 
 #### Bybit MVP implementation (2026-09-16)
-- Normalized Bybit CSV v1 is the first adapter. Native export mapping and XLSX remain
-  pending a real sample. UTC, explicit per-currency commissions, strict headers and
+- Normalized Bybit CSV v1 is the first adapter. Native Bybit export mapping remains
+  pending a real Bybit sample. UTC, explicit per-currency commissions, strict headers and
   bounded rows; transaction IDs fall back to aggregate period identities when absent.
 - New originals are stored privately in `ImportBatch.originalFile` (bounded BYTEA)
   rather than container-local disk, so web and worker share durable input. Object
   storage remains the longer-term storage design. See `apps/web/docs/bybit-cashback.md`.
-- Publish, UID ownership and ledger mutations use a transaction-scoped Postgres
+- Commission publish, attribution and ledger mutations use a transaction-scoped Postgres
   advisory lock for the low-volume MVP. Jobs carry a unique per-claim `lockedBy`
   token; business changes and DONE commit atomically only while the lease is valid.
 - `WalletEntry.remainingPending` prevents reversed credits from being released;
   immutable `balanceChanges` records the per-bucket deltas. Missing holding-period
   configuration keeps funds pending. Report freshness reflects applied ledger
   versions, not merely an uploaded or not-yet-attributed report.
-- The private **Your cashback** panel precedes the home hero/grid and shares data
-  with `/me/wallet`. It handles guests, unlinked UIDs, pending review/report, no data,
-  real zero balances and service errors separately. Poll only while visible.
 
 #### Attribution → cashback → wallet (Req 7, 8)
 
@@ -355,15 +1022,18 @@ for that UID account (Req 9.1); admin transitions require an admin session.
 - Heartbeat updates `heartbeatAt`/`leaseUntil` while running.
 - Reaper: jobs whose `leaseUntil < now()` return to `PENDING` (crash recovery, Req 12.3).
 - Commit path re-verifies the worker still holds the lease before writing results.
-- Job types: `PARSE`, `PUBLISH`, `ATTRIBUTE`, `RELEASE_HOLDS`, `SYNC` (disabled).
+- Job types: `LOAD` (was `PARSE`; queued `PARSE` jobs run as `LOAD`), `TRANSFORM`, `PUBLISH`, `ATTRIBUTE`, `RELEASE_HOLDS`, `SYNC` (enabled per exchange only after readiness checks).
 - `RELEASE_HOLDS` enqueued by a lightweight scheduler tick (worker interval).
+- `SYNC` uses the same queue but is eligible only for an enabled, ready exchange
+  schedule. A due check and enqueue/update of `nextRunAt` occur in one database
+  transaction; an active-run uniqueness guard also protects multi-replica workers.
 
 ### Environments & deployment (Req 6.5)
 
 | Aspect | Local / SIT | Production |
 |--------|-------------|------------|
-| Orchestration | Docker Compose | Railway services |
-| Postgres | compose container | Railway Postgres plugin |
+| Orchestration | local `pnpm` processes | Railway services |
+| Postgres | **Railway hosted Postgres only** (pre-golive test/dev DB; never a local or substitute DB — `.kiro/steering/production-safety.md`) | Railway Postgres plugin |
 | Storage | compose (e.g. MinIO) or local dir | Railway volume / S3-compatible |
 | Web | `pnpm --filter web dev` | Railway web service |
 | Worker | `pnpm --filter worker dev` | Railway worker service (always-on) |
@@ -375,13 +1045,29 @@ build+test locally → migrations → push to Git → deploy to Railway. Migrati
 per deploy; builds reproducible.
 
 Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL_SECONDS`,
-`SYNC_INTERVAL_MINUTES` (sync disabled), `HOLDING_PERIOD_HOURS`,
+`HOLDING_PERIOD_HOURS`,
 `WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, plus admin auth provider vars
 **[PENDING]**, and for Req 15/16: `RESEND_API_KEY`, `EMAIL_FROM` (must be an address on a
 Resend-verified domain — the shared `resend.dev` testing domain only delivers to the
 account owner, per Resend's own docs), `OTP_TTL_MINUTES` (proposed 5),
 `OTP_MAX_ATTEMPTS` (proposed 5), `OTP_RESEND_COOLDOWN_SECONDS`, `OTP_DAILY_CAP_PER_UID`,
-`LOOKUP_RATE_PER_MINUTE`, `UID_SESSION_MINUTES` (proposed 30).
+`LOOKUP_RATE_PER_MINUTE`, `UID_SESSION_MINUTES` (proposed 30). The Bybit worker
+service additionally receives `BYBIT_AFFILIATE_API_KEY` and
+`BYBIT_AFFILIATE_API_SECRET` via local ignored `.env` or Railway service variables;
+neither belongs in source control or the browser/web service. Sync intervals are DB
+settings per exchange, not environment variables. A key with an IP allowlist needs
+stable Railway outbound egress before production sync can be enabled. The worker
+also reads `BYBIT_AFFILIATE_MASTER_UID` (affiliate root), `BYBIT_API_BASE`, and
+`BYBIT_VOL_TIMEZONE` (set only after the `volUpdateTime` zone is confirmed).
+
+**Connecting to Railway Postgres from a local machine.** Local processes and
+integration tests reach Railway through its public TCP proxy. On 2026-09-26 a Prisma
+connect plus `SELECT 1` took 2.2–3.4 s (8 samples) while TCP alone took about 60 ms, and
+the URL set no `connect_timeout`, so Prisma's 5 s default left about 1.6 s of margin. One
+slow moment then produced P1001 "Can't reach database server" although the database
+was healthy (no restart or FATAL in the Postgres logs). Local `DATABASE_URL` /
+`TEST_DATABASE_URL` values should carry `connect_timeout=30`. If the error persists,
+check Railway service status and logs; never switch to a local database.
 
 **Resend send path (Req 16):** OTP send happens **in-request**, not via the job queue —
 the claimant is waiting on the code, and a queued send would add worker-poll latency on
@@ -407,24 +1093,77 @@ until the reset.
 - **UID API** (`/api/uid/*`): `UidSession`-guarded; scopes every query to the session's
   `uidAccountId`; never trusts a client-sent UID/account id (Req 3.3, 15.10).
 - **Admin API** (`/api/admin/*`): admin-guarded; `Cache-Control: private, no-store`.
-  **Unchanged by Req 18** — the shell only remounts existing client sections onto
-  nested routes.
-- **Admin shell (Req 18):** presentation/routing only. Not a money, schema, worker,
-  or API redesign.
+  Ingest and report routes are grouped under `/api/admin/ingest/*` and
+  `/api/admin/reports/*` (Req 18.7); retired paths stay as aliases (Req 18.8).
+- **Admin shell (Req 18):** presentation/routing only. Not a money, schema or worker
+  redesign.
+
+  **Information architecture.** The nav is grouped by operator job, the same split
+  as the backend: *Data ingest* operates sources (source adapter → envelope → sink),
+  *Reports* reads the published result regardless of source. Neither exchange nor
+  file format is a nav level: exchange is a form/filter value, and format is
+  detected from the file by the registered adapter. A new format (JSON) or exchange
+  (BingX) is a new `SourceAdapter` subclass and appears in the existing upload form.
+
+  ```
+  Operations
+  ├─ Overview                      /admin
+  ├─ Data ingest
+  │   ├─ Uploads                   /admin/ingest/uploads         every file, exchange and dataset kind
+  │   │                            /admin/ingest/uploads/[id]    preview → publish
+  │   └─ API connectors            /admin/ingest/connectors      per-exchange schedule, run, resume, history
+  ├─ Reports
+  │   └─ Referral activity         /admin/reports/activity       manual + API (referral_activity_v)
+  ├─ Withdrawals                   /admin/withdrawals
+  └─ Exchanges · Offers · Referral links · Guides
+  ```
 
   Route group so login has no sidebar:
 
   ```
-  app/admin/login/page.tsx          # unauthenticated form; no shell
-  app/admin/(shell)/layout.tsx      # session guard + left nav + main pane
-  app/admin/(shell)/page.tsx                    # Overview / analytics
-  app/admin/(shell)/imports/page.tsx            # Bybit cashback operations
-  app/admin/(shell)/withdrawals/page.tsx        # Withdrawal queue
+  app/admin/login/page.tsx                          # unauthenticated form; no shell
+  app/admin/(shell)/layout.tsx                      # session guard + left nav + main pane
+  app/admin/(shell)/page.tsx                        # Overview / analytics
+  app/admin/(shell)/ingest/uploads/page.tsx         # upload form + batch list
+  app/admin/(shell)/ingest/uploads/[id]/page.tsx    # batch preview + publish
+  app/admin/(shell)/ingest/connectors/page.tsx      # API connector per exchange
+  app/admin/(shell)/reports/activity/page.tsx       # referral activity report
+  app/admin/(shell)/withdrawals/page.tsx            # Withdrawal queue
   app/admin/(shell)/exchanges/page.tsx
   app/admin/(shell)/offers/page.tsx
-  app/admin/(shell)/links/page.tsx              # Referral links
+  app/admin/(shell)/links/page.tsx                  # Referral links
   app/admin/(shell)/guides/page.tsx
   ```
+
+  **Registry-driven upload form (Req 18.7).** `GET /api/admin/ingest/adapters`
+  returns one descriptor per registered file adapter, built from the
+  `SourceAdapter` class (see "Source adapter framework"), never from hand-written UI
+  config:
+
+  ```json
+  [{ "id": "mexc-referral-xlsx", "exchangeSlug": "mexc", "datasetKind": "REFERRAL_ACTIVITY",
+     "sourceMethod": "NATIVE_FILE", "accept": [".xlsx"], "fields": ["rootAccount", "sourceTz", "period", "sourceAsOf"],
+     "affectsCashback": false, "contractVersion": "mexc-referral-xlsx@1" },
+   { "id": "bybit-normalized-csv", "exchangeSlug": "bybit", "datasetKind": "COMMISSION",
+     "sourceMethod": "NORMALIZED_FILE", "accept": [".csv"], "fields": ["rootAccount", "period", "reportType"],
+     "affectsCashback": true, "contractVersion": "bybit-csv@1" }]
+  ```
+
+  The admin picks exchange, then an active file adapter; the form renders that adapter's
+  fields and restricts the file picker to `accept`. The server resolves the adapter
+  again from exchange + dataset kind + file extension (`ingestRegistry`) and rejects
+  a mismatch; the client choice is never trusted. The batch list filters by exchange,
+  dataset kind, source method and status, and marks `COMMISSION` batches
+  **Affects cashback**. API adapters are listed on the connectors page, not in the
+  upload form.
+
+  **Retired routes (Req 18.8).** Each old page redirects after `requireAdminPage()`:
+  `/admin/imports`, `/admin/crawl-data`, `/admin/referrals` → `/admin/ingest/uploads`
+  (the old activity table moves to `/admin/reports/activity`); `/admin/sync` →
+  `/admin/ingest/connectors`. Old API paths reuse new handlers only when the
+  response contract is identical. `/api/admin/referral-snapshots` retains its
+  `snapshots[]` response and exact-period query through `listReferralSnapshots`;
+  the new activity report has a separate range contract.
 
   Layout: `requireAdminPage()` → redirect `/admin/login` if not admin; otherwise a
   two-column flex: sticky left nav (~14–16rem) + scrollable main. Nav items are
@@ -442,12 +1181,13 @@ until the reset.
 
   Polling: each page's `useEffect` interval runs only while that page is mounted
   and `document.visibilityState === "visible"` (Req 11.2, 18.4). Opening
-  `/admin/imports` in one tab and `/admin/withdrawals` in another is how the
+  `/admin/ingest/uploads` in one tab and `/admin/withdrawals` in another is how the
   operator works two jobs at once (shared `cashback_session` cookie). Do not
   keep hidden sections mounted, do not add split-pane, do not add SSE.
 
   `GET /admin` stays the overview landing after login. Deep links to
-  `/admin/links` etc. are first-class. No new `/api/admin/*` routes.
+  `/admin/links` etc. are first-class. Retired URLs redirect as listed above so
+  existing bookmarks work.
 - Route handlers are thin: validate with `contracts` zod schema → call `core` service →
   map result to response. No business logic in handlers.
 - **Exchange logo assets (static, in-repo):** logo files live at
@@ -528,7 +1268,18 @@ until the reset.
   behind a port for the same reason as `AuthPort`: swapping providers later should not touch
   callers.
 - `importService` — create batch, enqueue parse, preview, commit (enqueue publish).
-- `parserRegistry` — resolve adapter by (exchange, reportType, format).
+- `ingestRegistry` — resolve a `SourceAdapter` subclass by (exchange, dataset kind,
+  source method, format, contract version); adapters emit a shared
+  `NormalizedEnvelope` with typed activity or commission rows, warnings and a drift
+  report. File and API sources share validation, minimization and drift checks.
+- `manualSnapshotSink` — stage envelope rows for preview; publish a versioned
+  `ReferralSnapshot` (activity) or hand off to `commissionService` (commission).
+- `apiActivitySink` — digest gate, temp-table diff upsert into
+  `activity_metric_current`, `ABSENT` marking, change log, roster and day status.
+- `affiliateSyncService` — read the per-exchange schedule, select a configured root,
+  run the registered API adapter, validate all pages, apply the drift policy, and
+  write a complete period through `apiActivitySink`. It cannot call the commission
+  or cashback engine for Bybit Affiliate User List data.
 - `commissionService` — upsert commission identity + version (unique per commission+batch),
   recompute reconciled amount.
 - `attributionService` — lock the commission (`FOR UPDATE`), upsert the `UidAccount` for
@@ -559,18 +1310,34 @@ decimal string with an `asset`. Errors use a consistent envelope
 | `/api/uid/wallet` | GET | UID session | balances (incl. reserved, receivable) + as-of + history, scoped to the session's UID |
 | `/api/uid/withdrawals` | GET/POST | UID session | history / request |
 | `/api/uid/withdrawals/:id/cancel` | POST | UID session | cancel a not-yet-paid withdrawal |
-| `/api/admin/imports` | POST | admin | 202 + batchId |
-| `/api/admin/imports/:id` | GET | admin | status/preview/errors |
-| `/api/admin/imports/:id/commit` | POST | admin | idempotent |
+| `/api/admin/ingest/adapters` | GET | admin | registered file adapters: id, exchange, dataset kind, source method, `accept`, required fields, `affectsCashback`, contract version; no credentials |
+| `/api/admin/ingest/batches` | POST | admin | file + exchange/dataset kind/period/source timezone/source as-of/report type as the adapter requires; adapter re-resolved server-side; 202 + batchId |
+| `/api/admin/ingest/batches` | GET | admin | list; filters `exchangeId`, `datasetKind`, `sourceMethod`, `status`; cursor paged |
+| `/api/admin/ingest/batches/:id` | GET | admin | status/preview/errors, drift warnings, dataset kind, source method, period/as-of, wallet-impact flag |
+| `/api/admin/ingest/batches/:id/commit` | POST | admin | idempotent |
+| `/api/admin/reports/activity` | GET | admin | manual exact-period rows plus disjoint UTC API days in the requested range; page by UID, group by source/root/UID; asset-keyed metrics, source as-of, coverageDays, partial; no wallet values |
 | `/api/admin/uid-accounts/:id/activity` | GET | admin | per UID account, paginated |
 | `/api/admin/analytics` | GET | admin | click metrics |
-| `/api/admin/sync-status` | GET | admin | last success, as-of; no secrets |
+| `/api/admin/sync-status` | GET | admin | per-exchange readiness, enabled/interval, next run, last attempt/success, fetched period, source as-of if known, safe error; no secrets |
+| `/api/admin/ingest/connectors/:exchangeId` | GET/PATCH | admin | read/change enabled and interval (30/60/720/1440 minutes); audit actor |
+| `/api/admin/ingest/connectors/:exchangeId/run` | POST | admin | enqueue immediate run or `from`/`to` re-sync if ready and no active run; 202 |
+| `/api/admin/ingest/connectors/:exchangeId/resume` | POST | admin | clear a pause after readiness passes; audit actor |
+
+Retired aliases (Req 18.8): `/api/admin/imports*` →
+`/api/admin/ingest/batches*`, `/api/admin/sync-config/*` →
+`/api/admin/ingest/connectors/*`; `/api/admin/referral-snapshots` keeps its
+original response shape and authorization.
 | `/api/admin/withdrawals/:id/decision` | POST | admin | approve/reject/mark-paid |
 
-### Auth (v0.6: admin only)
+`POST /api/admin/ingest/batches` remains the manual entry point. The API connector
+produces the same `NormalizedEnvelope` directly in the worker; it does not call
+the admin upload route or need a second public ingestion API. Raw rows and private
+payloads are never returned by sync-status or public lookup.
+
+### Auth (admin only)
 - Define an `AuthPort` in `core` with `getSession(req)` and `requireAdmin`. Route handlers
-  depend on the port, not a concrete provider. There is no `requireCustomer` — end-user
-  identity is a `UidSession`, resolved by `uidSessionService`, not `AuthPort` (Req 3.2).
+  depend on the port, not a concrete provider. End-user identity is a `UidSession`,
+  resolved by `uidSessionService`, not `AuthPort` (Req 3.2).
 - **Interim implementation (until a provider is chosen):** email + password with server
   sessions. Credentials are stored as a `passwordHash` on `AdminAccount`; admin sessions
   live in the `Session` table (hashed token, expiry). These fields are **interim** and are
@@ -627,9 +1394,18 @@ decimal string with an `asset`. Errors use a consistent envelope
 
 ## Data Models
 
-Prisma schema is indicative, not final; refine when a real report sample arrives
-(**[PENDING]** dedup key, Open decision #11). Money fields are `Decimal`. UID is
-`String`. Timestamps stored UTC.
+Prisma schema is indicative, not final; commission dedup remains **[PENDING]**
+until a nonzero UID-level commission sample arrives (Open decision #11). The MEXC
+activity sample fixes only the activity mapping. Money fields are `Decimal`. UID is
+`String`. Timestamps are stored UTC with the source timezone retained.
+
+Ingest migration: backfill existing `ImportBatch` rows with
+`datasetKind = COMMISSION`, `sourceMethod = NORMALIZED_FILE` before making the columns
+required, then make `reportType` nullable. `importMetadataSchema` becomes a union on
+`datasetKind`: `reportType` is required for `COMMISSION`; `sourceAsOf` is required for
+manual `REFERRAL_ACTIVITY`. API sync does not create `ImportBatch` rows; its
+freshness lives on `ActivityPeriodStatus`. The Bybit/CSV/UTC checks in
+`createImportBatch` move into the adapter that `ingestRegistry` resolves.
 
 ```prisma
 // ---------- Content ----------
@@ -672,7 +1448,7 @@ model ReferralLink {
   clicks      ClickEvent[]
   // No relation to UidAccount: which referral link corroborated a commission is recorded
   // on CommissionVersion.referralLinkId (report-reported, per import row), not tracked
-  // per UID account (v0.6 — UidAccount is never client-linked to a referral link).
+  // per UID account (a UidAccount is never client-linked to a referral link).
 }
 
 model Guide {
@@ -762,8 +1538,8 @@ model RateLimitCounter {
   @@index([windowStart]) // supports pruning old windows
 }
 
-/// Admin-only server session (v0.6). End-user identity uses `UidSession` instead —
-/// see the UID-first models above. Kept separate so an admin session can never be
+/// Admin-only server session. End-user identity uses `UidSession` instead.
+/// Kept separate so an admin session can never be
 /// mistaken for withdrawal rights over a UID (Req 3.4).
 model Session {
   id        String   @id @default(cuid())
@@ -776,34 +1552,246 @@ model Session {
 }
 
 // ---------- Import & commission (versioned) ----------
-// NOTE (v0.6): `UidLink` and its partial unique index `uidlink_verified_owner` are removed.
-// The unit of cashback identity is now `UidAccount` (defined above, alongside the other
-// UID-first models), unique per (exchangeId, uid) with no verification status — see
-// "UID accounts (Req 5)" under Key flows.
 model ImportBatch {
   id          String   @id @default(cuid())
   exchangeId  String
   rootAccount String
-  reportType  ReportType
+  datasetKind IngestDatasetKind // REFERRAL_ACTIVITY or COMMISSION
+  sourceMethod IngestSourceMethod // NATIVE_FILE, NORMALIZED_FILE, OFFICIAL_API
+  reportType  ReportType? // TRANSACTION/AGGREGATE only for commission data
   periodStart DateTime
   periodEnd   DateTime
   sourceTz    String
-  fileRef     String   // private storage key
+  sourceAsOf  DateTime? // export time; required for manual activity
+  adapterId   String? // selected at upload; null only for pre-migration batches
+  contractVersion String? // selected at upload; legacy batches may be backfilled
+  schemaFingerprint String? // sorted header name:type hash (Schema drift policy)
+  driftReport Json?   // class + field names only (never values)
+  contentDigest String? // canonical mapped rows; identical re-upload is detected
+  fileRef     String   // private source locator
+  originalFile Bytes?  // bounded private original manual upload (replay with a newer contract)
+  // Manual files only. API sync does not create ImportBatch rows; see ActivityPeriodStatus.
+  publishedAt DateTime?
   status      BatchStatus @default(UPLOADED)
   totals      Json?
   createdAt   DateTime @default(now())
   rows        StagingRow[]
   versions    CommissionVersion[]
+  snapshots   ReferralSnapshot[]
 }
 
 model StagingRow {
   id         String @id @default(cuid())
   batchId    String
   batch      ImportBatch @relation(fields: [batchId], references: [id])
-  raw        Json
+  raw        Json    // mapped source fields only (after transform), never the raw payload
   normalized Json?
   flags      Json?   // { duplicate, error, unmappedUid, conflict }
 }
+
+enum RawLoadState { LOADED TRANSFORMING TRANSFORMED FAILED SUPERSEDED }
+
+/// One load of one slice into raw_record (raw SQL, partitioned by exchange).
+model RawLoad {
+  id                String @id @default(cuid())
+  exchangeSlug      String          // = raw_record._source_system
+  datasetKind       IngestDatasetKind
+  sourceMethod      IngestSourceMethod
+  rootAccount       String
+  periodStart       DateTime
+  periodEnd         DateTime
+  batchId           String?         // manual file
+  syncRunId         String?         // API
+  state             RawLoadState @default(LOADED)
+  rowCount          Int
+  fieldNames        Json            // sorted union of payload keys (names only)
+  schemaFingerprint String
+  sourceMeta        Json?           // sheet name, filename as-of, response time, pages
+  errorCode         String?
+  driftReport       Json?
+  loadedAt          DateTime @default(now())
+  transformedAt     DateTime?
+  @@index([exchangeSlug, datasetKind, rootAccount, periodStart, periodEnd, state])
+}
+// A partial unique index keeps one current load per slice:
+// UNIQUE (exchangeSlug, datasetKind, sourceMethod, rootAccount, periodStart, periodEnd)
+// WHERE state <> 'SUPERSEDED'. raw_record and its partitions are created in raw SQL.
+
+model ReferralSnapshot {
+  id             String   @id @default(cuid())
+  batchId        String
+  batch          ImportBatch @relation(fields: [batchId], references: [id])
+  exchangeId     String
+  rootAccount    String
+  uid            String
+  periodStart    DateTime
+  periodEnd      DateTime
+  // Legacy scalar volume/earnings columns are backfilled into ReferralMetric,
+  // then retired after readers switch. A UID has one parent, regardless of assets.
+  referralCode   String?  // operator's own code from the export; not personal data
+  partial        Boolean  @default(false) // current calendar day or manual sourceAsOf < periodEnd
+  commissionFieldState String // ABSENT, EMPTY, PRESENT; distinguishes missing map from {}
+  metrics        ReferralMetric[]
+  current        Boolean  @default(true) // see "Which version is current"
+  importedAt     DateTime @default(now())
+  @@unique([batchId, uid])
+  @@index([exchangeId, rootAccount, periodStart, periodEnd, current])
+  @@index([exchangeId, uid, periodEnd])
+}
+
+model ReferralMetric {
+  id          String @id @default(cuid())
+  snapshotId  String
+  snapshot    ReferralSnapshot @relation(fields: [snapshotId], references: [id])
+  kind        ActivityMetricKind // TRADE_VOLUME, TAKER_VOLUME, MAKER_VOLUME, TRADFI_VOLUME, REPORTED_COMMISSION (activity only)
+  asset       String // text, not enum: a new exchange asset needs no migration
+  valueState  MetricValueState // VALUE or EMPTY; no row = absent asset/field
+  amount      Decimal? @db.Decimal(30,10) // 0 is a known value; null only if EMPTY
+  @@unique([snapshotId, kind, asset])
+}
+
+// Current snapshot uniqueness for (exchangeId, rootAccount, uid, periodStart,
+// periodEnd) is a partial unique index WHERE current = true. Prisma cannot declare
+// it, so the migration adds it in raw SQL (as with the existing partial index).
+// Migration 1 adds ReferralMetric and backfills every existing MEXC snapshot's
+// tradingVolume/tradingAsset and reportedEarnings/earningsAsset, keeping the scalar
+// columns as compatibility reads. Migration 2 switches admin readers/writers to
+// metrics and verifies counts/amounts. Only then may a later migration remove the
+// legacy scalar columns. Never introduce one parent row per commission asset.
+
+model ExchangeSyncConfig {
+  exchangeId           String @id // one schedule per exchange
+  rootAccount          String // server-side master affiliate root mapping
+  enabled              Boolean @default(false)
+  intervalMinutes      Int @default(30) // SQL CHECK IN (30, 60, 720, 1440)
+  nextRunAt            DateTime?
+  lastAttemptAt        DateTime?
+  lastSuccessAt        DateTime?
+  lastFetchedPeriodEnd DateTime?
+  consecutiveFailures  Int @default(0)
+  pausedReason         String?
+  updatedBy            String?
+  updatedAt            DateTime @updatedAt
+}
+
+model SyncRun {
+  id             String @id @default(cuid())
+  exchangeId     String
+  rootAccount    String
+  trigger        SyncTrigger // SCHEDULED, MANUAL, BACKFILL, RECONCILE, RESYNC
+  state          SyncRunState // QUEUED, RUNNING, SUCCEEDED, FAILED, QUARANTINED, PAUSED
+  contractVersion String
+  changedRows    Int @default(0) // 0 + SUCCEEDED rows are purged after 90 days
+  driftReport    Json? // class + field names only
+  checkpoint     Json?  // bounded period/page position; resume revalidates full period
+  daysWritten    Json?  // UTC days whose metrics changed in this run
+  safeErrorCode  String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime @default(now())
+  @@index([exchangeId, createdAt])
+}
+
+model ActivityPeriodOverride {
+  exchangeId   String
+  rootAccount  String
+  periodStart  DateTime
+  periodEnd    DateTime
+  manualBatchId String
+  active       Boolean @default(true)
+  updatedBy    String
+  updatedAt    DateTime @updatedAt
+  @@id([exchangeId, rootAccount, periodStart, periodEnd])
+}
+
+model SyncConfigAudit {
+  id             String @id @default(cuid())
+  exchangeId     String
+  adminId        String
+  action         SyncAuditAction // UPDATE_CONFIG, RUN_NOW, RESUME, RESYNC_RANGE, RELEASE_OVERRIDE
+  before         Json?
+  after          Json?
+  createdAt      DateTime @default(now())
+}
+
+enum ActivityMetricKind { TRADE_VOLUME TAKER_VOLUME MAKER_VOLUME TRADFI_VOLUME REPORTED_COMMISSION }
+enum MetricValueState   { VALUE EMPTY ABSENT } // ABSENT only in activity_metric_current
+enum ActivityDayState   { OPEN SETTLING SEALED QUARANTINED }
+enum RosterState        { ACTIVE GONE }
+
+/// API sync: one row per UID per (exchange, root). Not a daily row.
+model ActivityRoster {
+  exchangeId   String
+  rootAccount  String
+  uid          String
+  referralCode String?
+  state        RosterState @default(ACTIVE)
+  missedRuns   Int @default(0) // consecutive complete fetches without this UID; GONE at 3
+  firstSeenAt  DateTime
+  lastSeenAt   DateTime
+  @@id([exchangeId, rootAccount, uid])
+}
+
+/// API sync: completeness, digest gate and freshness for one UTC day.
+model ActivityPeriodStatus {
+  exchangeId         String
+  rootAccount        String
+  periodDate         DateTime @db.Date
+  state              ActivityDayState
+  contentDigest      String?
+  schemaFingerprint  String?
+  contractVersion    String
+  rowCount           Int      // UIDs in the complete fetch (roster size for that day)
+  fetchedAt          DateTime?
+  responseObservedAt DateTime?
+  sourceAsOf         DateTime? // volUpdateTime once its timezone is confirmed
+  lastCheckedAt      DateTime
+  lastChangedRunId   String?
+  @@id([exchangeId, rootAccount, periodDate])
+}
+
+/// API sync: current sparse metrics, updated in place (IS DISTINCT FROM).
+model ActivityMetricCurrent {
+  exchangeId       String
+  rootAccount      String
+  uid              String
+  periodDate       DateTime @db.Date
+  kind             ActivityMetricKind
+  asset            String
+  valueState       MetricValueState
+  amount           Decimal? @db.Decimal(30,10)
+  lastChangedRunId String
+  updatedAt        DateTime @updatedAt
+  @@id([exchangeId, rootAccount, uid, periodDate, kind, asset])
+  @@index([exchangeId, rootAccount, periodDate])
+}
+
+/// API sync: append-only history of real changes (the version history of a day).
+model ActivityMetricChange {
+  id          String @id @default(cuid())
+  runId       String
+  exchangeId  String
+  rootAccount String
+  uid         String
+  periodDate  DateTime @db.Date
+  kind        ActivityMetricKind
+  asset       String
+  oldState    MetricValueState?
+  oldAmount   Decimal? @db.Decimal(30,10)
+  newState    MetricValueState
+  newAmount   Decimal? @db.Decimal(30,10)
+  changedAt   DateTime @default(now())
+  @@index([exchangeId, rootAccount, periodDate])
+  @@index([runId])
+}
+
+// SQL view referral_activity_v unions current manual ReferralSnapshot/ReferralMetric
+// and ActivityMetricCurrent (+ roster/day status for "reported no activity"),
+// with a source column; an active ActivityPeriodOverride hides API rows of that day.
+
+// Add FKs and a partial unique SQL index for one active SyncRun per
+// (exchangeId, rootAccount), state IN (QUEUED, RUNNING). An expired lease can be
+// reclaimed; a checkpoint never authorizes publishing an incomplete period.
 
 model CommissionRecord {
   id                   String   @id @default(cuid())
@@ -920,12 +1908,14 @@ model Job {
 
 Enums:
 `PublishStatus{DRAFT,PUBLISHED}`,
-`ReportType{TRANSACTION,AGGREGATE}`,
+`IngestDatasetKind{REFERRAL_ACTIVITY,COMMISSION}`,
+`IngestSourceMethod{NATIVE_FILE,NORMALIZED_FILE,OFFICIAL_API}`,
+`ReportType{TRANSACTION,AGGREGATE}` (commission only),
 `BatchStatus{UPLOADED,PARSING,PREVIEW,COMMITTING,PUBLISHED,FAILED}`,
 `WalletEntryType{CREDIT,HOLD_RELEASE,WITHDRAWAL_RESERVE,WITHDRAWAL_RELEASE,WITHDRAWAL_SETTLE,ADJUSTMENT,REVERSAL,CLAWBACK}`,
 `WithdrawalStatus{REQUESTED,AUTO_APPROVED,UNDER_REVIEW,APPROVED,PAID,REJECTED,CANCELLED}`,
 `ActorType{CLAIMANT,ADMIN,SYSTEM}`,
-`JobType{PARSE,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}`,
+`JobType{PARSE,LOAD,TRANSFORM,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}` (`PARSE` kept only so queued jobs deserialize; new jobs never use it),
 `JobState{PENDING,CLAIMED,DONE,FAILED}`.
 
 ## Dimensional store & fact partitioning (5,000 transacting UIDs/day)
@@ -1082,8 +2072,8 @@ CREDIT/REVERSAL.
 
 ### Property 3: One UID account per (exchange, UID)
 At most one `UidAccount` row exists per (exchange, UID), enforced by `@@unique([exchangeId,
-uid])`. There is no verification status and no partial index: uniqueness is unconditional,
-because ownership is no longer adjudicated at link time (v0.6 — see "Accepted risk").
+uid])`. Uniqueness is unconditional (no verification status): ownership is asserted only at
+withdrawal (see "Accepted risk").
 **Validates: Requirements 5.1, 5.2**
 
 ### Property 4: Attribution needs no claimant action
@@ -1182,8 +2172,9 @@ to any other identifier.
 - Money: reject any operation that would make `pending`/`available`/`reserved` negative;
   uncovered reversals become `receivable` (never a negative balance).
 - Withdrawal: reject a request while `receivable > 0`; reject a cancel once `PAID`.
-- Deferred sync: two consecutive failures or job timeout → alert; keep last successful
-  data labeled stale (Req 13.5).
+- Scheduled sync: two consecutive failures or job timeout → alert; keep last
+  successful data labeled stale; auth/permission/IP failures pause the connector
+  until repaired (Req 13.7).
 
 ## Testing Strategy
 
@@ -1217,6 +2208,27 @@ most critical money/concurrency invariants, not an exhaustive suite.
   - A UID account's first withdrawal is routed to `UNDER_REVIEW` even when the amount is
     far below the auto-approval threshold; its second withdrawal, same amount, auto-approves
     (Property 6).
+  - Bybit fixture with cursor pages and several commission assets yields one UID
+    volume metric and an asset-keyed commission map; zero and empty values are not
+    stored, and a complete day distinguishes "reported no activity" from "no data".
+    Changed page order does not change the digest.
+  - A second identical API run writes no metric or change-log row; a changed value
+    updates only that row and appends one change; a UID missing from a complete
+    fetch becomes `ABSENT`, and `GONE` in the roster after 3 runs. A failed last
+    page, repeated cursor, stale worker lease, or suspicious zero-row response
+    writes nothing. A manual correction remains current until its override is
+    explicitly released.
+  - One fixture per use case UC5–UC12 and UF2–UF6 (Use cases section): new asset,
+    unknown field, alias, missing required field, type change, duplicate UID,
+    pause codes, older as-of, bad sheet period. Each asserts the drift class,
+    what was written, and that published data is unchanged on `BREAKING`.
+  - Adapter contract test: every registered subclass runs through the base
+    template (cannot skip validation/minimization) and rejects unknown required
+    targets at registration.
+  - Two worker instances racing the same due slot enqueue one active run. Changing
+    an interval takes effect without restart; a disabled schedule enqueues nothing;
+    429 retry and auth/IP pause expose only safe error codes. Confirm a 30-minute
+    run never credits a wallet or changes withdrawal eligibility.
 - Run these on local/SIT before deploying to Railway; broaden coverage later only if the
   money logic grows.
 
@@ -1269,7 +2281,8 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | R11 Admin analytics | Components/apps/web, API contracts |
 | R18 Admin operations shell | Components/apps/web (admin `(shell)` layout + nested routes) |
 | R12 Worker/jobs | Components/apps/worker, Job queue |
-| R13 Deferred sync | Job queue, Environments & deployment |
+| R13 Scheduled API sync | Key flows (Scheduled Bybit Affiliate activity sync, API write model, Use cases), Job queue, Data Models (`ExchangeSyncConfig`, `SyncRun`, `ActivityPeriodStatus`, `ActivityMetricCurrent`, `ActivityMetricChange`, `ActivityRoster`) |
+| R6.21 Schema drift | Key flows (Source adapter framework, Schema drift policy) |
 | NFR security | Security |
 | NFR deploy | Environments & deployment |
 | NFR scale 5k UID/day | Dimensional store & fact partitioning |
@@ -1279,23 +2292,29 @@ most critical money/concurrency invariants, not an exhaustive suite.
 > `Open decision #N` = row #N in `requirements.md` → "Open decisions" (stakeholder
 > answers), not Requirement N.
 
-- **[PENDING]** dedup key composition per adapter (Open decision #11) — needs real sample.
-- **[PENDING]** admin auth provider (Open decision #13, narrowed in v0.6) — abstracted via
+- **[PENDING]** commission dedup key composition per adapter (Open decision #11) —
+  needs a nonzero UID-level commission sample; the MEXC activity XLSX does not resolve it.
+- **[PENDING]** Bybit portal pending/settled reconciliation — Affiliate User List
+  provides `commissionsVol` by asset and date, but no portal pending/settled state.
+  Keep the scheduled connector on the activity side until a matching export and
+  payout semantics are reviewed; do not infer payable commission from API totals.
+- **[PENDING]** admin auth provider (Open decision #13, admin only) — abstracted via
   `AuthPort`; interim email+password + `Session` ships until a provider is chosen
   (Components/Auth). End-user auth is out of scope for this decision — see Req 15.
-- **Resolved (v0.6, Open decision #12):** anyone entering exchange + UID sees that UID's
-  `pending`/`available`; everything else (history, email, address) needs a `UidSession`.
+- **Resolved (Open decision #12):** anyone entering exchange + UID sees that UID's
+  `pending`/`available` and per-period commission vs cashback rows; history, email and
+  address need a `UidSession`.
 - **[PENDING]** compliance/KYC for payouts (Open decision #19) — payout identity kept isolated.
 - **[PENDING]** default values: cashback rate, holding period, auto-approve threshold,
   supported assets/networks, lookup rate-limit window (proposed 5/min + 30/hour per IP),
   OTP tuning (TTL, max attempts, cooldown, daily cap). (Resolution *rules* are decided; only
   default *values* remain.)
-- **Resolved (v0.6, Open decision #20): Resend.** The only remaining prerequisites are
+- **Resolved (Open decision #20): Resend.** The only remaining prerequisites are
   operational: verify an operator-owned domain (SPF/DKIM) — the shared `resend.dev` testing
   domain only delivers to the account owner — and confirm the free-tier quota (100/day,
   3,000/month) covers expected withdrawal volume. See "Resend send path" under Environments
   & deployment.
-- **Accepted (v0.6, Open decision #21): first-claimant-wins.** Lookup shows real amounts
+- **Accepted (Open decision #21): first-claimant-wins.** Lookup shows real amounts
   for any (exchange, UID) and there is no way to verify the true owner from affiliate report
   data alone, so ownership is effectively whoever binds an email first. The operator
   accepted this trade-off for a frictionless flow. Mandatory admin review of every first
@@ -1303,11 +2322,6 @@ most critical money/concurrency invariants, not an exhaustive suite.
   requirements.md "Accepted risk — first claimant wins" for the full reasoning and the
   compensating controls. Revisit only if losses appear or an exchange-side ownership proof
   becomes available.
-- **Superseded (v0.5 → v0.6):** the earlier "Hybrid" design — anonymous lookup returned a
-  boolean only, and cashback still required a registered customer account with admin-
-  confirmed UID ownership before attribution. Replaced because the operator chose speed of
-  access (real amounts, no account) over that anti-fraud posture. Kept here, not deleted
-  silently, per spec governance.
 - **[PENDING]** admin-managed exchange logos (upload/edit from the admin UI). MVP keeps
   logos as repo-committed static assets and populates `Exchange.logoUrl` from the seed
   script only; the admin content form does not expose the field. An exchange created purely
@@ -1323,26 +2337,17 @@ most critical money/concurrency invariants, not an exhaustive suite.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
-| 2026-09-15 | design.md | Tạo design ban đầu cho cashback-platform | Chuyển requirements thành thiết kế kỹ thuật | added |
-| 2026-09-15 | design.md | Chuẩn hoá heading theo spec + Correctness Properties + Changelog | Đạt chuẩn định dạng spec/governance | updated |
-| 2026-09-15 | design.md | Rút gọn Testing Strategy | Không viết test dài dòng | updated |
-| 2026-09-15 | design.md | UID partial-unique; reserved + WithdrawalEvent; rate snapshot; CommissionVersion + delta; best-effort click; Open decision #N; Property 10/11 + concurrency tests | Khắc phục review round 1 | updated |
-| 2026-09-15 | design.md | Reversal policy + receivable/CLAWBACK (Property 12); CommissionVersion unique + activeVersion FK; interim credential + Session + PrincipalType; attribution FOR UPDATE + WalletEntry.opKey; withdrawal cancel + CANCELLED; rate source trust + same-exchange (Property 13); Guide.exchange relation; sửa thứ tự SQL claim job | Khắc phục review round 2 (#1–#7) | updated |
-| 2026-09-15 | design.md | Đổi mục "i18n" thành "Language & i18n": English là locale duy nhất được enable, `src/i18n/index.ts` là locale registry duy nhất (middleware/`<html lang>`/nav/`app/[locale]` đều suy ra từ đó), locale prefix không hợp lệ → 404, admin chỉ author locale đang enable; xoá ví dụ `/vi/...`; cập nhật bảng technology + repo layout + requirements mapping | Đồng bộ với quyết định English-only ở requirements Req 4 (v0.4) | updated |
-| 2026-09-15 | design.md | Thêm dòng "Styling (public site)": Tailwind CSS v4 + shadcn/ui (Radix), copy component vào `src/components/ui`; cập nhật repo layout với `components.json`, `postcss.config.mjs`, `src/lib/utils.ts` | Thay CSS thủ công bằng component kit có sẵn cho trang public (home/exchanges/guides); theme light blue/teal thân thiện-chuyên nghiệp; admin giữ nguyên đơn giản, không đổi | added |
-| 2026-09-16 | design.md | Thêm `Exchange.logoUrl String?` vào Data Models | Hiển thị logo thật của sàn trên offer tile thay cho placeholder màu | added |
-| 2026-09-16 | design.md | Siết `logoUrl` thành đường dẫn root-relative tới asset trong repo (`apps/web/public/exchange-logos/<slug>.png`), bỏ phương án URL ngoài; thêm mục "Exchange logo assets" trong Components/apps/web; thêm Open decision về admin-managed logo | Chốt lưu ảnh local trong repo thay vì hot-link ảnh online; admin không sửa logo qua form nên `logoUrl` chỉ do seed set | updated |
-| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) Luồng "Anonymous quick lookup" trả boolean + `LookupAttempt` + `POST /api/lookup` theo mô hình Hybrid (customer account + admin ownership) | Ghi lại để không đề xuất lại như ý mới | removed |
-| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) `Customer.username` cho plan Hybrid | Model Customer bị xoá ở v0.6 | removed |
-| 2026-09-16 | design.md | (v0.5, superseded bởi v0.6) Open decision #20 ghi "chưa chọn provider" + mục "Rejected: UID-first/no-account + OTP" | Ở v0.6 UID-first + Resend chính là hướng được chọn, không còn là phương án bị bác | removed |
-| 2026-09-16 | design.md | **Chuyển sang UID-first (v0.6/v0.7).** Xoá `Customer`, `UidLink`, `LookupAttempt`, đổi `Session` thành admin-only; thêm `UidAccount`, `EmailOtp`, `UidSession`, `RateLimitCounter`; đổi FK của `Wallet`/`Withdrawal`/`CommissionRecord` sang `uidAccountId`/`attributedUidAccountId`; thêm cột `Withdrawal.email`/`isFirst` | Đồng bộ data model với requirements v0.6 (Req 5, 7, 8, 9) | updated |
-| 2026-09-16 | design.md | Viết lại luồng "UID accounts" (bỏ admin ownership approval) và "Cashback lookup by exchange + UID" (trả `pending`/`available` thật, không còn boolean); thêm luồng "Email OTP binding & UID session" với sequence diagram | Hiện thực Req 5, 14, 15 đã chốt: search UID → withdraw → nhận OTP → session 30 phút | added |
-| 2026-09-16 | design.md | Thêm `lookupService`, `otpService`, `uidSessionService`, `emailPort` (+ `resendEmailAdapter`) vào core services; thêm mục "Resend send path" (gửi in-request, không qua job queue; lý do quota 100/ngày) và các env var OTP/Resend mới vào Environments & deployment | Hiện thực Req 15/16 với Resend theo lựa chọn của operator | added |
-| 2026-09-16 | design.md | Viết lại Property 3 (one UID account per pair, bỏ partial unique index), Property 4 (attribution không cần claimant), Property 6 (thêm điều kiện UidSession + first-withdrawal luôn UNDER_REVIEW), Property 14 (lookup chỉ trả balance, không trả identity/history); thêm Property 16 (OTP hashed/single-use/attempt-limited), Property 17 (UidSession scope đúng 1 UID) | Các property cũ mô tả hành vi đã bị thay thế; property mới khoá lại đúng bất biến của Req 5/9/14/15 | updated |
-| 2026-09-16 | design.md | Cập nhật API surface (`/api/lookup`, `/api/otp/*`, `/api/admin/auth/*`, `/api/uid/*`), mục Auth thành "v0.6: admin only", Security (accepted exposure), Requirements mapping, Open design decisions (#12 resolved, #13 narrowed, #20 resolved: Resend, #21 accepted: first-claimant-wins, mục Superseded cho Hybrid) | Đồng bộ toàn bộ design với quyết định UID-first + Resend | updated |
-| 2026-09-17 | design.md | Online Rebate Ledger trên home: SSR tối đa 100 `WalletEntry` CREDIT gần nhất, ticker CSS lặp, mask UID, không bịa hàng, `prefers-reduced-motion` tắt animation; xoá `ledger-demo` khi implement | Req 17 — thu hút visitor bằng giao dịch thật, không dùng bảng illustrative | added |
-| 2026-09-17 | design.md | Interim: **fake 100 credit lớn** (`generateLedgerDemoRows(100)`, ~480–8500 USDT), ticker CSS, giữ badge illustrative; chưa đọc wallet live | Operator muốn ticker hấp dẫn ngay vì dump thật quá ít | updated |
-| 2026-09-17 | design.md | Lookup trả `transactions[]`: commission (sàn trả) vs cashback (chia cho UID); Property 14 và `/api/lookup` cập nhật; vẫn giấu email/address/withdrawal | Req 14.2/14.7 — visitor thấy chia tiền | updated |
-| 2026-09-17 | design.md | Thêm kiến trúc dim/fact + partition RANGE theo tháng cho 5,000 UID giao dịch/ngày; Wallet/UidAccount không partition | NFR scale — tránh heap history làm chậm lookup | added |
+| 2026-09-15 | design.md | Tạo design ban đầu (heading chuẩn, Correctness Properties, Testing gọn); review round 1–2: CommissionVersion + delta/opKey + FOR UPDATE, reserved + WithdrawalEvent + cancel, reversal/receivable/CLAWBACK, rate snapshot + rate source trust, interim auth; Language & i18n English-only với locale registry; Tailwind v4 + shadcn/ui cho trang public | Chuyển requirements thành thiết kế và khắc phục review | added |
+| 2026-09-16 | design.md | Chuyển sang UID-first + Resend: `UidAccount`, `EmailOtp`, `UidSession`, `RateLimitCounter`, `Session` admin-only; FK ví/withdrawal/commission sang UidAccount; luồng lookup trả số dư thật, OTP binding + UID session 30 phút; core services lookup/otp/uidSession/emailPort; Property 3, 4, 6, 14, 16, 17; Open decision #12/#20/#21. `Exchange.logoUrl` là path asset trong repo | Operator chọn UID-first không cần tài khoản (Req 5, 14, 15, 16) | updated |
+| 2026-09-17 | design.md | Home Online Rebate Ledger dùng 100 credit giả lớn (`generateLedgerDemoRows`) + badge illustrative; lookup trả `transactions[]` commission vs cashback; kiến trúc dim/fact partition theo tháng cho 5,000 UID/ngày | Req 17, 14.2/14.7, NFR scale | added |
 | 2026-09-19 | design.md | Admin left-nav shell: route group `(shell)`, 7 trang, poll theo page; API/Prisma/worker không đổi | Req 18 — `/admin` một cột quá dài | added |
 | 2026-09-22 | design.md | Lookup lấy commission từ version đã có `attr:{versionId}`. Admin: middleware thiếu cookie + `requireAdminPage()` trên từng page. Form giữ id exchange/offer ngoài trang đã tải | Req 18.5, 10.6, 14.7 | updated |
+| 2026-09-25 | design.md | Shared ingest envelope tách referral activity snapshot khỏi commission ledger; adapter MEXC XLSX (an toàn workbook, header theo tên, period inclusive theo sourceTz, cờ `partial`, chỉ lưu cột đã map theo NĐ 13/2023); snapshot current theo `sourceAsOf` và theo cả period, advisory lock riêng; migration backfill + contract union; normalized CSV fallback và API tương lai. Compact tài liệu: bỏ nội dung Hybrid/v0.5 và ghi chú lịch sử v0.6 | Export MEXC thật toàn số 0, chưa phải bằng chứng hoa hồng; tài liệu chỉ mô tả thiết kế hiện hành | updated |
+| 2026-09-26 | design.md | Thiết kế Bybit Affiliate sync theo lịch DB từng sàn, worker/adapter và cursor đầy đủ, backfill + correction window, version idempotent, schema metric nhiều asset, trạng thái/admin audit, Railway secret và IP allowlist | API trả UID/volume/commission theo asset nhưng không trả pending/settled; tần suất gọi khác freshness nguồn | updated |
+| 2026-09-26 | design.md | Bổ sung kết quả probe Bybit API thật: bảng hành vi đã xác minh (query-api, aff-user-list có/không có ngày, cờ need*, giới hạn ngày, lỗi 610015/3500403, rate limit 10/s, aff-customer-info); map thêm taker/maker/TradFi volume; trang cuối rỗng khi phân trang; sourceAsOf từ `volUpdateTime`; backfill 365 ngày; ngày cộng được; key IP `*` hết hạn 90 ngày | Thiết kế trước đó giả định không có freshness, chỉ backfill 30 ngày và có allowlist IP | updated |
+| 2026-09-26 | design.md | Thêm Source adapter framework (abstract TypeScript: SourceAdapter → File/Xlsx/Csv/Api → adapter từng sàn, field contract + alias, registry theo contract version); Schema drift policy (fingerprint, SAME/ADDITIVE/ALIASED/BREAKING/SEMANTIC, quarantine + pause, re-sync); API write model thay version theo run: digest gate theo ngày, temp table + `INSERT … ON CONFLICT … WHERE IS DISTINCT FROM`, đánh dấu ABSENT, change log, lưu thưa (bỏ 0/rỗng), roster, vòng đời OPEN/SETTLING/SEALED, retention; model mới ActivityRoster/ActivityPeriodStatus/ActivityMetricCurrent/ActivityMetricChange, enum thay String; use case diagram + bảng UC0–UC17, UF1–UF7; test theo từng use case | Tránh 144 bản sao snapshot/ngày khi sync 30 phút; sàn đổi format không làm hỏng dữ liệu đã publish; thêm sàn mới chỉ cần kế thừa | updated |
+| 2026-09-26 | design.md | Environments: Local/SIT dùng Railway hosted Postgres (bỏ "compose container" trái steering); ghi nguyên nhân P1001 khi connect Railway từ máy local (connect 2,2–3,4 s so với `connect_timeout` mặc định 5 s) và khuyến nghị `connect_timeout=30`; bổ sung biến `BYBIT_AFFILIATE_MASTER_UID`, `BYBIT_API_BASE`, `BYBIT_VOL_TIMEZONE` | Bảng cũ mâu thuẫn `production-safety`; lỗi kết nối bị hiểu nhầm là DB hỏng | updated |
+| 2026-09-26 | design.md | Đổi trang dữ liệu affiliate thành `/admin/crawl-data`, giữ `/admin/referrals` chuyển hướng sau kiểm tra admin session | Đường dẫn và menu mới dễ hiểu, bookmark cũ vẫn dùng được | updated |
+| 2026-09-26 | design.md | Admin shell: nhóm menu Data ingest (Uploads, API connectors) và Reports (Referral activity) thay cho Commission imports/Crawl data/Sync schedules; cây route `/admin/ingest/*`, `/admin/reports/*`; form upload dựng theo descriptor adapter (`GET /api/admin/ingest/adapters`, server resolve lại adapter); bảng API dùng `/api/admin/ingest/*`, `/api/admin/reports/activity`; route/API cũ redirect hoặc alias; SourceAdapter thêm `accept`/`uploadFields`/`affectsCashback`/`describe()` | Req 18.2, 18.7, 18.8: menu theo việc vận hành, không theo sàn hay định dạng; thêm adapter không cần trang mới | updated |
+| 2026-09-26 | design.md | Task 32 review: file adapter tự validate/parse, lưu ID+version từ lúc upload, registry chọn bản active; báo cáo range cộng ngày API UTC với coverage và phân trang UID/root; API alias cũ giữ shape `snapshots[]` | Sửa 4 lỗi dữ liệu và tránh hai registry chạy song song | updated |
+| 2026-09-26 | design.md | Thêm Raw landing layer: mọi nguồn (file/API) ghi bản ghi nguyên trạng vào `raw_record` partition theo sàn (`raw_bybit`, `raw_mexc`, `raw_binance`, `raw_bingx`, `raw_default`) dạng `payload jsonb`, ghi đè theo slice (xoá load cũ, `RawLoad` SUPERSEDED), LOAD chỉ fail vì định dạng/an toàn; TRANSFORM chạy async (bỏ qua load đã bị thay thế), lỗi contract để lại raw và chạy lại được (UC18/UC19); bỏ key cá nhân khi load, raw giữ 30 ngày; job `LOAD`/`TRANSFORM` thay `PARSE`; model `RawLoad`; template method tách `load()`/`transform()`; recovery bằng re-transform | Sàn đổi cấu trúc dữ liệu không làm fail bước import; chọn JSONB thay vì tạo lại bảng/cột mỗi lần load (tránh DDL từ header không tin cậy, khoá bảng, lệch Prisma migrate) | updated |

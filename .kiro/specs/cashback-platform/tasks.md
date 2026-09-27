@@ -1,15 +1,40 @@
 # Implementation Plan — Cashback Affiliate Platform
 
-- **Status:** Draft v2.0 (UID-first re-key: no customer accounts; cashback lookup by
-  exchange + UID; email OTP via Resend + UID session; supersedes the Hybrid plan of v1.4)
-- **Last updated:** 2026-09-17
-- **Derives from:** `requirements.md` (Draft v0.6 + Req 17), `design.md` (Draft v0.7)
+- **Status:** Draft v2.3 (UID-first: no customer accounts; cashback lookup by exchange + UID;
+  email OTP via Resend + UID session)
+- **Last updated:** 2026-09-26
+- **Derives from:** `requirements.md` (Draft v0.9), `design.md` (Draft v1.0)
+
+## Mandatory: follow `.kiro/steering/` before every task
+
+Every task in this plan, whether done by a person or an agent (Kiro, Claude, Codex),
+MUST comply with all files in `.kiro/steering/`. If a task description conflicts with
+steering, **steering wins**; stop and ask the user instead of choosing the less strict
+reading. Read the steering files before starting a task. The summary below does not
+replace them.
+
+| Steering file | Rules that block a task |
+|---------------|-------------------------|
+| `production-safety.md` | **Never use a local database** (no Docker/scoop/Windows-service Postgres, no `localhost`/`127.0.0.1`, no SQLite). Use only Railway hosted Postgres (`DATABASE_URL`, and `TEST_DATABASE_URL` pointing at Railway). During pre-golive the Railway DB may be migrated, seeded and used for integration tests without asking each time. Always ask first before: deleting the whole database or instance, changing credentials, access control or roles, or any action with no rollback. After go-live, every write, DDL, `migrate deploy`, seed or one-off script on production needs explicit user confirmation. |
+| `spec-governance.md` | Update spec first, then code: `requirements.md` (WHAT) and `design.md` (HOW) are the source of truth. Check cross-impact, remove obsolete (legacy) content instead of stacking new text beside it, and add one changelog row for each spec change. Keep `Requirement N` numbers stable and never reuse a removed number. Keep EARS format. Undecided items go to "Open decisions", never SHALL. §7: same database policy as above; the agent may only read production data. |
+| `context7.md` | Before implementing or reviewing framework, library, SDK or API behavior (Next.js, React, Prisma transactions, Zod…), check the docs through Context7 for the version in the lockfile and state what was checked. Never send secrets, customer data or reports into Context7 queries. |
+
+**When Railway Postgres is unreachable:** stop and report the error to the user. Do
+not fall back to a local or substitute database, and do not mark a test as verified
+until it passes on Railway. Known cause (2026-09-26): from a local machine, a Prisma
+connect to the Railway TCP proxy takes about 2.2–3.4 s, while the URL sets no
+`connect_timeout` (Prisma default 5 s). A slow moment then fails with P1001 "Can't
+reach database server" even though the database is healthy (Postgres logs showed no
+restart). Remedy: add `connect_timeout=30` to the local `DATABASE_URL` /
+`TEST_DATABASE_URL` in `.env` (the user edits `.env`), then retry. See design
+"Environments & deployment".
 
 ## Overview
 
 This plan sequences the build into phases. Tasks are incremental coding steps; each
 references the requirement acceptance criteria it fulfills and the design sections it
-implements. `[PENDING]` markers block only their own task, not the whole plan.
+implements. `[PENDING]` markers block only their own task, not the whole plan. Task
+numbers are stable identifiers cited in code and docs, not an execution order.
 
 **Reference convention:** `Requirements: N.M` cites EARS criteria in `requirements.md`.
 `Open decision #N` cites a numbered row in `requirements.md` → "Open decisions"
@@ -17,57 +42,44 @@ implements. `[PENDING]` markers block only their own task, not the whole plan.
 
 - **Phase 0** — Foundation & smoke: monorepo, DB, contracts, local + Railway skeleton,
   public site, redirect, interim auth, admin content. Runs on seed data.
-- **Phase 1** — Import pipeline (versioned), UID linking, attribution + cashback.
-- **Phase 2** — Wallet (reserved) & withdrawals.
+- **Phase 1** — Import pipeline (versioned), UID accounts, attribution + cashback.
+- **Phase 2** — Lookup, wallet (reserved) & withdrawals.
 - **Phase 3** — Hardening: security, targeted tests, production observability/backups.
-- **Phase 4** — Deferred: scheduled API sync and optional SSE (do not start until
-  confirmed).
+- **Phase 4** — Planned: Bybit Affiliate activity API sync. Optional SSE and
+  dimensional partitioning remain deferred.
 
-### Current status (2026-09-16)
+### Current status (2026-09-26)
 
-Phase 0 foundation is implemented and was **verified end to end against a real, hosted
-Postgres** (Railway test DB, no local Docker) — see Tasks 4.3–4.5. `pnpm build`, `pnpm typecheck`,
-`pnpm lint`, Prisma schema validation, migrate, seed, and a live smoke pass (public pages,
-`/api/exchanges`, `/go/:linkId` redirect + real `ClickEvent`) all passed at that time.
+Phases 0–2 are implemented and verified against a Railway test/pre-golive Postgres (no
+local Docker, no mocked data layer): UID-first lookup, OTP + UID session, attribution,
+wallet, withdrawals, admin shell and dashboard. Access model: a visitor enters exchange +
+UID and sees `pending`/`available` (Req 14); withdrawal needs an email bound by OTP via
+Resend and a 30-minute UID session (Req 15, 16); a UID's first withdrawal always goes to
+admin review (Req 9.5).
 
-**v2.0 note:** that historical smoke run also exercised `/api/auth/register` against a real
-`Customer`/`Session` row. Both are removed in v0.6/v0.7 (Req 3, 5) — `Customer` no longer
-exists in the schema. Re-verification of the smoke path is required once Task 22 (re-key)
-lands, and it will exercise `UidAccount`/`EmailOtp`/`UidSession` instead.
-
-Done: monorepo scaffold + import-boundary lint, Prisma schema + migrations (incl. the partial unique index),
-idempotent seed with guides, shared contracts, local/Railway infra skeleton, root `.env` loading, SIT wired to a Railway test Postgres and
-verified live, public SSR pages + `GET /api/exchanges`, referral redirect with `after()`-based
-click recording, interim auth behind `AuthPort`, admin content services/API/forms, and the job-queue foundation
-(claim/lease/reaper/retry).
-
-Task 5.5 (English-only enforcement) is done — see Phase 0 additions above.
-
-**Access model (superseded 2026-09-16, now UID-first):** the earlier Hybrid plan (anonymous
-boolean lookup + customer account + admin ownership approval, Tasks 14.3a/14.3b below) is
-replaced. There is no customer account. A visitor enters exchange + UID and sees real
-`pending`/`available` amounts (Req 14). Withdrawal requires binding an email via a 6-digit
-OTP sent through **Resend**, which opens a 30-minute session scoped to one UID account
-(Req 15, 16). A UID's first withdrawal always goes to admin review (Req 9.5). See
-design.md "Superseded" and requirements.md "Accepted risk — first claimant wins" for why,
-and what protection remains.
-
-Open next: **Task 22 (re-key to `UidAccount`)** must land before anything else in Phase 2 —
-it removes `Customer`/`UidLink`, so Tasks 14.3a/14.3b as originally written no longer apply
-(struck through below, replaced by Tasks 23–26). Then: Task 23 (lookup by exchange + UID),
-Task 24 (OTP + UID session via Resend), Task 25 (withdrawal — genuinely 0% today, since
-`Withdrawal`/`WithdrawalEvent` are Prisma declarations with no service or route behind
-them), Task 26 (cherry-pick UI components from the reference `cashback/` folder).
-
-Still open elsewhere: native Bybit export column mapping and Open decision #11 (`dedupKey`)
-need a real exchange report sample.
-
-**Note on local hosting:** the verified smoke run used `web` on the local host via `pnpm dev`
-and a dedicated Railway **test** Postgres reached over its public/proxy host; no local Docker
-database and no mocked/in-memory data layer were used. The local dev server was stopped after
-verification. Seed data is fictitious, while reads/writes use the production-identical Prisma
-schema, migrations, and `core`/`db` services. `infra/docker-compose.yml` remains an optional
-contributor convenience rather than the active SIT database workflow.
+Open:
+- **Import (Tasks 10.2, 10.8, 10.9, 11.1):** The shared envelope and MEXC Referral Data
+  XLSX activity adapter are in place (Tasks 10.5–10.7). The real MEXC sample has 46 UIDs,
+  all with zero volume/earnings, so Task 10.8 cannot confirm those columns are period
+  totals and the UI keeps calling them reported metrics. Native Bybit mapping, the deferred
+  CSV activity fallback, and Open decision #11 (`dedupKey`) still need nonzero UID-level
+  commission evidence. Referral `Your Earnings` is not payable commission.
+- **Hardening (Tasks 18, 19):** invariants pass; applying the reviewed `railway config`
+  plan awaits user confirmation.
+- **Deployment:** Task 5.6 live check; Resend domain and credentials.
+- **API sync (Task 20 implemented; live rollout not run):** Bybit activity sync is in
+  code. `commissionsVol` stays reported activity and does not touch wallets. The
+  2026-09-26 sink integration could not reach the Railway proxy, and the read-only
+  probe was not executed in this session.
+  Probe 2026-09-26 (read-only; roster had 54 UIDs at the time): one year of daily history, daily sums equal
+  range totals, `volUpdateTime` available, key has no IP allowlist and expires
+  2026-12-26 (design "Verified API behavior").
+- **Raw landing (Task 33 implemented):** manual LOAD and API day loads write
+  partitioned raw rows before asynchronous TRANSFORM. Railway schema-isolated
+  integration verifies replacement by slice, stale-transform fencing,
+  re-transform after an alias, the default partition, retention and no wallet
+  effects. Web and worker were deployed to Railway on 2026-09-26; authenticated
+  multipart upload/publish of synthetic MEXC and zero-value Bybit data passed.
 
 ## Task Dependency Graph
 
@@ -94,8 +106,8 @@ flowchart TD
   T9 --> T10[10 Import upload/parse/preview]
   T8 --> T10
   T10 --> T11[11 Commit publish - versioned]
+  T11 --> T111[11.1 MEXC commission gate]
   T11 --> T22[22 Re-key to UidAccount]
-  T13 --> T22
   T22 --> T13[13 Attribution + cashback]
   T13 --> T14[14 Wallet + hold release]
   T22 --> T23[23 Cashback lookup by exchange+UID]
@@ -115,8 +127,10 @@ flowchart TD
   T43 --> T19[19 Prod hardening/observability]
   T17 --> T19
   T18 --> T19
-  T11 --> T20[20 Scheduled API sync - deferred]
-  T13 --> T20
+  T11 --> T20[20 Adapter framework + Bybit scheduled activity sync - planned]
+  T20 --> T32[32 Admin ingest/reports IA]
+  T32 --> T33[33 Raw landing layer]
+  T16 --> T20
   T16 --> T21[21 Optional SSE - deferred]
 ```
 
@@ -129,7 +143,7 @@ flowchart TD
     { "wave": 4, "tasks": ["4.2", "6", "8"] },
     { "wave": 5, "tasks": ["4.3", "10"] },
     { "wave": 6, "tasks": ["4.4", "4.5", "11"] },
-    { "wave": 7, "tasks": ["22"] },
+    { "wave": 7, "tasks": ["22", "11.1"] },
     { "wave": 8, "tasks": ["13"] },
     { "wave": 9, "tasks": ["14"] },
     { "wave": 10, "tasks": ["23"] },
@@ -137,15 +151,13 @@ flowchart TD
     { "wave": 12, "tasks": ["25"] },
     { "wave": 13, "tasks": ["26", "16", "17", "18"] },
     { "wave": 14, "tasks": ["19"] },
-    { "wave": 15, "tasks": ["20", "21"], "deferred": true }
+    { "wave": 15, "tasks": ["20"], "planned": true },
+    { "wave": 16, "tasks": ["32"] },
+    { "wave": 17, "tasks": ["33"] },
+    { "wave": 18, "tasks": ["21"], "deferred": true }
   ]
 }
 ```
-
-> Tasks 12 and 14.3a/14.3b from the earlier Hybrid plan are struck through below (not
-> deleted, per spec governance) and replaced by Tasks 22–26. Task 13's body is amended
-> in place because rewriting `attributionService` against `UidAccount` is a small, local
-> change to already-shipped code, not a new task.
 
 ## Tasks
 
@@ -159,30 +171,29 @@ flowchart TD
     - _Requirements: technical constraints §4; Design: Architecture/Repository layout_
 
 - [x] 2. Set up the database package
-  - [x] 2.1 Add Prisma to `packages/db` with the schema from the design, including versioned commission, interim auth, and payout audit: Exchange (with `defaultCashbackRate`), Offer, ReferralLink (with `offerId`), Guide (with `exchange` relation), ClickEvent, AdminAccount (with `passwordHash`), Customer (with `passwordHash`), Session, UidLink (with `referralLinkId`, `flaggedForReview`), ImportBatch, StagingRow, CommissionRecord (identity: `reconciledAmount`, `activeVersion` FK, snapshot `offerId`/`cashbackRate`, `creditedCashback`), CommissionVersion, Wallet (pending/available/reserved/withdrawn/receivable), WalletEntry (with `opKey`), Withdrawal, WithdrawalEvent, Job, and all enums (incl. `PrincipalType`, `CLAWBACK` entry type, `CANCELLED` status).
-    - Money as `Decimal`, UID as `String`, timestamps UTC. Unique: `CommissionRecord(exchangeId,dedupKey)`, `CommissionVersion(commissionId,batchId)`, `Wallet(customerId,asset)`, `WalletEntry.opKey`, `Session.tokenHash`. Do NOT put a full unique on `UidLink(exchangeId,uid)`. Interim auth fields (passwordHash/Session) are replaceable if a managed provider is chosen.
-    - _Requirements: 3.5, 5.3, 6.7, 6.9, 7.4, 7.6, 7.8, 8.1, 8.7, 9.8; Design: Data Models, Auth_
-  - [x] 2.2 Generate the initial migration, and add a raw-SQL PARTIAL unique index for UID ownership: `CREATE UNIQUE INDEX uidlink_verified_owner ON "UidLink"("exchangeId","uid") WHERE status = 'VERIFIED';`. Add repository/query helpers.
-    - _Requirements: 5.3, 6.5; Design: Data Models, Key flows/UID_
+  - [x] 2.1 Add Prisma to `packages/db` with the schema from the design (content, click, admin auth, import/staging, versioned commission, wallet/ledger, withdrawal + events, job, UID account/OTP/session models and enums).
+    - Money as `Decimal`, UID as `String`, timestamps UTC. Unique: `CommissionRecord(exchangeId,dedupKey)`, `CommissionVersion(commissionId,batchId)`, `WalletEntry.opKey`, `Session.tokenHash`, `UidAccount(exchangeId,uid)`.
+    - _Requirements: 5.3, 6.7, 6.9, 7.4, 7.6, 7.8, 8.1, 8.7, 9.8; Design: Data Models, Auth_
+  - [x] 2.2 Generate the initial migration (raw SQL for partial indexes) and repository/query helpers.
+    - _Requirements: 6.5; Design: Data Models_
   - [x] 2.3 Add a seed script (sample exchanges with default rates, offers, links bound to offers, guides, one admin) for the smoke phase.
     - Offers/links use optional unique seed keys so admin-created rows remain unconstrained; the seed adopts the original legacy rows, upserts three published guides, and is idempotent.
     - _Requirements: 1.1; Design: Testing Strategy_
 
 - [x] 3. Define shared contracts
-  - Add zod schemas + types in `packages/contracts` for public content, click, auth, wallet (incl. reserved), uid-link, withdrawal, and admin import/analytics/sync payloads.
+  - Add zod schemas + types in `packages/contracts` for public content, click, auth, wallet (incl. reserved), lookup, OTP, withdrawal, and admin import/analytics/sync payloads.
   - Define the error envelope `{ error: { code, message, details? } }` and a decimal-string money type with `asset`.
   - _Requirements: 3.3, 7.4, 8.1; Design: Components/API contracts_
 
 - [x] 4. Local/SIT infra + Railway skeleton (dual-track from day one)
-  - [x] 4.1 Add `infra/docker-compose.yml` for Postgres and private object storage (e.g. MinIO or local dir) and `.env.example` with `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL_SECONDS`, `HOLDING_PERIOD_HOURS`, `WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, `SYNC_INTERVAL_MINUTES` (disabled).
+  - [x] 4.1 Add `infra/docker-compose.yml` for Postgres and private object storage (e.g. MinIO or local dir) and `.env.example` with `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL_SECONDS`, `HOLDING_PERIOD_HOURS`, `WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, `SYNC_INTERVAL_MINUTES` (legacy disabled placeholder; Task 20 replaces it with DB schedules).
     - _Requirements: 6.5; Design: Environments & deployment_
   - [x] 4.2 Stand up the Railway skeleton in parallel: web + worker services + managed Postgres, build pipeline, run migrations, and a health check on each service. Keep both local and Railway green.
     - Config + `/api/health` are in place. The verified application smoke was a local web process using Railway test Postgres; deploying the web/worker processes on Railway remains part of production hardening rather than this smoke result.
     - _Requirements: 6.5; Design: Environments & deployment_
   - [x] 4.3 Stand up SIT against a hosted Railway test Postgres (no local Docker) and verify it end to end.
-    - **Decision:** SIT does not use local Docker for the database. App processes (`web`, `worker`) run on the host via `pnpm dev`; the database is a dedicated Railway **test** Postgres (separate from prod), reached over its public/proxy host — `*.internal` only resolves inside Railway's network. Object storage stays deferred (local-dir adapter) until Task 10 needs a real bucket. `infra/docker-compose.yml` remains only as an optional convenience for contributors who prefer containers.
-    - Verified live against the Railway test DB: `prisma migrate deploy` applied the 1 existing migration (19 tables incl. `_prisma_migrations`, plus the partial unique index `uidlink_verified_owner` — confirmed present via `pg_indexes`); `pnpm db:seed` created 3 exchanges/3 offers/3 referral links/1 admin (`guide` count is legitimately 0 — no guide seed rows exist yet, tracked below); `pnpm --filter @cashback/web dev` served `/api/health` (200), `/api/exchanges` (200, slugs binance/bybit/mexc), `/`, `/exchanges`, `/exchanges/binance`, `/guides` (all 200); `/go/:linkId` returned 302 to the real destination and incremented `ClickEvent` count 0→1 (via `after()`); an unknown `/go/:id` fell back to `/exchanges` (no open redirect); `POST /api/auth/register` created a real `Customer` + `Session` row. All reads/writes went through Prisma against Postgres — no mocks or in-memory fakes.
-    - Gaps found during this historical run: (a) root env loading and (b) seed correctness were subsequently resolved and verified in Tasks 4.4/4.5. (c) Prisma CLI (`migrate deploy`/`migrate status`) output was truncated by the earlier Windows shell setup; the current wrapper emits complete migration output, and DB state was also verified through direct Postgres queries.
+    - SIT uses a dedicated Railway **test** Postgres over its public proxy (no local Docker); `web`/`worker` run on the host via `pnpm dev`. `infra/docker-compose.yml` is legacy: its Postgres service must not be used (`.kiro/steering/production-safety.md`).
+    - Verified live: `migrate deploy`, seed, `/api/health`, `/api/exchanges`, public pages 200, `/go/:linkId` 302 + real `ClickEvent`, unknown link falls back to `/exchanges` (no open redirect). No mocks.
     - _Requirements: 1.1, 2.1, 3.1, 6.5; Design: Environments & deployment, Testing Strategy_
   - [x] 4.4 Add a monorepo-wide env-loading story: dev scripts for `web`/`worker`/`db` should read a single root `.env` (e.g. via `dotenv-cli` / `node --env-file=../../.env`) instead of requiring vars to be exported manually per shell session.
     - `scripts/with-root-env.mjs` loads the optional root `.env` without overriding Railway/process variables and wraps web dev/build/start, worker dev/start, and Prisma migrate/generate/seed commands. Verified on Windows through generate, migrate, seed, and production build.
@@ -202,41 +213,21 @@ flowchart TD
     - Added the typed catalog type (`Messages`, checked against the default catalog), locale-aware shared SSR page components, request locale propagation to `<html lang>`/provider/navigation, and the `app/[locale]/...` route group reusing the same page components. Live smoke confirmed `lang`, localized DB fields, and locale-prefixed links resolve from the registry.
     - _Requirements: 4.1, 4.2, 4.3; Design: Components/Language & i18n_
   - [x] 5.5 English-only enforcement: made `apps/web/src/i18n/index.ts` the single locale registry (`defaultLocale`, `locales`, `prefixedLocales`, `isLocale`, `isPrefixedLocale`, `localeFromPathname`) holding `en` alone; deleted the Vietnamese catalog; `middleware.ts` derives the request locale via `localeFromPathname` (no hard-coded locale code); the `app/[locale]/...` group now 404s via `isPrefixedLocale` for any segment that isn't a non-default enabled locale (currently none, so the group is inert but ready); dropped Vietnamese seed content from `packages/db/prisma/seed.ts`; reduced admin content forms to English-only fields.
-    - Closes the earlier follow-up where `middleware.ts` hard-coded the `"vi"` prefix instead of reading the registry.
-    - Verified: `pnpm --filter @cashback/web build` (tsc/eslint via Next's build step) compiles, typechecks, and lints clean; production build emits 13/13 static routes with no `/vi*` route in the output.
+    - Verified: web build (compile/typecheck/lint) passes; 13/13 routes, none under `/vi*`.
     - _Requirements: 4.1, 4.3, 4.5, 10.5; Design: Components/Language & i18n_
   - [x] 5.6 Exchange logo images on offer tiles (local repo assets, no external URLs)
-    - Added the nullable Prisma field and migration `202609160001_exchange_logo_url/migration.sql`; the prior in-flight changes described below were absent from the checkout.
-    - [x] 5.6.1 Finish the in-flight `core` change. `PublicExchange` and `PublicOfferCard` in `packages/core/src/services/content.ts` already declare `logoUrl: string | null`, but the three mapping sites were left unchanged, so the package currently fails typecheck. Add `logoUrl: row.logoUrl ?? null` to the object returned from `listPublishedExchanges`, the same to `getPublishedExchange`, and `logoUrl: exchange.logoUrl` to the `exchange` object built inside `toOfferCard`.
-      - _Requirements: 1.1, 1.2, 1.5; Design: Data Models, core services_
-    - [x] 5.6.2 Remove `logoUrl` from `adminExchangeCreateSchema` in `packages/contracts/src/index.ts` (it was added during an earlier URL-based attempt). The admin form does not author logos, so the field would be dead API surface. Keep `logoUrl` on `exchangeSchema`, which describes the `GET /api/exchanges` response and now legitimately includes it.
-      - _Requirements: 10.2; Design: Open design decisions (admin-managed logos = [PENDING])_
-      - Verified the admin create/update schemas already exclude `logoUrl`; the public response schema now accepts only local `/exchange-logos/<slug>.png` paths or null.
-    - [x] 5.6.3 Create `apps/web/public/exchange-logos/` and add the three real exchange logos as `binance.png`, `mexc.png`, `bybit.png`, preferring each exchange's official brand/press asset. Note that `web_fetch` cannot retrieve binary images — download via `curl -L -o` or `Invoke-WebRequest`, then verify each file is a non-empty, valid PNG. If a source is unreachable, generate a simple local placeholder image rather than falling back to a remote URL. Nothing in `.gitignore` excludes this folder, so the files commit normally.
-      - _Requirements: 1.1; Design: Components/apps/web (Exchange logo assets)_
-      - Review follow-up: all three assets now use transparent horizontal wordmarks in a shared centered box on the dark `bg-card` surface; asset provenance moved to `apps/web/docs/exchange-logos.md` outside `public/`.
-    - [x] 5.6.4 Render the logo in `OfferCard` in `apps/web/src/components/public-pages.tsx`: when `card.exchange.logoUrl` is set, show the image with `next/image` (`fill` + `object-contain` + `sizes`, padded inside the existing `aspect-square` tile) in place of the centered name text; when it is `null`, keep the current `tileHue` gradient + name placeholder unchanged. Use `alt=""` (decorative) because the wrapping `<Link>` already exposes the exchange name via the `<p>` beneath the tile, so a filled `alt` would be announced twice.
-      - _Requirements: 1.1, 1.2; Design: Components/apps/web (Exchange logo assets)_
-    - [x] 5.6.5 Set `logoUrl` for the three seeded exchanges in `packages/db/prisma/seed.ts` (`/exchange-logos/<slug>.png`), adding it to BOTH the `create` and `update` halves of the `exchange.upsert` so a re-seed backfills the existing rows.
-      - _Requirements: 1.1; Design: Testing Strategy_
-    - [x] 5.6.6 Verify locally, then deploy in the right order. Run `corepack pnpm --filter @cashback/web... build`, which also re-runs `prisma generate` so the Prisma client picks up the new column. Deploy order matters: push first so the built image contains both migration `202609160001_exchange_logo_url` and the logo files, then apply the migration and re-seed inside the deployed container (`railway ssh -s "@cashback/web" -- sh -c "cd packages/db && npx prisma migrate deploy"`, then the seed command), and confirm the tiles show real logos. The home route is dynamic (`ƒ /` in the build output), so no extra redeploy is needed after re-seeding. The `check-railway-deploy` skill has the SSH key setup, migration, and seed details.
-      - Local verification (2026-09-16): `corepack pnpm --filter @cashback/web... build` and `lint` passed. All three PNGs decoded successfully. Production-server smoke with a fixture DB passed for home/catalog logo rendering, null-logo fallback, service/API mapping, and local/optimized image HTTP responses. No database writes were performed.
-      - Deployment remains pending: push the build/assets/migration, then migrate and re-seed in Railway and verify the live tiles. Task 5.6.6 remains unchecked until this is done.
-      - _Requirements: 1.1, 6.5; Design: Environments & deployment_
+    - Nullable `Exchange.logoUrl` (migration `202609160001_exchange_logo_url`) mapped in `contentService`; public schema accepts only `/exchange-logos/<slug>.png` or null; admin schemas exclude it. PNG wordmarks in `apps/web/public/exchange-logos/` (provenance in `apps/web/docs/exchange-logos.md`); `OfferCard` renders `next/image` with `alt=""`, falling back to the gradient + name; seed sets `logoUrl` in both upsert halves.
+    - Verified locally 2026-09-16: build/lint pass, PNGs decode, fixture smoke for logo and null fallback. Railway migrate + re-seed + live check still pending.
+    - _Requirements: 1.1, 1.2, 1.5, 10.2; Design: Data Models, Components/apps/web (Exchange logo assets)_
 
 - [x] 6. Referral redirect + reliable click tracking
   - Implement `clickService.recordClick` and `GET /go/[linkId]`: resolve active link, return 302, and record the click via a reliable best-effort mechanism (Next.js `after()`/`waitUntil` post-response task, or a short-timeout awaited insert) — not an unawaited/dropped promise. Recording failure still redirects; never wait on sync; unknown/inactive → safe fallback, no open redirect.
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5; Design: Key flows, Components/apps/web_
 
 - [x] 7. Auth port + interim auth
-  - [x] 7.1 Define `AuthPort` in `core` (`getSession`, `requireCustomer`, `requireAdmin`) with distinct customer/admin principals.
-    - **Amended by Task 22 (v0.6):** `requireCustomer` and the customer principal are
-      removed — end-user identity is a `UidSession` (Task 24), resolved by
-      `uidSessionService`, not `AuthPort`. `getSession`/`requireAdmin` are unchanged.
+  - [x] 7.1 Define `AuthPort` in `core` (`getSession`, `requireAdmin`). End-user identity is a `UidSession` resolved by `uidSessionService` (Task 24), not `AuthPort`.
     - _Requirements: 3.2, 3.3, 3.4; Design: Components/Auth_
-  - [x] 7.2 Implement the interim auth provider behind the port (email+password with hashed `passwordHash` and a `Session` table of hashed tokens + expiry) and customer register/login/logout routes; server-side authz on all guarded routes. These interim tables are replaceable if a managed provider (open decision #13) is chosen without touching route handlers.
-    - **Amended by Task 22:** customer register/login/logout routes are deleted; `Session`
-      becomes admin-only (`adminId` FK). Admin login/logout is unaffected.
+  - [x] 7.2 Implement the interim admin auth provider behind the port (email+password with hashed `passwordHash`, admin-only `Session` table of hashed tokens + expiry); server-side authz on all guarded routes. Replaceable if a managed provider (Open decision #13) is chosen.
     - _Requirements: 3.1, 3.5; Design: Components/Auth_
 
 - [x] 8. Admin content management
@@ -251,12 +242,8 @@ flowchart TD
   - [x] 8.4 Build the admin UI forms for exchanges/offers/links/guides replacing the placeholder dashboard, and confirm an edit is visible on the next public read.
     - The guarded admin page now renders client-side create/edit/status forms that call only `/api/admin/*`. A live exchange edit appeared on the next public read; switching it to DRAFT hid it immediately; the original seed data was restored afterward.
     - _Requirements: 10.2, 10.3; Design: Components/apps/web_
-  - [x] 8.5 Fix admin content defects found in review of 8.2–8.4 (ordered by impact):
-    - **(a) Foreign-key errors surface as 500.** `write()` in `content.ts` maps only Prisma `P2025`→404 and `P2002`→409. A non-existent `exchangeId` on offer/guide create or update raises `P2003` (foreign key constraint), which falls through to `INTERNAL_ERROR` 500 and logs a stack trace — a client mistake reported as a server fault. Map `P2003` to a domain error returning 400 (or 404) alongside the existing cases.
-    - **(b) Same-exchange invariant is check-then-write.** `assertOfferExchange` (link create/update) and the incompatible-link probe in `updateOffer` run as separate round-trips outside a transaction, so two concurrent admin writes can each pass their own check and still commit a state where `ReferralLink.exchangeId ≠ Offer.exchangeId`. This invariant feeds cashback rate resolution, so prefer a structural guarantee: add `@@unique([id, exchangeId])` on `Offer` and make `ReferralLink`'s offer relation composite on `(offerId, exchangeId) → Offer(id, exchangeId)`, which makes the violation unrepresentable. Otherwise wrap check + write in `db.$transaction` with row locking. Guards Correctness Property 13 / Req 7.3.
-    - **(c) Minor:** every admin `GET` calls `listAdminContent()`, which queries all four entities and discards three, so one admin page load costs ~16 queries instead of 4 (noticeable against a remote Postgres) — split into per-entity reads or expose one aggregate endpoint; admin lists are unpaginated; an *authenticated* non-admin principal receives 401 where 403 is more accurate; and `ExchangeSelect` emits two `value=""` options when `optional` is set.
-    - Note: stale `vi` keys remain in `Exchange.i18n`/`Guide.i18n` rows from pre-5.5 seeds. They are inert (the registry only resolves `en`) and the next seed run overwrites `i18n`, so no migration is needed.
-    - Completed: Prisma error codes are mapped without cross-package `instanceof`; migration `202609150003_offer_link_exchange_invariant` adds a composite FK `(offerId, exchangeId) → Offer(id, exchangeId)`; admin reads use per-entity cursor-paginated queries with UI load-more; auth distinguishes 401/403; and optional exchange selects have one empty option. Verified on Railway test Postgres: direct mismatched write blocked with P2003 and unchanged data, invalid FK API returned 400, customer session returned 403, and cursor pages were distinct.
+  - [x] 8.5 Fix review defects of 8.2–8.4: map Prisma `P2003` to 400; make the link↔offer same-exchange invariant structural (migration `202609150003_offer_link_exchange_invariant`, composite FK `(offerId, exchangeId) → Offer(id, exchangeId)`); per-entity cursor-paginated admin reads; 401 vs 403; one empty option in optional exchange selects.
+    - Verified on Railway test Postgres: mismatched direct write blocked (P2003), invalid FK API 400, non-admin session 403, distinct cursor pages.
     - _Requirements: 7.3, 10.2; Design: core services, Components/API contracts, Correctness Properties 13_
 
 ### Phase 1 — Import pipeline, UID linking, attribution
@@ -275,7 +262,7 @@ flowchart TD
     - Bybit MVP accepts normalized CSV v1 (bounded by `IMPORT_MAX_BYTES` and 10 MiB), stores the original privately as database bytes, and creates the batch/job atomically. This replaces container-local storage for new uploads so separate Railway web/worker services share durable input. Unsupported exchange/XLSX uploads return a clear validation error.
     - _Requirements: 6.1, 6.2; Design: Key flows/import_
   - [ ] 10.2 Implement `parserRegistry` + a first CSV/XLSX adapter interface distinguishing TRANSACTION vs AGGREGATE reports; no formula/macro execution; fall back to aggregate when transaction identity keys are missing.
-    - Done: `parserRegistry.bybit`, strict normalized CSV v1, transaction/aggregate identity, opaque UID and decimal parsing, no formula execution. Pending: native Bybit export mapping (needs a real sample), XLSX adapter. See `apps/web/docs/bybit-cashback.md`.
+    - Done: Bybit normalized CSV v1 (transaction/aggregate identity, opaque UID, decimal parsing, no formula execution) and the MEXC Referral Data XLSX activity adapter (Task 10.6). Pending: native Bybit export mapping, which still needs a real commission sample. See `apps/web/docs/bybit-cashback.md`.
     - _Requirements: 6.4, 6.10, 6.11; Design: Components/core services_
   - [x] 10.3 Implement PARSE job: normalize (UID string, UTC timestamps + source tz, decimals), flag error/duplicate/unmapped/conflict rows into `StagingRow`, compute totals, set batch to PREVIEW.
     - Implemented for Bybit CSV v1 / UTC: invalid/duplicate/conflicting rows block publish; per-currency totals and unmapped-UID counts appear in preview. Unknown headers or malformed files produce FAILED with an actionable error.
@@ -283,6 +270,20 @@ flowchart TD
   - [x] 10.4 Implement `GET /api/admin/imports/:id` returning status, preview counts, error rows, reconciliation info.
     - Admin-only endpoint returns batch lifecycle/source fields, totals, total/flagged row counts, and up to 100 flagged preview rows under private/no-store caching. Live probe returned 200 for the newly uploaded `UPLOADED` batch with zero rows before parsing.
     - _Requirements: 6.6; Design: Components/API contracts_
+  - [x] 10.5 Generalize the import envelope: add dataset kind (`REFERRAL_ACTIVITY`/`COMMISSION`), source method (`NATIVE_FILE`/`NORMALIZED_FILE`/future `OFFICIAL_API`) and a versioned `ReferralSnapshot` store (`sourceAsOf` already exists on `ImportBatch`). Migration backfills existing batches as `COMMISSION`/`NORMALIZED_FILE` before making the columns required, makes `reportType` nullable, and adds the `current = true` partial unique index in raw SQL. `importMetadataSchema` becomes a union on dataset kind (`reportType` required for commission, `sourceAsOf` for activity). Move the Bybit/CSV/UTC guards from `createImportBatch` into the resolved adapter. Parse/publish dispatch by dataset kind; activity publish uses an advisory lock keyed on (exchange, root, period) instead of `lockCashback` and never enqueues ATTRIBUTE. Bybit CSV wallet results stay unchanged (regression check against the happy-path batch).
+    - Migration `202609250001_ingest_envelope` backfills existing batches as `COMMISSION` / `NORMALIZED_FILE`, makes `reportType` nullable, and adds the current-snapshot partial unique index. Activity publish does not take the cashback lock and does not enqueue ATTRIBUTE. **Verified 2026-09-25:** the Bybit integration on an isolated schema still credits, corrects, releases holds and withdraws as before.
+    - _Requirements: 6.1, 6.7, 6.12–6.16; Design: Key flows/import, Data Models_
+  - [x] 10.6 Add the native MEXC Referral Data XLSX adapter. Validate locally against the ignored file `data/mexc/Referral Data Export-2026-09-25 14_22_39.xlsx`; commit only a synthetic fixture with fake UIDs and referral code. Pick a maintained XLSX reader that does not evaluate formulas (not the npm `xlsx` package); bound decompressed size and row/column counts; accept `.xlsx` with one worksheet only. Match required headers by name, report extra columns as warnings, parse inline-string numbers strictly into Decimal, preserve UID text, reject formulas/duplicate UIDs/invalid units, require `sourceTz` and `sourceAsOf`, convert the inclusive sheet period in `sourceTz` to UTC and cross-check it with metadata, and flag `partial` when `sourceAsOf < periodEnd`. Copy only mapped columns into staging (no nickname/user tag/identification/asset band). The local sample should preview 46 valid zero rows, flagged partial.
+    - Synthetic-fixture tests (not blocked on new data): leading-zero UID, extra column, missing required header, duplicate UID, formula cell, period mismatch, same-period re-import supersedes, older export rejected (`OLDER_REPORT`), UID absent from the new version shows no data, overlapping periods not summed, zero vs absent, and wallet/CommissionRecord tables unchanged after activity publish.
+    - **Verified 2026-09-25:** parser tests including the gitignored 46-row zero sample (partial, no personal columns in staging). Isolated-schema integration passed supersede, `OLDER_REPORT`, absent UID, overlap, zero-vs-absent, and unchanged commission/wallet tables.
+    - _Requirements: 6.3–6.6, 6.12–6.14, 6.16; Design: MEXC native referral adapter, Referral activity publish_
+  - [x] 10.7 Add an admin-only paginated `GET /api/admin/referral-snapshots` and a compact report view filtered by exchange and exact period (current version only). Include zero-valued UIDs, units, source as-of and the partial flag; do not expose raw rows or personal columns or treat reported earnings as wallet credit.
+    - The native workbook is uploaded on `/admin/ingest/uploads` and the current snapshot is read on `/admin/reports/activity` (moved by Task 32; first shipped as `/admin/crawl-data`). Columns are labeled reported volume and reported earnings. The response note states they are not cashback wallet credit.
+    - _Requirements: 6.13; Design: Components/API contracts, Referral activity publish_
+  - [ ] 10.8 Data gate: with a second MEXC export containing nonzero activity and a confirmed timezone, check that volume/earnings are period values (compare against the MEXC portal for a few UIDs) before labeling them period totals in the UI.
+    - _Requirements: 6.12–6.14; Design: MEXC native referral adapter_
+  - [ ] 10.9 (Deferred) Normalized CSV activity fallback with the same validations as 10.6, recording the native evidence privately. Start only when an exchange has no usable native export; MEXC does not need it.
+    - _Requirements: 6.1, 6.12–6.15; Design: Ingest choices_
 
 - [x] 11. Report commit: versioned publish (idempotent + atomic)
   - Implement `POST /api/admin/imports/:id/commit` (creates PUBLISH job) and the PUBLISH job in `commissionService`: per row, upsert the `CommissionRecord` identity by `(exchangeId, dedupKey)`, upsert a `CommissionVersion` keyed by the unique `(commissionId, batchId)`, mark prior version superseded, set `activeVersion`, and recompute `reconciledAmount` (default rule: latest version supersedes). Commit the whole batch atomically, then enqueue ATTRIBUTE.
@@ -290,149 +291,62 @@ flowchart TD
   - _Requirements: 6.7, 6.8, 6.9, 7.5, 7.8; Design: Key flows/import, Data Models, Correctness Properties 1, 7, 9_
   - Bybit normalized v1 dedup keys are defined in `bybit-parser.ts` (root + transaction ID + asset, or root + UID + asset + exact UTC period). Partial overlaps and older reports are rejected; corrections use the original identity. Native export identity mapping still needs a real sample.
 
-- [x] 12. UID linking + verification (Bybit MVP)~~ **SUPERSEDED by Task 22 (v0.6/v0.7)**
-  - ~~12.1 `POST/GET /api/me/uids`, `UidLink(PENDING_VERIFICATION)`.~~ Removed: there is no
-    customer to link a UID to. A `UidAccount` is created directly by attribution (Task 22).
-  - ~~12.2 Admin-approved ownership verification via `ownershipApprovedAt` + partial unique
-    index.~~ Removed: the operator accepted first-claimant-wins instead (Open decision #21).
-    The code this task shipped (`createUidLink`, `approveUidOwnership`,
-    `verifyApprovedUids`, the UID-review UI in `bybit-operations.tsx`) is deleted by Task 22,
-    not migrated — there is nothing in the new model for it to do.
-  - Kept here, struck through, per spec governance (§4): the requirement numbers this task
-    cited (5.1–5.6) no longer exist in this form; see Requirement 5 in requirements.md v0.6.
+- [ ] 11.1 MEXC commission source gate: inspect a nonzero UID-level commission export for period, settlement status, units and stable identity; then map either its native format or an admin-prepared normalized CSV to the existing CommissionRecord/CommissionVersion path. Reconcile preview totals with the MEXC commission view before allowing wallet attribution. Do not convert Referral Data `Your Earnings` snapshots into payable commission or add activity and commission totals together.
+  - _Requirements: 6.11, 6.15, 7.5, 7.8; Design: Ingest choices, Versioned commission publish_
 
 - [x] 13. Attribution + cashback engine (rate resolution + delta, concurrency-safe)
   - Implement `attributionService` + `cashbackEngine`: serialize publish/attribution/ledger writes with a transaction-scoped Postgres advisory lock for the low-volume MVP; resolve the rate by precedence (offer of the reported referral link **only when corroborated by system-verified report data**, else exchange default), assert `ReferralLink.exchangeId = Offer.exchangeId = commission.exchangeId` (else fall back to default), and snapshot `offerId`/`cashbackRate` onto the record; compute `target = reconciledAmount × rate` and apply only `delta = target − creditedCashback` — positive delta offsets any `receivable` then CREDITs `pending` (with `availableAt`), negative delta reduces `pending` then `available` then records the remainder as `receivable` via CLAWBACK. Write every wallet movement with a unique `opKey` (e.g. `attr:{commissionVersionId}`) so retries/racing workers cannot double-apply; update `creditedCashback`.
-  - **Amended by Task 22 (v0.6/v0.7):** attribution no longer looks up a `UidLink`. It
-    upserts a `UidAccount` by `(exchangeId, uid)` unconditionally — cashback accrues with
-    no claimant action, no email, no session (Req 5.3, 5.5; Property 4). This is a small
-    change to the existing transaction (replace the `UidLink` lookup with a `UidAccount`
-    upsert); the rate resolution, delta math, and `opKey` idempotency are unchanged.
+  - Attribution upserts the `UidAccount` by `(exchangeId, uid)` unconditionally, so cashback accrues with no claimant action, email or session (Req 5.3, 5.5; Property 4).
   - _Requirements: 5.3, 7.1, 7.2, 7.3, 7.4, 7.7, 7.8, 8.2, 8.4, 8.7; Design: Key flows/UID accounts, Key flows/attribution, Cashback engine, Correctness Properties 2, 3, 4, 11, 12, 13_
 
-- [x] 22. Re-key identity from `Customer`/`UidLink` to `UidAccount` (UID-first migration)
-  - **This must land before Tasks 23–26.** It is the structural change the rest of Phase 2
-    depends on; Task 13's attribution amendment above is part of this task's scope.
-  - **Verified:** migration on an empty isolated schema and populated legacy fixture;
-    balances, pending lots, audit and admin session preserved; ambiguous allocation
-    rejects atomically. Rewritten Bybit integration passes credit/release idempotency,
-    rate snapshots, corrections/receivable offset, overlap rejection, atomic publish
-    rollback and lease fencing. Build, lint and parser tests pass.
-  - **Schema:** drop `Customer` and `UidLink` (and the partial unique index
-    `uidlink_verified_owner`); add `UidAccount` (`@@unique([exchangeId, uid])`),
-    `EmailOtp`, `UidSession`, `RateLimitCounter`; change `Session` to admin-only
-    (`adminId` FK, drop `principalType`/`subjectId`); re-point `Wallet.customerId` →
-    `Wallet.uidAccountId`, `Withdrawal.customerId` → `Withdrawal.uidAccountId` (+ new
-    `email`, `isFirst` columns), `CommissionRecord.attributedCustomerId` →
-    `attributedUidAccountId`; drop `PrincipalType`, `UidLinkStatus` enums; change
-    `ActorType.CUSTOMER` → `ActorType.CLAIMANT`.
-  - **Core:** rewrite `packages/core/src/services/cashback.ts` — delete `createUidLink`,
-    `approveUidOwnership`, `listPendingUidLinks`, `verifyApprovedUids`; replace with a
-    `upsertUidAccount(exchangeId, uid)` used by attribution (Task 13's amendment).
-    `getWallet`/`listUidLinks`-equivalent reads move to Task 23/25's services.
-  - **Web:** delete `apps/web/src/app/login/*`, `/api/auth/{register,login,logout}` (keep
-    only the admin variants under `/api/admin/auth/*`), `apps/web/src/lib/customer-api.ts`,
-    `apps/web/src/app/api/me/*`, `apps/web/src/components/cashback-panel.tsx` +
-    `cashback-dashboard.tsx`, and the UID-ownership-review block in
-    `apps/web/src/app/admin/bybit-operations.tsx`.
-  - **Tests:** `scripts/test-bybit-integration.mjs` currently creates `Customer` rows,
-    calls `core.createUidLink`/`core.approveUidOwnership`, and asserts against
-    `/api/me/wallet`/`/api/me/uids` with a session cookie from `core.createSession`. All of
-    that must be rewritten against `UidAccount` (attribution creates it directly) before
-    this task can be marked done — it is the project's only end-to-end proof that money
-    logic works, so it cannot be left broken partway through the migration.
-  - Verify: `pnpm typecheck`/`build` clean with `Customer`/`UidLink` gone from the
-    codebase (a lingering reference is a build error, not a lint warning); the rewritten
-    integration test's existing assertions (idempotent credit, corrections/receivable
-    offset, overlap rejection, lease fencing) still pass against `UidAccount`.
+- [x] 22. Re-key identity to `UidAccount` (UID-first migration)
+  - Added `UidAccount` (`@@unique([exchangeId, uid])`), `EmailOtp`, `UidSession`,
+    `RateLimitCounter`; `Session` is admin-only; wallets, withdrawals and commission
+    attribution point at `UidAccount`; `ActorType.CLAIMANT`. Customer auth routes, UID-link
+    services and their UI were deleted; `scripts/test-bybit-integration.mjs` was rewritten
+    against `UidAccount`.
+  - **Verified:** migration on an empty schema and a populated fixture preserved balances,
+    pending lots, audit and admin session; integration passes credit/release idempotency,
+    rate snapshots, corrections/receivable offset, overlap rejection, atomic rollback and
+    lease fencing. Build, lint and parser tests pass.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6; Design: Key flows/UID accounts, Data Models (`UidAccount`), Correctness Properties 3, 4_
 
 ### Phase 2 — Lookup, wallet, withdrawals
 
 - [x] 14. Wallet balances + hold release
-  - [x] 14.1 Implement `walletService` and a wallet read returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
-    - **Amended by Task 22:** the read moves from `GET /api/me/wallet` (session-scoped
-      customer) to `GET /api/uid/wallet` (session-scoped `UidAccount`, Task 24). The
-      balance/history logic itself (`walletService` internals) is unchanged.
+  - [x] 14.1 Implement `walletService` and `GET /api/uid/wallet` (session-scoped `UidAccount`, Task 24) returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
     - _Requirements: 8.1, 8.5, 8.6; Design: Cashback engine, Data Models_
   - [x] 14.2 Implement `RELEASE_HOLDS` job (scheduler tick) moving cleared CREDITs `pending→available`; implement the reversal policy (reduce `pending` then `available`, remainder to `receivable` via CLAWBACK) so no balance goes negative, and expose `receivable` in the wallet.
     - _Requirements: 8.3, 8.4, 8.7; Design: Key flows/attribution, Cashback engine, Correctness Properties 5, 12_
-  - [x] 14.3 Customer experience: sign-in/register form, private "Your cashback" panel...~~
-    **SUPERSEDED by Task 22.** What landed here (`login-form.tsx`, `cashback-panel.tsx`,
-    `cashback-dashboard.tsx`, the UID-link form, admin ownership-review UI in
-    `bybit-operations.tsx`) is deleted, not migrated — v0.6/v0.7 has no customer session to
-    build a panel around. Kept struck through per spec governance (§4).
-  - [x] 14.3a Anonymous quick-lookup widget (boolean, Requirement 1.6–1.8)
-    **SUPERSEDED by Task 23.** The Hybrid design (boolean-only response, register CTA) is
-    replaced by a lookup that returns real `pending`/`available` amounts with no account
-    step. `LookupAttempt` is renamed/generalized to `RateLimitCounter` (Task 22).
-  - [x] 14.3b Account UX gaps (username, `/me/uids` route, no-reset-password notice)
-    **SUPERSEDED.** There is no username, no `/me/uids`, no sign-in screen — see Task 22
-    for the removal and Task 25 for the withdrawal UI that replaces this scope.
-  - Verification: parser/money unit tests and isolated PostgreSQL integration cover migration, idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection, and expired-owner rollback. Deployment/live Bybit data validation remain outside these completed code tasks. Account-isolation checks specifically (Customer A cannot read Customer B) are superseded by Task 25's UID-session isolation checks.
+  - Verification: parser/money unit tests and isolated PostgreSQL integration cover idempotent import/credit/release, frozen rates, corrections/receivable offset, overlap rejection and expired-owner rollback.
 
 - [x] 23. Cashback lookup by exchange + UID (Requirement 14)
-  - **Verified:** isolated HTTP test checks strict amount-only response, private cache,
-    missing-input rejection before database access, IP budget/429/Retry-After,
-    no account/wallet/OTP/session writes, real-zero distinction and home placement.
-    Production requires a valid IP header overwritten by trusted ingress.
-  - Add `lookupService` in `core`: consume the per-IP budget first (`RateLimitCounter`,
-    scope `lookup:ip`), then read the `UidAccount`'s wallets for `(exchangeId, uid)` and
-    return `pending`/`available` per asset plus `lastImportAt`/`sourceAsOf`. Read-only — it
-    MUST NOT create a `UidAccount`, `Wallet`, or any session (Req 14.4, 14.5).
-  - Reject a request missing either `exchangeId` or `uid` before querying anything —
-    a UID without an exchange is never resolved (Req 14.1).
-  - Add `POST /api/lookup` returning the balances above and nothing else: no bound email
-    (in any form), payout address, withdrawal record, movement history, or
-    `reserved`/`withdrawn`/`receivable` (Req 14.3). Over budget → 429 + `Retry-After`
-    without querying the wallet. Unknown UID and known-zero-balance UID use the same
-    response shape with an explicit `hasData` flag (Req 14.6, mirrors Req 8.5's "no data"
-    vs zero distinction). Response `Cache-Control: private, no-store`.
-    - Add the lookup form on the home page above the offer grid: exchange select + UID
-    input, rendering balances inline on success. Extract all new copy into
-    `apps/web/src/i18n/messages/en.ts` (Req 4.2).
-  - Verify: funded UID → response contains exactly `pending`/`available`/freshness, and a
-    test asserts the response body contains none of `email`, `address`, `reserved`,
-    `withdrawn`, `receivable`, or a history array; missing `uid` or `exchangeId` → 400
-    without a query; N+1 requests from one IP within the window → 429; row counts for
-    `UidAccount`/`Wallet` unchanged after a lookup.
+  - `lookupService` consumes the per-IP budget (`RateLimitCounter`, `lookup:ip`) first, then
+    reads the `UidAccount` wallets for `(exchangeId, uid)`; read-only, never creates an
+    account, wallet or session. Missing `exchangeId` or `uid` → 400 before any query.
+  - `POST /api/lookup` returns `pending`/`available` per asset, `hasData` and freshness
+    only — no email, address, withdrawals, history, `reserved`/`withdrawn`/`receivable`;
+    over budget → 429 + `Retry-After`; `Cache-Control: private, no-store`. Home-page form
+    above the offer grid, copy in `en.ts`.
+  - **Verified:** isolated HTTP test for the strict response, private cache, early 400,
+    429, no writes, zero vs no data, home placement. Production needs a trusted-ingress IP header.
   - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6; Design: Key flows/Cashback lookup by exchange + UID, core services (`lookupService`), Data Models (`RateLimitCounter`), Correctness Properties 14, 15_
 
 - [x] 24. Email OTP binding & UID session via Resend (Requirement 15, 16)
-  - **Verified:** isolated Next HTTP + core tests cover hashed/single-use OTP,
-    binding, mismatched-email rejection, cooldown/day cap, five failed guesses,
-    expiry, failed provider acceptance and 30-minute UID-session isolation from
-    other UID scopes/admin sessions. Captured output contains no plaintext OTP.
-    Real Resend credentials and verified sender domain remain deployment setup.
-  - Add the `resend` package and `emailPort` interface (`sendOtp`); implement
-    `resendEmailAdapter` calling it. `EMAIL_FROM` must be on a Resend-**verified** domain —
-    the shared `resend.dev` testing domain only delivers to the account owner, so it cannot
-    reach a real claimant (Req 16.2).
-  - Add `otpService`: generate a 6-digit code with `crypto.randomInt(100000, 1_000_000)`,
-    hash it with the `bcryptjs` already used for admin credentials, store `EmailOtp`
-    (`expiresAt` = now + `OTP_TTL_MINUTES`, proposed 5). Send order: check per-UID cooldown
-    + daily cap (`RateLimitCounter` scope `otp:uid`) and per-IP limit (scope `otp:ip`) →
-    if `UidAccount.boundEmail` is set, target only it (mismatched submission is rejected
-    *without* sending anywhere and *without* revealing the bound address, Req 15.2) → call
-    `emailPort.sendOtp` → record `providerAccepted`/`providerMessageId`. If Resend errors or
-    times out, do not mark the OTP sent and return a retryable error (Req 16.3).
-  - Add `POST /api/otp/verify`: compare the hash, check `expiresAt`/`consumedAt`/
-    `failedAttempts` (invalidate at `OTP_MAX_ATTEMPTS`, proposed 5, Req 15.5), consume the
-    OTP, bind the email if unbound, issue a `UidSession` (hashed token, 30-minute expiry)
-    scoped to exactly that `UidAccount` (Req 15.3).
-  - Add `uidSessionService`: every `/api/uid/*` handler resolves its principal through this
-    service from the session cookie, never from a request parameter (Req 15.10); an
-    expired session or one presented against a different UID is rejected (Req 15.11).
-  - Verify: OTP plaintext never appears in a log line or API response body (grep the test
-    output, don't just assert the field is absent); 5 wrong guesses invalidate the code
-    even before the TTL elapses; a UID session for account A returns 401/403 against
-    account B's wallet; resending before the cooldown elapses is rejected; a simulated
-    Resend failure leaves the `EmailOtp` row unmarked-as-sent.
+  - `emailPort` + `resendEmailAdapter` (`EMAIL_FROM` on a Resend-verified domain);
+    `otpService` (6-digit `crypto.randomInt`, bcrypt hash, TTL, per-UID cooldown/daily cap
+    and per-IP limit via `RateLimitCounter`, bound email never revealed, provider failure
+    leaves the OTP unsent); `POST /api/otp/verify` (single use, invalid after
+    `OTP_MAX_ATTEMPTS`, binds email, issues a 30-minute `UidSession` for one `UidAccount`);
+    `uidSessionService` resolves every `/api/uid/*` principal from the cookie only.
+  - **Verified:** isolated HTTP + core tests for hashing/single use, mismatched email,
+    cooldown/day cap, 5 failed guesses, expiry, provider failure, cross-UID and admin
+    session isolation; test output contains no plaintext OTP. Real Resend credentials and
+    sender domain remain deployment setup.
   - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7, 15.8, 15.10, 15.11, 16.1, 16.2, 16.3, 16.4, 16.5, 16.6; Design: Key flows/Email OTP binding & UID session, core services (`otpService`, `uidSessionService`, `emailPort`), Data Models (`EmailOtp`, `UidSession`), Correctness Properties 16, 17_
 
 - [x] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
-  - **Implemented and verified.** Service, API routes, core UI, env documentation, and
-    isolated PostgreSQL integration coverage are complete. Task 26 supplies the UI upgrade.
+  - **Verified:** service, routes, UI and isolated PostgreSQL integration (25.9).
   - [x] 25.1 `withdrawalService` in `packages/core/src/services/withdrawals.ts`: `requestWithdrawal`
     (amounts/receivable/address validation, `isFirst` detection, auto-approve vs UNDER_REVIEW,
     `WITHDRAWAL_RESERVE` wallet entry, two `WithdrawalEvent` rows), `cancelWithdrawal`,
@@ -452,50 +366,20 @@ flowchart TD
     `window.confirm()` guard, cursor pagination.
   - [x] 25.6 i18n strings for all new copy in `apps/web/src/i18n/messages/en.ts`; no inline strings in the components.
   - [x] 25.7 `WithdrawalQueue` wired into admin page; `WithdrawalFlow` accessible at `/withdraw`.
-  - [x] 25.8 Document withdrawal env vars in `.env.example`:
-    `WITHDRAWAL_ROUTES` (JSON, e.g. `{"USDT":["TRON","ETHEREUM"]}`),
-    `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` (JSON, e.g. `{"USDT":"100.00"}`).
-    Already present in `.env.example` with clear comments — confirmed.
-  - [x] 25.9 Integration test coverage for the core acceptance criteria:
-    first withdrawal → `UNDER_REVIEW` regardless of amount; second (same amount) → `AUTO_APPROVED`;
-    two concurrent requests against the same available balance cannot both reserve it; cancel after
-    `PAID` is rejected; every transition has a matching `WithdrawalEvent`.
-    Added after the lease-fencing checks in `scripts/test-bybit-integration.mjs`. Verified on
-    2026-09-17 against a dedicated test database in an isolated `cashback_test_*` schema:
-    first-review, second-withdrawal auto-approval, paid-cancel rejection, audit events,
-    receivable blocking, and concurrent reservation safety all pass.
+  - [x] 25.8 Document `WITHDRAWAL_ROUTES` and `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` (JSON) in `.env.example`.
+  - [x] 25.9 Integration coverage in `scripts/test-bybit-integration.mjs` (verified 2026-09-17,
+    isolated `cashback_test_*` schema): first withdrawal `UNDER_REVIEW`, second auto-approves,
+    concurrent requests cannot both reserve, cancel after `PAID` rejected, receivable blocks,
+    every transition has a `WithdrawalEvent`.
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11; Design: Key flows/withdrawal, Data Models, Correctness Properties 6, 10, 12_
 
 - [x] 26. Cherry-pick UI components from the reference project (`cashback/`)
-  - The `cashback/` folder (a local, gitignored copy of `satnaing/shadcn-admin`, MIT
-    licensed) is a **Vite SPA with no backend** — its OTP form's "verify" handler is a
-    `setTimeout` + toast, not a real check. Copy component *files* only; every verify/send
-    call in this task is Task 24's real implementation, never the reference project's stub.
-  - Copy `src/components/ui/input-otp.tsx` (and the `input-otp` npm dependency) into
-    `apps/web/src/components/ui/`; wire it into the OTP-verify step of Task 24's withdrawal
-    UI in place of a plain text input.
-  - Copy `src/components/data-table/*` (6 files: `bulk-actions`, `column-header`,
-    `faceted-filter`, `index`, `pagination`, `toolbar`, `view-options`) into
-    `apps/web/src/components/data-table/`; use it for the admin withdrawal queue (Task 25)
-    and the admin import-batch list, both currently plain `<ul>`/`<table>` markup.
-  - Copy `src/components/confirm-dialog.tsx` for admin approve/reject/mark-paid actions
-    (hard-to-reverse operations that currently have no confirmation step).
-  - Add the missing `ui/*` primitives actually consumed by the above: `table`, `tabs`,
-    `sheet`, `skeleton`, `sonner`, `alert-dialog`, `select`, `checkbox`, `switch`,
-    `textarea`, `tooltip`, `popover`, `dropdown-menu`, `alert` — only the ones a copied
-    component imports, not the full set speculatively.
-  - **Do not copy:** TanStack Router (`routes/`, `routeTree.gen.ts` — conflicts with Next's
-    App Router), Clerk (conflicts with `AuthPort` and doesn't model a `UidSession`),
-    `vite.config.ts`/`netlify.toml`/`index.html`, or any submit handler from
-    `src/features/*` (they're fake — see above). The public site must stay SSR
-    (Req 1.1, 1.5); this task's components are for the admin/withdrawal areas only.
-  - Verify: `pnpm lint`/`typecheck`/`build` clean after each copied file; the admin
-    withdrawal queue paginates via `data-table` instead of loading all rows; approving a
-    withdrawal requires confirming a dialog first.
-  - **Verified 2026-09-17:** `input-otp` is wired to real Task 24 verification; TanStack
-    data-table components drive the withdrawal queue and import-batch list; approve/reject/
-    mark-paid use `ConfirmDialog`; only consumed primitives/dependencies were added. Web
-    lint, typecheck, and production build pass.
+  - Copied component files only from the gitignored `satnaing/shadcn-admin` copy (MIT):
+    `input-otp` (wired to Task 24's real verify), `data-table/*` (withdrawal queue and
+    import-batch list), `confirm-dialog` (approve/reject/mark-paid), and only the `ui/*`
+    primitives those import. Not copied: TanStack Router, Clerk, Vite config, or any
+    `src/features/*` handler (stubs with no backend).
+  - **Verified 2026-09-17:** web lint, typecheck and production build pass.
   - _Requirements: none directly (tooling/UX only); Design: Components/apps/web_
 
 - [x] 27. Home Online Rebate Ledger ticker (interim fake 100 large credits)
@@ -509,10 +393,8 @@ flowchart TD
     scrollable table). No SSE, no new public API, no DB read for this block.
   - Copy stays English (`home.ledger*`). Lead must not claim the ticker is the
     visitor's own wallet.
-  - **Verified 2026-09-17:** `generateLedgerDemoRows(100)` emits 100 masked rows
-    with large USDT amounts; home ticker duplicates the table for a 40s CSS
-    loop, pauses on hover/focus, and disables motion under
-    `prefers-reduced-motion`. Illustrative badge kept. Web `tsc --noEmit` pass.
+  - **Verified 2026-09-17:** 100 masked rows, 40s loop, pause on hover/focus, static under
+    reduced motion; web `tsc` pass.
   - _Requirements: 17.1, 17.2, 17.3, 17.4, 17.5, 17.6; Design: Components/apps/web
     (Online Rebate Ledger)_
 
@@ -530,17 +412,14 @@ flowchart TD
   - Update `scripts/test-uid-access.mjs` so the body still must not match
     `email|address|reserved|withdrawn|receivable|history` and must include
     `transactions` when `hasData` is true.
-  - **Verified 2026-09-17:** schema + `lookupService` return `transactions`; home
-    table shows Exchange paid vs Your share; `tsc` for contracts/core/web passes.
+  - **Verified 2026-09-17:** contracts/core/web `tsc` pass.
   - _Requirements: 14.2, 14.3, 14.7, 8.5, 8.6; Design: Key flows/Cashback lookup_
 
 - [x] 16. Admin analytics & operations dashboard
   - Implement `GET /api/admin/analytics` (click metrics by link/exchange/time from internal data), `GET /api/admin/accounts/:id/activity` (paginated, per UID/account), and `GET /api/admin/sync-status`; 30s polling when tab visible, 5s while a batch processes; admin/private responses set `Cache-Control: private, no-store`; no secrets/raw reports leaked; views for attributed vs unattributed commission and the withdrawal queue.
-  - **Verified 2026-09-17:** all three admin endpoints use the admin guard/private response
-    helper; dashboard shows click time/link/exchange aggregates, attribution split, jobs,
-    import/source freshness and the withdrawal queue; visible-tab polling is 30 seconds and
-    active import polling is 5 seconds. Isolated integration assertions cover analytics,
-    sync-status raw-report exclusion, and paginated UID activity. Lint/typecheck/build pass.
+  - **Verified 2026-09-17:** endpoints use the admin guard + private responses; polling
+    30s visible / 5s during import; integration covers analytics, sync-status raw-report
+    exclusion and paginated UID activity.
   - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6; Design: Components/apps/web, API contracts_
 
 ### Phase 3 — Hardening
@@ -551,12 +430,9 @@ flowchart TD
     web(write)/worker(read); secrets only in env/secret store (no public-prefixed,
     including `RESEND_API_KEY`); Postgres reachable only from web/worker; ensure admin and
     `/api/uid/*` write routes require the matching session type before shipping.
-  - **Verified 2026-09-17:** every admin write route uses `withAdminMutation` (admin
-    session + same-origin check); every `/api/uid/*` route derives the acting `UidAccount`
-    from `uidPrincipal(request)` (hashed session cookie) only, never from a request
-    parameter; no secret uses a `NEXT_PUBLIC_` prefix; Railway IaC injects the private
-    `DATABASE_URL` only into `@cashback/web`/`@cashback/worker`. Findings recorded in
-    `docs/security-audit.md`. `pnpm typecheck`/`lint`/`build` pass.
+  - **Verified 2026-09-17:** admin writes use `withAdminMutation`; `/api/uid/*` derives
+    the account from `uidPrincipal(request)` only; no `NEXT_PUBLIC_` secrets; private
+    `DATABASE_URL` only on web/worker. Findings in `docs/security-audit.md`.
   - _Requirements: 3.3, 6.2, 15.10; Design: Security_
 
 - [ ] 18. Lightweight test overview + critical invariant checks
@@ -620,15 +496,133 @@ flowchart TD
       awaits explicit user confirmation.
   - _Requirements: 6.5; Design: Environments & deployment_
 
-### Phase 4 — Deferred (do not start until confirmed)
+### Phase 4 — Bybit Affiliate API activity sync
 
-- [ ] 20. Scheduled API sync (disabled by default)
-  - Implement `SYNC` job type feeding the same normalization/versioned-publish path as manual imports, per-source lock, checkpoint (`last_success_at`, `source_as_of`), 15/30-min schedule, and alert after two consecutive failures/timeouts while showing last successful data as stale. Keep disabled until a suitable exchange API/permission is confirmed.
-  - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5; Design: Job queue design, Error Handling_
+- [x] 20. Scheduled API sync by exchange (Bybit first; activity only)
+  - Keep MEXC/Binance manual until an official connector and credentials are verified.
+    A schedule row may exist for every exchange but starts disabled. No browser
+    cookies, portal scraping, or wallet writes from this API dataset.
+  - _Requirements: 6.17–6.19, 13; Design: Scheduled Bybit Affiliate activity sync_
+
+  - [x] 20.0 Refactor ingest into the source adapter framework (prerequisite).
+    - Create `packages/core/src/ingest/{base,file,api,exchanges,sinks}`. Abstract
+      `SourceAdapter` with a final `ingest()` template (read → fingerprint → drift
+      → alias → map → validate → minimize → `NormalizedEnvelope`), then
+      `FileSourceAdapter`, `XlsxSourceAdapter`, `CsvSourceAdapter`,
+      `ApiSourceAdapter` (sign, page, cursor, `classifyError`, readiness, limiter).
+    - Move `mexc-parser.ts` → `MexcReferralXlsxAdapter` and `bybit-parser.ts` →
+      `BybitNormalizedCsvAdapter` with declarative `FieldContract` (required,
+      aliases, type, unit, `ignored`) and no behavior change; existing MEXC/Bybit
+      tests and fixtures must pass unchanged. Then unify Bybit CSV to the MEXC rule
+      (unknown column = `ADDITIVE` warning).
+    - `ingestRegistry` keyed by (exchange, dataset, method, format, contract
+      version) replaces `resolveIngestAdapter`; registration rejects a contract
+      whose targets are unknown.
+    - Add `schemaFingerprint`, `contractVersion`, `driftReport` to `ImportBatch`
+      and the drift classifier (`SAME/ADDITIVE/ALIASED/BREAKING`) with preview
+      warnings; re-parse a stored `originalFile` with a newer contract version.
+    - Stack decision: TypeScript abstract classes (same pattern as Python ABC); no
+      separate Python service.
+    - Bybit CSV unknown columns are `ADDITIVE` warnings and are dropped before staging. Required-header failures still reject the file. MEXC and Bybit parser tests still pass.
+    - _Requirements: 6.10, 6.16, 6.21; Design: Source adapter framework, Schema drift policy_
+
+  - [x] 20.1 Extend the activity schema for the API write model.
+    - Add `ReferralMetric` per snapshot/kind/asset for manual snapshots (enum
+      `ActivityMetricKind`, `MetricValueState`), and parent commission-field
+      state. Backfill MEXC scalar values; switch all admin readers/exports to
+      metrics; remove legacy columns only after the backfill and parity checks.
+    - Add `ActivityRoster`, `ActivityPeriodStatus`, `ActivityMetricCurrent`,
+      `ActivityMetricChange` (API sink; no per-run `ImportBatch`), plus
+      `ExchangeSyncConfig`, `SyncRun`, `ActivityPeriodOverride`,
+      `SyncConfigAudit` with enums, SQL interval check and one-active-run index.
+    - Create view `referral_activity_v` (manual current snapshots ∪ API current
+      metrics, `source` column, override applied, "reported no activity" from
+      complete day + roster). Confirm no migration alters commission or wallet.
+    - Migration `202609260001_bybit_activity_sync` backfills `ReferralMetric` from existing snapshot columns and adds `referral_activity_v`. Legacy snapshot columns stay until a parity check on the real database.
+    - _Requirements: 6.13–6.19, 13.4–13.6, 13.13; Design: Data Models, API write model_
+
+  - [x] 20.2 Implement the Bybit Affiliate connector and complete-period publish.
+    - Use worker-only `BYBIT_AFFILIATE_API_KEY/SECRET` with master UID and only
+      Affiliate read permission. Readiness via `/v5/user/query-api` on every run:
+      `readOnly=1`, Affiliate only, not expired; alert 14 days before `expiredAt`.
+      Bind the key to a stable Railway outbound IP before production (current key
+      is `ips=["*"]`, 90-day expiry).
+    - Call `/v5/affiliate/aff-user-list` with explicit `startDate` and `endDate`
+      per UTC day (never omitted), `size=100`, and every cursor page; stop on an
+      empty list or empty cursor. Apply a shared limiter from `x-bapi-limit*`
+      headers (10 req/s observed), bounded retry for transient/10006 failures,
+      no retry for `610015`, and pause on auth/permission/IP errors.
+      Reject malformed, duplicate UID, repeated cursor, incomplete, or suspiciously
+      empty period fetches. Store only UID, `source`, `tradeVol`, `takerVol`,
+      `makerVol`, `tradfiTradeVol`, and `commissionsVol` assets (Req 6.20 exclusions).
+    - Read `volUpdateTime` from `aff-customer-info` for up to 3 UIDs sampled from
+      the fetched roster (constant cost as UIDs grow); null if samples disagree or
+      the call fails. Map it to `sourceAsOf` only after its timezone is confirmed.
+    - Add a manual readiness probe script: read-only calls, schema and counts
+      only on stdout, raw output under gitignored `data/`.
+    - Implement `BybitAffiliateApiAdapter extends ApiSourceAdapter` and
+      `apiActivitySink`: day digest gate; changed day → rows into an
+      `ON COMMIT DROP` temp table, `INSERT … ON CONFLICT … DO UPDATE … WHERE
+      (value_state, amount) IS DISTINCT FROM …`, then mark missing rows `ABSENT`;
+      append every returned row to `ActivityMetricChange`; store only nonzero new
+      metrics; update roster (`GONE` after 3 complete misses). All under the
+      (exchange, root, day) advisory lock and lease fence, via `$executeRaw`.
+    - `REFERRAL_ACTIVITY` only, never `COMMISSION`/ATTRIBUTE. Drift `BREAKING`
+      quarantines the run and pauses the connector; `ADDITIVE`/`ALIASED` warn.
+      Prevent volume multiplication by number of assets.
+    - Readiness, signing, pagination, drift, and sparse metrics are covered by `packages/core/test/bybit-sync.test.mjs`. `scripts/probe-bybit-affiliate.mjs` is the read-only probe and was not run here.
+    - _Requirements: 6.17–6.21, 13.3–13.5, 13.9, 13.12; Design: Adapter boundary, Verified API behavior, API write model, Schema drift policy_
+
+  - [x] 20.3 Implement scheduling, backfill, reconciliation, and failure policy.
+    - Worker tick atomically claims due `ExchangeSyncConfig` and enqueues `SYNC`;
+      `intervalMinutes` is per exchange, one of 30 (default), 60, 720, 1440.
+      Skip missed slots after downtime rather than bursting; use active-run guard,
+      per-(exchange, root) lock, lease heartbeat/fencing, and crash recovery.
+    - Each run refreshes today and two previous UTC days. Initial enable
+      backfills 365 completed days (configurable) as daily jobs; allow older-range
+      backfill and show historical coverage. Revisit 30 completed days once daily
+      for source corrections; current day is partial, Bybit volume can update at
+      T+1 and can arrive after the same day's commission.
+    - Record attempt/success/fetched period/observation time distinctly from
+      `sourceAsOf`; alert after two consecutive failures or timeout, retain last
+      published data, and pause permanent credential/permission/IP errors.
+    - The worker claims due `ExchangeSyncConfig` rows, skips missed slots, and enqueues `SYNC`. Backfill jobs are delayed so they do not jump the current queue. Two consecutive failures or a credential/IP error pause the connector.
+    - _Requirements: 11.4, 13.1–13.8, 13.11; Design: Schedule and operation, Failure and UI_
+
+  - [x] 20.4 Add admin controls and report presentation.
+    - Add the connector page to the shell (now `/admin/ingest/connectors`, Task 32),
+      `GET/PATCH /api/admin/ingest/connectors/:exchangeId` and `POST …/run`
+      (implemented first as `/admin/sync` and `/api/admin/sync-config/*`, kept as aliases).
+      Show connector readiness, interval, enable state, next run, history,
+      freshness, safe errors, and a Sync now action. Audit actor/config changes;
+      apply edits without worker restart. Manual run is allowed with a disabled
+      schedule only when the connector is ready and no run is active.
+    - Extend `/api/admin/sync-status` and the activity report (`/admin/reports/activity`, Task 32) for source code,
+      volume USDT, reported commission by asset, partial/coverage/fetch times.
+      Label `commissionsVol` as reported activity; never label it pending or
+      settled. Keep secrets and source payloads out of admin/public responses.
+    - The connector page enables or disables a Bybit schedule, chooses 30/60/720/1440 minutes, and can sync now or resume. Responses do not include the key or secret.
+    - _Requirements: 6.13, 11.4, 13.1–13.9, 18.2; Design: API contracts, Failure and UI_
+
+  - [ ] 20.5 Verify and stage rollout.
+    - Run fixture tests for pagination, multi-asset metrics, empty/zero/absent,
+      identical/changed digests, failed last page, manual override, two scheduler
+      replicas, lease loss, 429 and auth/IP pause. Assert no `CommissionRecord`,
+      `WalletEntry`, or withdrawal change from API activity.
+    - One fixture per use case UC0–UC17 and UF1–UF7 (design "Use cases"): assert
+      drift class, rows written (none on UC1/UC8–UC11), change-log entries, roster
+      state, and that published data is unchanged on every failure path.
+    - On a private Railway test DB, apply migration/backfill and compare all MEXC
+      snapshot counts/amounts before and after. With a Bybit key in worker-only
+      variables and allowed egress IP, perform one bounded manual sync, compare a
+      chosen UID/referral code/day against the Affiliate portal, then enable a
+      30-minute schedule. Review request count, rate-limit headers, alert route,
+      and stale display before production rollout.
+    - _Requirements: 6.8, 6.17–6.21, 13; Design: Testing Strategy, Use cases, Security_
 
 - [ ] 21. (Optional) SSE near-real-time UI
   - Add `PostgreSQL NOTIFY → backend SSE → client refetch` with auth, heartbeat, reconnect snapshot, and streaming-capable proxy. Not required for MVP.
-  - _Requirements: 13.6; Design: Overview_
+  - _Requirements: 13.10; Design: Overview_
 
 - [ ] 29. Dimensional facts + monthly partitions (5,000 transacting UIDs/day)
   - **Do not start** until approaching 5,000 UIDs/day, `WalletEntry`/`ClickEvent`
@@ -655,9 +649,7 @@ flowchart TD
   - Verify: unauthenticated `/admin/*` (except login) redirects; nav highlights
     the active route; imports and withdrawals no longer share one scroll page;
     two tabs can open two sections; lint/typecheck/build pass.
-  - **Verified 2026-09-19:** shell layout + 7 routes; content split into four
-    sections; login stays outside the shell; `tsc` and `eslint src` pass. Build
-    recorded with the web production build.
+  - **Verified 2026-09-19:** shell layout + 7 routes; `tsc` and `eslint src` pass.
   - _Requirements: 18.1–18.6, 10.1, 11.2; Design: Components/apps/web (Admin shell)_
 
 - [x] 31. Admin RSC guard, link offer select, lookup version (Req 18.5, 10.6, 14.7)
@@ -673,25 +665,125 @@ flowchart TD
     `opKey`). Until ATTRIBUTE writes that entry, a newly published
     `reconciledAmount` is not shown; commission is 0 if no applied entry exists.
     `cashback` stays `creditedCashback`.
-  - **Verified 2026-09-22:** core and web typecheck pass; eslint on the touched
-    admin/web files passes. `creditedCommissionByRecord` keeps commission on the
-    version that already has `attr:{versionId}`. `retainedChoiceId` keeps an id
-    that is outside the loaded page and adds nothing when it is already listed.
-    Dev server after the pending Railway migrations: no cookie on `/admin/imports`
-    returns 307 to `/admin/login`. A bogus `cashback_session` makes both the
-    layout and the imports page throw `NEXT_REDIRECT` to `/admin/login` before
-    the page body; the document request is 307. `/admin/login` stays 200.
-    `/api/health` is 200 with database ok. The dropdown was not clicked in a
-    browser.
+  - **Verified 2026-09-22:** core/web typecheck and eslint pass; no-cookie or bogus-cookie
+    `/admin/imports` redirects (307) to `/admin/login` before the page body; `/api/health` 200.
   - _Requirements: 18.5, 10.6, 14.7; Design: Admin shell, Cashback lookup, Property 14_
+
+- [x] 32. Admin ingest and reports information architecture (Req 18.2, 18.7, 18.8)
+  - Follow `.kiro/steering/` (top of this file). Spec is updated first (Req 18,
+    design "Admin shell"); verify on Railway Postgres only, never a local DB.
+    Check Next.js App Router redirects and route groups via Context7 for the
+    version in the lockfile before coding.
+  - [x] 32.1 Adapter descriptor and registry endpoint.
+    - Add `accept`, `uploadFields`, `affectsCashback` and `describe()` to file
+      adapters; `GET /api/admin/ingest/adapters` returns the file adapter
+      descriptors from `ingestRegistry` (API adapters excluded; no credentials).
+    - Unit test: every registered file adapter produces a descriptor; a new
+      adapter class appears without UI changes.
+    - _Requirements: 18.7, 6.10; Design: Source adapter framework (Descriptor), Admin shell_
+  - [x] 32.2 Ingest and report API routes with aliases.
+    - Add `/api/admin/ingest/batches` (POST, GET with filters), `/:id` (GET),
+      `/:id/commit` (POST), `/api/admin/ingest/connectors/:exchangeId` (GET/PATCH),
+      `/run`, `/resume`, and `/api/admin/reports/activity` reading
+      `referral_activity_v`. The server re-resolves the adapter from exchange +
+      dataset kind + file extension and rejects a mismatch.
+    - Turn `/api/admin/imports*`, `/api/admin/referral-snapshots` and
+      `/api/admin/sync-config/*` into re-exports of the new handlers (same auth,
+      CSRF, `Cache-Control: private, no-store`).
+    - _Requirements: 6.1, 6.7, 13.1, 18.8; Design: API contracts_
+  - [x] 32.3 Pages and nav.
+    - Nav: Overview; Data ingest → Uploads, API connectors; Reports → Referral
+      activity; Withdrawals; Exchanges; Offers; Referral links; Guides.
+    - `/admin/ingest/uploads`: one registry-driven form (exchange → dataset kind →
+      adapter fields, file picker limited to `accept`) and a batch list filtered by
+      exchange, dataset kind, source method, status, with an **Affects cashback**
+      badge on `COMMISSION`. `/admin/ingest/uploads/[id]`: preview, drift
+      warnings, publish. Replaces `BybitOperations` upload and the MEXC upload in
+      `ReferralActivity`.
+    - `/admin/ingest/connectors`: current sync controls (move from `/admin/sync`).
+      `/admin/reports/activity`: current activity table, now from
+      `/api/admin/reports/activity` (manual + API sources).
+    - Retired pages `/admin/imports`, `/admin/crawl-data`, `/admin/referrals`,
+      `/admin/sync` redirect after `requireAdminPage()`.
+    - _Requirements: 18.1–18.8, 11.2; Design: Admin shell_
+  - [x] 32.5 Repair the Task 32 review findings.
+      - Preserve the legacy `referral-snapshots` response; aggregate overlapping UTC
+        API day buckets for range reports with roster/day coverage and page by UID while
+        keeping source/root groups intact. Add a shared response contract.
+    - Make file adapters own upload validation and parsing; route file types and
+      form choices come from active descriptors. Store adapter ID/version at upload,
+      retain old versions for replay, and remove the duplicate registry.
+    - Poll only active batches at 5 seconds, preview through publish, add report
+      columns and paging, preserve useful upload UX, then remove dead components.
+      Verify JSON adapter and version upgrade, alias shape, range aggregation and
+      multi-root pagination before running Railway-only integration scenarios.
+    - _Requirements: 6.10, 6.18, 6.22, 11.3, 18.7–18.8; Design: Source adapter framework, Admin shell, API contracts_
+
+- [x] 33. Raw landing layer before target tables (Req 6.23–6.26, 6.3, 6.16, 6.21, 13.4)
+  - Follow `.kiro/steering/` (top of this file): spec is already updated; verify on
+    Railway Postgres only; check Prisma raw SQL (`$queryRaw`/`$executeRaw`, `jsonb`,
+    transactions) and PostgreSQL declarative partitioning via Context7 for the
+    versions in the lockfile before coding.
+  - [x] 33.1 Schema.
+    - Migration: `raw_record` partitioned `BY LIST (_source_system)` with
+      `raw_bybit`, `raw_mexc`, `raw_binance`, `raw_bingx`, `raw_default`; columns
+      `id`, `_source_system`, `_load_id`, `_loaded_at`, `row_no`, `payload jsonb`;
+      index `(_load_id, row_no)`. Prisma model + enum `RawLoad`/`RawLoadState` with the
+      partial unique index "one non-superseded load per slice". `JobType` gains
+      `LOAD`, `TRANSFORM` (keep `PARSE` for queued jobs). No change to commission or
+      wallet tables.
+    - _Requirements: 6.23, 6.24; Design: Raw landing layer, Data Models_
+  - [x] 33.2 LOAD step (format/safety only).
+    - Split the adapter template: `load()` (readers key records by header text,
+      `__2` for duplicate headers, `__col_<n>` for empty ones; drop
+      `contract.personal`; format/safety checks only) and `transform()` (current
+      contract/drift/validate/minimize). Add `personal` to `FieldContract` and fill
+      it for MEXC and Bybit.
+    - Manual: `LOAD` job replaces `PARSE`; in one transaction under the slice lock:
+      new `RawLoad`, delete previous loads' raw rows, mark them `SUPERSEDED`, insert
+      rows, enqueue `TRANSFORM`. Missing/renamed columns, bad values and sheet period
+      mismatch must NOT fail LOAD (move those checks from `parseMexcReferralXlsx` /
+      `parseBybitCsv` into transform). Handle queued `PARSE` jobs as `LOAD`.
+    - API: `SYNC` fetches all pages of a day, then performs the load in-process
+      (a failed page sequence creates no load) and enqueues `TRANSFORM`.
+    - _Requirements: 6.4, 6.16, 6.23, 6.24, 13.4; Design: Raw landing layer, Source adapter framework_
+  - [x] 33.3 Asynchronous TRANSFORM.
+    - `TRANSFORM { loadId }`: no-op if the load is not current; resolve the adapter
+      (pinned for manual batches); read raw rows by `row_no`; manual → `StagingRow` +
+      `PREVIEW`; API → existing `publishApiDay` (digest gate, diff upsert, change log,
+      roster). Set `TRANSFORMED` or `FAILED` + drift report / safe error; raw rows stay.
+    - Admin "Re-run transform" for failed/quarantined loads (upload preview page and
+      connector run history), audited; raw payload values never returned (field
+      names and counts only).
+    - _Requirements: 6.21, 6.25, 6.26; Design: Raw landing layer (Asynchronous TRANSFORM, Re-transform), Use cases UC18/UC19_
+  - [x] 33.4 Retention.
+    - Daily job deletes raw rows of `TRANSFORMED` loads older than 30 days; keep
+      `RawLoad` metadata. Extend the Req 13.13 purge.
+    - _Requirements: 6.26, 13.13; Design: Raw landing layer_
+  - [x] 33.5 Verify.
+    - Unit: a file with a renamed/missing required column LOADS successfully and its
+      TRANSFORM fails with `BREAKING`; after adding an alias, re-transform succeeds
+      without re-upload; duplicate/empty headers are stored; personal keys never
+      reach `raw_record`; a stale TRANSFORM (superseded load) writes nothing.
+    - Integration on Railway (`scripts/test-mexc-activity.mjs`,
+      `test-bybit-sync.mjs`): two loads of the same slice leave only the latest raw
+      rows, other periods untouched; an exchange without a partition lands in
+      `raw_default`; formulas/ZIP bomb still fail at LOAD; no `CommissionRecord`,
+      `WalletEntry` or withdrawal change from activity data.
+    - Update `happy-path-scenarios.md` S17–S19 (status now goes LOAD → TRANSFORM → PREVIEW).
+    - _Requirements: 6.21–6.26; Design: Testing Strategy_
 
 ## Notes
 
-- **[PENDING] dedup key** (Open decision #11): finalize `CommissionRecord.dedupKey`
-  composition per adapter in Task 11 once a real report sample exists.
-- **[PENDING] admin auth provider** (Open decision #13, narrowed to admin-only in v0.6):
-  Task 7 ships interim email+password behind `AuthPort`; swap provider without changing
-  dependents.
+- **[PENDING] commission dedup key** (Open decision #11): finalize
+  `CommissionRecord.dedupKey` per adapter in Task 11.1 once a nonzero UID-level
+  commission report exists. The MEXC Referral Data XLSX resolves activity mapping only.
+- **[PENDING] Bybit pending/settled reconciliation:** Task 20 reads
+  `commissionsVol` as reported activity. A portal pending amount may differ; obtain
+  settlement evidence and a separate approved commission mapping before any
+  automation may attribute cashback or change a wallet.
+- **[PENDING] admin auth provider** (Open decision #13): Task 7 ships interim
+  email+password behind `AuthPort`; swap provider without changing dependents.
 - **Resolved (Open decision #12):** anyone entering exchange + UID sees that UID's
   `pending`/`available` (Task 23); everything else needs a `UidSession` (Task 24).
 - **[PENDING] default values**: cashback rate (Task 13), holding period (Task 14),
@@ -708,40 +800,30 @@ flowchart TD
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
   credits (Req 8.7; Tasks 13/14/25).
 - **[PENDING] compliance/KYC** (Open decision #19): keep payout identity isolated
-  (Tasks 15/17) so KYC/retention can be added later.
+  (Tasks 17/25) so KYC/retention can be added later.
 - Verify build/typecheck/tests on local/SIT before pushing and deploying to Railway.
 
 ## Changelog
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
-| 2026-09-15 | tasks.md | Tạo kế hoạch triển khai theo phase (0-4) map tới requirements & design | Hoàn tất bộ spec requirements→design→tasks | added |
-| 2026-09-15 | tasks.md | Thêm Overview, Task Dependency Graph, Tasks, Notes theo chuẩn định dạng spec | Đạt chuẩn validate tasks.md | updated |
-| 2026-09-15 | tasks.md | Rút gọn Task 18 xuống smoke + sanity check | Không viết unit test dài dòng | updated |
-| 2026-09-15 | tasks.md | Task 2 (versioned commission, partial-unique UID, reserved wallet, WithdrawalEvent); tách Railway skeleton sang Phase 0 (Task 4.2) + Task 19 prod hardening; Task 6 best-effort click; Task 11 versioned publish; Task 13 rate resolution + delta; Task 15 reserved + events; Task 18 concurrency checks; đổi tham chiếu Open decision #N | Khắc phục review #1–#8 và đồng bộ với requirements/design | updated |
-| 2026-09-15 | tasks.md | Task 2 (Session/passwordHash, receivable, opKey, CommissionVersion unique + activeVersion FK, Guide.exchange, CLAWBACK/PrincipalType); Task 7 interim auth rõ ràng; Task 9 sửa thứ tự SQL; Task 11 version unique; Task 13 FOR UPDATE + opKey + rate trust; Task 14 reversal policy; Task 15 cancel + block receivable | Khắc phục review round 2 và đồng bộ | updated |
-| 2026-09-15 | tasks.md | Đánh dấu tiến độ Phase 0 thực tế: done 1.1, 2, 3, 4, 5.1–5.3, 6, 7, 9.1–9.2; tách phần chưa xong thành 1.2 (boundary lint), 5.4 (UI i18n + locale routing), 8.2–8.4 (admin write path), 9.3 (lease check at commit); thêm mục "Current status" | Phản ánh đúng trạng thái triển khai, không đánh done phần còn thiếu | updated |
-| 2026-09-15 | tasks.md | Thêm Task 4.3: dev DB scripts (migrate:dev/reset/studio), fallback không dùng Docker, và lần chạy migrate + seed + smoke thật đầu tiên | Task 4.1 chỉ tạo file config, chưa có task nào thực sự dựng DB local nên schema chưa từng tồn tại | added |
-| 2026-09-15 | tasks.md | Chốt SIT không dùng Docker cho DB, dùng Railway test Postgres; đánh done Task 4.3 sau khi verify thật (migrate 19 bảng + partial index, seed 3 exchanges/3 offers/3 links/1 admin, smoke toàn bộ public page + `/go/:linkId` ghi ClickEvent thật + register ghi Customer/Session thật); tách 4.4 (env loading cho monorepo) và 4.5 (hardening seed: upsert, guides, error handling) là follow-up chưa xong | Phản ánh đúng những gì đã chạy thật trên DB test, không gộp phần còn thiếu vào done | updated |
-| 2026-09-15 | tasks.md | Nâng status lên v0.7; làm rõ local web chỉ chạy trong smoke rồi đã dừng, DB là Railway test Postgres; tách node 4.1–4.5 trong DAG và phân bổ 4.4/4.5 vào execution waves theo đúng dependency; dọn artifact verify/build | Đồng bộ kế hoạch với trạng thái runtime và follow-up thực tế | updated |
-| 2026-09-15 | tasks.md | Hoàn thành 1.2, 4.4, 4.5: enforcement cho client/package imports, root `.env` wrapper, migration seed keys, seed guide và xác minh seed hai lần trên Railway test Postgres | Khép các follow-up hạ tầng phát hiện trong Task 4.3 bằng code và kiểm tra thực tế | updated |
-| 2026-09-15 | tasks.md | Hoàn thành 5.4: message catalogs `en`/`vi`, locale provider, SSR dùng locale và route `/vi/...`; smoke trực tiếp xác nhận HTML/copy/link tiếng Việt | Hoàn thiện public-site i18n ở cả content và UI/routing | updated |
-| 2026-09-15 | tasks.md | Hoàn thành 8.2–8.4: core content writes, schema/rate validation, bốn admin API và form quản trị; nghiệm thu auth/cache/error, same-exchange invariant và publish/unpublish trên Railway test DB | Hoàn tất Phase 0 và unblock luồng import của Task 10 | updated |
-| 2026-09-15 | tasks.md | Viết lại Task 5.4 theo hướng locale-agnostic (bỏ mô tả catalog/route `vi`); thêm Task 5.5 English-only enforcement (registry chỉ `en`, xoá catalog vi, middleware suy prefix từ `locales`, bỏ seed + field admin tiếng Việt) và đóng follow-up hard-code `"vi"`; nâng status v1.1, cập nhật "Current status" | Đồng bộ kế hoạch với quyết định English-only (requirements v0.4, design v0.5) | updated |
-| 2026-09-15 | tasks.md | Hoàn thành Task 5.5 (English-only enforcement): registry chỉ `en`, xoá catalog/route/seed/admin field tiếng Việt, middleware suy locale từ registry; verify build/typecheck/lint qua Next build (13/13 route, không còn `/vi*`) | Khép English-only theo requirements v0.4 và design v0.5 | updated |
-| 2026-09-15 | tasks.md | Review độc lập 8.2–8.4: xác nhận đạt tiêu chí (401/400/409, no-store, same-exchange, publish/unpublish, seedKey không lộ ra admin input); thêm Task 8.5 cho 3 defect còn lại (P2003 → 500, same-exchange check-then-write không transaction, nhóm minor query/pagination/403/select); đổi Task 8 về `[-]` | Ghi nhận đúng phần đã xong và phần còn nợ thay vì đánh done toàn bộ | updated |
-| 2026-09-16 | tasks.md | Hoàn thành 8.5 bằng composite FK + migration, Prisma error-code mapping, per-entity cursor pagination, 403 và UI fixes; hoàn thành 10.1/10.4 với private upload, atomic batch/job và preview API; verify live rồi dọn probe | Khép defect Phase 0 và triển khai phần import không phụ thuộc report adapter/dedupKey | updated |
-| 2026-09-16 | tasks.md | (v1.4, superseded bởi v2.0) Tách Task 14.3 thành 14.3a (widget quick lookup boolean) và 14.3b (username, `/me/uids`) theo mô hình Hybrid | Ghi lại để không đề xuất lại như ý mới | removed |
-| 2026-09-16 | tasks.md | Ghi rõ Task 15 mới ở mức 0%: `Withdrawal`/`WithdrawalEvent` chỉ là khai báo Prisma, chưa có `withdrawalService` hay route `/api/me/withdrawals*`, `/api/admin/withdrawals*` | Sửa nhận định sai rằng API rút tiền đã xong; đây là phần chạm tiền thật nên không được tính là đã có | updated |
-| 2026-09-16 | tasks.md | **Chuyển sang UID-first (v2.0).** Đánh Task 12 và 14.3a/14.3b là superseded (strikethrough, không xoá); sửa Task 13 để attribution upsert `UidAccount` thay vì tra `UidLink`; sửa Task 14.1/14.3 theo model mới; thêm Task 22 (re-key Customer/UidLink → UidAccount, xoá route/service/UI cũ, viết lại `scripts/test-bybit-integration.mjs`), Task 23 (lookup trả amount thật theo exchange+UID), Task 24 (OTP qua Resend + UidSession 30 phút), Task 25 (withdrawal flow — thay Task 15 cũ, thêm rule lệnh rút đầu luôn UNDER_REVIEW), Task 26 (cherry-pick UI từ `cashback/` — input-otp, data-table, confirm-dialog; liệt kê rõ không lấy TanStack Router/Clerk/vite config vì đó chỉ là stub UI không có backend thật); cập nhật Task Dependency Graph, Task 17/18, Notes | Đồng bộ toàn bộ tasks.md với requirements v0.6 và design v0.7 (UID-first, Resend OTP, first-claimant-wins) | added |
-| 2026-09-16 | tasks.md | Thêm Task 5.6 (5.6.1–5.6.6): hiển thị logo sàn trên offer tile bằng asset PNG lưu trong repo tại `apps/web/public/exchange-logos/`, hoàn tất mapping `logoUrl` còn dở trong `core`, bỏ `logoUrl` khỏi `adminExchangeCreateSchema`, set `logoUrl` trong seed, và thứ tự deploy (push → migrate → reseed) | Triển khai `Exchange.logoUrl` vừa chốt ở design v0.5 theo hướng ảnh local, không hot-link URL online | added |
-| 2026-09-17 | tasks.md | Hoàn thành Task 25.9/25, Task 26 và Task 16: integration withdrawal, OTP/data-table/confirm-dialog, ba API dashboard admin, analytics/sync/activity UI và polling theo visibility/trạng thái batch | Đồng bộ tiến độ với code đã lint, typecheck, build và integration-test trên schema test cô lập | updated |
-| 2026-09-17 | tasks.md | Đánh done Task 17 (đã xác nhận `withAdminMutation` trên mọi admin write route, `uidPrincipal` suy `UidAccount` chỉ từ session, không secret `NEXT_PUBLIC_`, Railway chỉ inject `DATABASE_URL` private cho web/worker, audit ghi tại `docs/security-audit.md`); giữ Task 18/19 ở trạng thái in-progress vì integration test chưa re-run với `TEST_DATABASE_URL`, `railway config plan` và backup/restore drill vào DB tạm chưa chạy | Phản ánh đúng phần đã verify (typecheck/lint/build pass) và phần còn chờ một DB test cụ thể trước khi đánh done | updated |
-| 2026-09-17 | tasks.md | Pre-golive: cho phép dùng DB Railway làm test/dev DB cho Task 18/19 (integration test + backup/restore drill) không cần xác nhận từng lần | Chưa go-live, DB chỉ có dữ liệu fake; sẽ init lại khi go-live | updated |
-| 2026-09-17 | tasks.md | Thêm Task 27: ticker Online Rebate Ledger 100 hàng fake cashback lớn, CSS marquee, badge illustrative | Req 17 interim — thu hút visitor khi dump thật chưa đủ credit | added |
-| 2026-09-17 | tasks.md | Thêm Task 28: lookup trả bảng sàn trả vs chia cho UID (`transactions`) | Req 14.2/14.7 | added |
-| 2026-09-17 | tasks.md | Thêm Task 29 (Phase 4): dim/fact + partition tháng khi ~5,000 UID/ngày | NFR scale — chưa làm lúc dump còn ít hàng | added |
-| 2026-09-19 | tasks.md | Thêm Task 30: admin left-nav + tách route, không đổi API/DB/worker | Req 18 — chờ duyệt rồi mới code | added |
-| 2026-09-19 | tasks.md | Đánh done Task 30: shell layout, 7 route, 4 content section; lint/typecheck/build pass | Implement Req 18 | updated |
-| 2026-09-22 | tasks.md | Thêm Task 31: chặn RSC admin, giữ offer/exchange ngoài trang đã tải, lookup đúng version đã attribute | Req 18.5, 10.6, 14.7 | added |
-| 2026-09-22 | tasks.md | Lookup không fallback reconciledAmount; hasMore; admin page wrapper; exchange list dùng chung. Giữ requireAdminPage trong page vì layout không chặn RSC | Review 13 finding | updated |
+| 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 map tới requirements/design (Overview, DAG, Notes). Hoàn thành Phase 0: scaffold + boundary lint, Prisma (versioned commission, reserved wallet, opKey, receivable/CLAWBACK), contracts, SIT trên Railway test Postgres (không Docker), root `.env`, seed idempotent, public SSR, redirect + click, interim auth, admin content (8.2–8.5), English-only (5.5), job queue có lease fencing | Hoàn tất bộ spec và nền tảng; chỉ đánh done phần đã verify thật | added |
+| 2026-09-16 | tasks.md | Chốt mô hình UID-first (v2.0): thêm Task 22 (re-key sang `UidAccount`), 23 (lookup exchange + UID), 24 (OTP Resend + UidSession), 25 (withdrawal, lệnh đầu luôn review), 26 (cherry-pick UI); Task 13 attribution upsert `UidAccount`. Thêm Task 5.6 logo local. Hoàn thành 10.1/10.4 và import Bybit CSV v1 | Đồng bộ requirements v0.6/design v0.7; phương án Hybrid bị loại | added |
+| 2026-09-17 | tasks.md | Hoàn thành Task 16, 17, 22–28; Task 18/19 re-run integration + backup drill trên Railway pre-golive DB; thêm Task 27 (ticker fake), 28 (commission vs cashback), 29 (partition, deferred) | Đồng bộ tiến độ với code đã test trên schema cô lập | updated |
+| 2026-09-19 | tasks.md | Thêm và hoàn thành Task 30: admin left-nav, 7 route, không đổi API/DB/worker | Req 18 | added |
+| 2026-09-22 | tasks.md | Thêm và hoàn thành Task 31: chặn RSC admin, giữ offer/exchange ngoài trang đã tải, lookup chỉ hiện commission của version đã attribute (không fallback `reconciledAmount`), `hasMore` | Req 18.5, 10.6, 14.7 | added |
+| 2026-09-25 | tasks.md | Thêm Task 10.5–10.9 (shared ingest, MEXC XLSX referral snapshot, API admin, data gate, CSV fallback deferred) và 11.1 (MEXC commission gate); Task 20 tái dùng pipeline. Compact v2.1: bỏ task superseded (12, 14.3*), ghi chú lịch sử Customer/UidLink, gộp changelog theo ngày, sửa vòng lặp T13↔T22 trong DAG | Export MEXC thật toàn số 0; tài liệu chỉ giữ trạng thái hiện hành (lịch sử nằm trong git) | updated |
+| 2026-09-25 | tasks.md | Hoàn thành 10.5–10.7: envelope + snapshot versioned, adapter MEXC XLSX, API và trang admin. 10.8/10.9/11.1 vẫn mở vì sample toàn số 0 | Đã verify parser, sample 46 dòng, và integration schema cô lập | updated |
+| 2026-09-26 | tasks.md | Lập Task 20.1–20.5 cho Bybit Affiliate API sync: metric nhiều asset, connector, lịch 30m/1h/12h/24h từng sàn, admin controls, backfill và Railway rollout; giữ Task 21/29 tùy chọn | Bybit API đã gọi được nhưng không có trạng thái pending/settled; cần triển khai activity trước và không đụng ví | updated |
+| 2026-09-26 | tasks.md | Task 20.2/20.3 cập nhật theo probe Bybit thật: readiness qua query-api + cảnh báo hết hạn key, bind IP, luôn gửi startDate/endDate, dừng phân trang khi list rỗng, không retry 610015, map thêm taker/maker/TradFi volume, sourceAsOf từ volUpdateTime, backfill 365 ngày | Key IP `*` hết hạn 2026-12-26; lịch sử ≥ 1 năm; volume về sau commission | updated |
+| 2026-09-26 | tasks.md | Thêm Task 20.0 refactor ingest thành adapter framework (abstract TS, field contract, registry theo contract version, drift + fingerprint, Bybit CSV cảnh báo cột lạ); 20.1 thêm model API sink (roster, day status, metric current, change log) + view; 20.2 ghi theo digest + ON CONFLICT IS DISTINCT FROM + ABSENT + change log; 20.5 test theo UC0–UC17, UF1–UF7 | Design v1.0: thêm sàn chỉ cần kế thừa; sync 30 phút không sinh rác | updated |
+| 2026-09-26 | tasks.md | Code Task 20.0–20.4: contract/drift, migration metric + sync, connector Bybit, lịch worker, trang `/admin/sync`. 20.5 chưa chạy được vì proxy Railway không kết nối và chưa probe key | Activity sync không ghi ví; rollout thật còn khóa operational | updated |
+| 2026-09-26 | tasks.md | Thêm mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file (production-safety, spec-governance, context7; steering thắng khi mâu thuẫn); quy trình khi Railway không kết nối được (dừng và báo, không dùng DB local) và nguyên nhân P1001 do `connect_timeout` | Ngày 2026-09-26 agent đã dựng Postgres local để chạy integration test, vi phạm steering | updated |
+| 2026-09-26 | tasks.md | Đổi route trang activity thành `/admin/crawl-data`; route cũ `/admin/referrals` chuyển hướng | Đồng bộ Task 10.7/20.4 với menu mới, không đổi pipeline | updated |
+| 2026-09-26 | tasks.md | Thêm Task 32 (32.1–32.4): descriptor adapter + `GET /api/admin/ingest/adapters`, API `/api/admin/ingest/*` và `/api/admin/reports/activity` với alias route cũ, trang Uploads/API connectors/Referral activity, redirect `/admin/imports`, `/admin/crawl-data`, `/admin/referrals`, `/admin/sync`; cập nhật route trong Task 10.7, 20.4 và DAG | Req 18.2, 18.7, 18.8: menu theo việc vận hành, form theo registry | added |
+| 2026-09-26 | tasks.md | Hoàn thành 32.1–32.3: descriptor, API ingest/reports và alias, menu nhóm, form một trang, redirect 307 sau requireAdminPage. 32.4 còn chạy trên Railway sau khi deploy | Route mới chưa có trên deploy hiện tại nên chưa click-through được | updated |
+| 2026-09-26 | tasks.md | Thêm 32.5 sửa review: alias shape, báo cáo range/paging/root/coverage, adapter đa hình và version, polling/UI/contract, kiểm thử Railway | 32.1–32.3 có code nhưng chưa đạt hết Req 6.10/18.8; 32.4 vẫn mở | updated |
+| 2026-09-26 | tasks.md | Thêm Task 33 (33.1–33.5): bảng `raw_record` partition theo sàn, bước LOAD chỉ kiểm tra định dạng/an toàn và ghi đè slice, TRANSFORM async bỏ qua load đã bị thay thế, chạy lại transform, retention 30 ngày, verify trên Railway; DAG `T32 → T33` | Req 6.23–6.26 | added |
+| 2026-09-26 | tasks.md | Hoàn thành Task 33.1–33.5: migration raw partition/RawLoad, LOAD → TRANSFORM cho file và API, re-transform có audit, retention; unit 26/26 và integration MEXC/Bybit trên schema test Railway qua. Task 32.4 vẫn chờ kiểm tra UI sau deploy | Đồng bộ tiến độ với code và kiểm chứng thực tế | updated |
+| 2026-09-26 | tasks.md | Deploy web + worker lên Railway; health 200, xác thực admin và multipart upload/publish MEXC fixture cùng Bybit CSV giá trị 0 qua route ingest mới, report/alias và redirect qua. Giữ 32.4 mở cho lượt click trực tiếp trong browser | Ghi đúng giới hạn kiểm chứng giao diện | updated |
+| 2026-09-26 | tasks.md | Xóa mục 32.4 Verify và các tham chiếu tiến độ hiện hành đến mục này | Theo yêu cầu người dùng | updated |
