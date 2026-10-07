@@ -1,6 +1,7 @@
 import { db, Prisma, type ActivityDayState, type ExchangeSyncConfig, type SyncTrigger } from "@cashback/db";
-import { bybitAffiliateContract, signBybit } from "../ingest/contract.js";
+import { bybitAffiliateContract, mexcAffiliateContract, signBybit } from "../ingest/contract.js";
 import { assessQueryApi, fetchAffiliateDay, mapAffiliateRecords, SyncError, type Readiness } from "../ingest/bybit-affiliate.js";
+import { fetchMexcDay, fetchMexcPage, mapMexcRecords, minimizeMexcRecords } from "../ingest/mexc-affiliate.js";
 import { publishApiDay } from "../ingest/api-sink.js";
 import { readRawApi, readRawRows, sliceKey, writeRawLoad } from "../ingest/raw-landing.js";
 import { heartbeat, lockActivityPeriod, withJobLease, type JobLease } from "./jobs.js";
@@ -13,6 +14,13 @@ export function bybitCredentials() {
   const apiKey = process.env.BYBIT_AFFILIATE_API_KEY ?? "";
   const apiSecret = process.env.BYBIT_AFFILIATE_API_SECRET ?? "";
   const rootAccount = process.env.BYBIT_AFFILIATE_MASTER_UID ?? "";
+  return { apiKey, apiSecret, rootAccount, configured: Boolean(apiKey && apiSecret && rootAccount) };
+}
+
+export function mexcCredentials() {
+  const apiKey = process.env.MEXC_AFFILIATE_API_KEY ?? "";
+  const apiSecret = process.env.MEXC_AFFILIATE_API_SECRET ?? "";
+  const rootAccount = process.env.MEXC_AFFILIATE_MASTER_UID ?? "";
   return { apiKey, apiSecret, rootAccount, configured: Boolean(apiKey && apiSecret && rootAccount) };
 }
 
@@ -42,16 +50,35 @@ function nextSlot(due: Date, intervalMinutes: number, now: Date) {
   return next;
 }
 
-async function reserveBybitSlot() {
+async function reserveSlot(id: string, milliseconds: number) {
   const rows = await db.$queryRaw<Array<{ sendAt: Date }>>`
     UPDATE "SyncRateSlot"
-    SET "nextRequestAt" = GREATEST("nextRequestAt", clock_timestamp()) + interval '100 milliseconds'
-    WHERE id = 'bybit-affiliate'
-    RETURNING "nextRequestAt" - interval '100 milliseconds' AS "sendAt"`;
+    SET "nextRequestAt" = GREATEST("nextRequestAt", clock_timestamp()) + (${milliseconds} * interval '1 millisecond')
+    WHERE id = ${id}
+    RETURNING "nextRequestAt" - (${milliseconds} * interval '1 millisecond') AS "sendAt"`;
   const sendAt = rows[0]?.sendAt;
-  if (!sendAt) return;
+  if (!sendAt) throw new SyncError("RATE_SLOT_MISSING", "PAUSE", "Affiliate rate slot is missing");
   const wait = new Date(sendAt).getTime() - Date.now();
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+}
+
+const reserveBybitSlot = () => reserveSlot("bybit-affiliate", 100);
+const reserveMexcSlot = () => reserveSlot("mexc-affiliate", 250);
+
+export async function mexcReadiness(fetchImpl: typeof fetch = fetch): Promise<Readiness> {
+  const credentials = mexcCredentials();
+  if (!credentials.configured) return { ready: false, reason: "MISSING_KEY", expiresAt: null, expiryWarning: false, ipWarning: false };
+  const day = dayStamp(new Date(Date.now() - 86_400_000));
+  const startTime = Date.parse(`${day}T00:00:00.000Z`);
+  try {
+    await fetchMexcPage({ startTime, endTime: startTime + 86_400_000 - 1, page: 1,
+      apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
+      baseUrl: process.env.MEXC_API_BASE, fetchImpl });
+    return { ready: true, reason: null, expiresAt: null, expiryWarning: false, ipWarning: false };
+  } catch (error) {
+    if (error instanceof SyncError && error.action !== "RETRY") return { ready: false, reason: error.code, expiresAt: null, expiryWarning: false, ipWarning: false };
+    throw error;
+  }
 }
 
 export async function bybitReadiness(fetchImpl: typeof fetch = fetch): Promise<Readiness> {
@@ -79,15 +106,15 @@ export async function bybitReadiness(fetchImpl: typeof fetch = fetch): Promise<R
   return assessQueryApi(body.result ?? null);
 }
 
-/** The worker is the only process that probes Bybit or reads its credentials. */
-export async function refreshBybitReadiness(fetchImpl: typeof fetch = fetch, now = new Date()) {
-  const exchange = await db.exchange.findUnique({ where: { slug: "bybit" }, select: { id: true } });
+/** The worker is the only process that probes exchanges or reads credentials. */
+async function refreshReadiness(slug: "bybit" | "mexc", fetchImpl: typeof fetch, now: Date) {
+  const exchange = await db.exchange.findUnique({ where: { slug }, select: { id: true } });
   if (!exchange) return;
   const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId: exchange.id } });
-  const credentials = bybitCredentials();
+  const credentials = slug === "bybit" ? bybitCredentials() : mexcCredentials();
   let check: Readiness;
   try {
-    check = await bybitReadiness(fetchImpl);
+    check = await (slug === "bybit" ? bybitReadiness(fetchImpl) : mexcReadiness(fetchImpl));
   } catch {
     check = { ready: false, reason: "CHECK_UNAVAILABLE", expiresAt: null, expiryWarning: false, ipWarning: false };
   }
@@ -107,10 +134,13 @@ export async function refreshBybitReadiness(fetchImpl: typeof fetch = fetch, now
   };
   await db.exchangeSyncConfig.upsert({
     where: { exchangeId: exchange.id },
-    create: { exchangeId: exchange.id, ...data },
-    update: data
+    create: { exchangeId: exchange.id, backfillDays: slug === "mexc" ? 30 : 365, ...data },
+    update: { ...data, ...(slug === "mexc" ? { backfillDays: 30 } : {}) }
   });
 }
+
+export const refreshBybitReadiness = (fetchImpl: typeof fetch = fetch, now = new Date()) => refreshReadiness("bybit", fetchImpl, now);
+export const refreshMexcReadiness = (fetchImpl: typeof fetch = fetch, now = new Date()) => refreshReadiness("mexc", fetchImpl, now);
 
 function recentReadiness(config: ExchangeSyncConfig | null, now = new Date()) {
   if (!config?.readinessCheckedAt) return { ready: false, reason: "NOT_CHECKED", checkedAt: null };
@@ -192,15 +222,21 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   const dates = payload.dates ?? [];
   const trigger = payload.trigger ?? "MANUAL";
   if (!exchangeId || !dates.length) throw new Error("SYNC payload is missing a period");
-  const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
-  const credentials = bybitCredentials();
-  if (!config || !credentials.configured) throw new SyncError("MISSING_KEY", "PAUSE", "Bybit affiliate credentials are not configured");
+  const [config, exchange] = await Promise.all([
+    db.exchangeSyncConfig.findUnique({ where: { exchangeId } }),
+    db.exchange.findUnique({ where: { id: exchangeId }, select: { slug: true } })
+  ]);
+  const slug = exchange?.slug;
+  if (slug !== "bybit" && slug !== "mexc") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no API connector");
+  const credentials = slug === "bybit" ? bybitCredentials() : mexcCredentials();
+  const contract = slug === "bybit" ? bybitAffiliateContract : mexcAffiliateContract;
+  if (!config || !credentials.configured) throw new SyncError("MISSING_KEY", "PAUSE", "Affiliate credentials are not configured");
   if (config.rootAccount !== credentials.rootAccount) {
     await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: "ROOT_MISMATCH" } });
     return withJobLease(lease, async () => {});
   }
   if (trigger === "SCHEDULED" && (!config.enabled || config.pausedReason)) return withJobLease(lease, async () => {});
-  const readiness = await bybitReadiness(fetchImpl);
+  const readiness = await (slug === "bybit" ? bybitReadiness(fetchImpl) : mexcReadiness(fetchImpl));
   if (!readiness.ready) {
     // Pause but keep the admin's enabled choice, so Resume restores the schedule after the fix.
     await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: readiness.reason } });
@@ -209,7 +245,7 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   let run;
   try {
     run = await db.syncRun.create({ data: {
-      exchangeId, rootAccount: config.rootAccount, trigger, state: "RUNNING", contractVersion: bybitAffiliateContract.version, startedAt: new Date(), checkpoint: { expectedDays: dates.length }
+      exchangeId, rootAccount: config.rootAccount, trigger, state: "RUNNING", contractVersion: contract.version, startedAt: new Date(), checkpoint: { expectedDays: dates.length }
     } });
   } catch (error) {
     // Another run holds the one-active-run index: requeue instead of burning retry attempts.
@@ -225,17 +261,20 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
     const roster = await db.activityRoster.count({ where: { exchangeId, rootAccount: config.rootAccount, state: "ACTIVE" } });
     for (const day of dates) {
       await heartbeat(lease, Number(process.env.JOB_LEASE_SECONDS ?? 120));
-      const fetched = await fetchAffiliateDay({
-        day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret, baseUrl: process.env.BYBIT_API_BASE,
-        fetchImpl, reserve: reserveBybitSlot
-      });
-      if (!fetched.records.length && roster > 0) throw new SyncError("EMPTY_PERIOD", "QUARANTINE", "Bybit returned no rows for a known roster");
-      const raw = readRawApi(fetched.records, bybitAffiliateContract);
+      const fetched = slug === "bybit"
+        ? await fetchAffiliateDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
+          baseUrl: process.env.BYBIT_API_BASE, fetchImpl, reserve: reserveBybitSlot })
+        : await fetchMexcDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
+          baseUrl: process.env.MEXC_API_BASE, fetchImpl, reserve: reserveMexcSlot });
+      if (!fetched.records.length && roster > 0 && slug === "bybit")
+        throw new SyncError("EMPTY_PERIOD", "QUARANTINE", "Bybit returned no rows for a known roster");
+      const records = slug === "mexc" ? minimizeMexcRecords(fetched.records) : fetched.records;
+      const raw = readRawApi(records, contract);
       const start = new Date(`${day}T00:00:00.000Z`);
       const end = new Date(start.getTime() + 86_400_000 - 1);
-      await writeRawLoad({ exchangeId, sourceSystem: "bybit", datasetKind: "REFERRAL_ACTIVITY", sourceMethod: "OFFICIAL_API",
+      await writeRawLoad({ exchangeId, sourceSystem: slug, datasetKind: "REFERRAL_ACTIVITY", sourceMethod: "OFFICIAL_API",
         rootAccount: config.rootAccount, periodStart: start, periodEnd: end, runId: run.id, records: raw.records,
-        fieldNames: raw.fieldNames, sourceMetadata: { day, observedAt: fetched.observedAt.toISOString(), dayState: dayState(day, today), updateRoster: String(day === today) } }, lease);
+        fieldNames: raw.fieldNames, sourceMetadata: { day, observedAt: fetched.observedAt.toISOString(), dayState: dayState(day, today), updateRoster: String(slug === "bybit" && day === today) } }, lease);
     }
     return withJobLease(lease, async () => {});
   } catch (error) {
@@ -257,11 +296,16 @@ export async function transformApiJob(lease: JobLease, loadId: string) {
   if (load.state === "SUPERSEDED" || load.state === "TRANSFORMED") return withJobLease(lease, async () => {});
   if (!load.runId) throw new Error("API transform has no sync run");
   const meta = (load.sourceMetadata ?? {}) as Record<string, string>;
+  const contract = load.sourceSystem === "mexc" ? mexcAffiliateContract : bybitAffiliateContract;
   try {
     const accepted = await db.activityPeriodStatus.findFirst({ where: { exchangeId: load.exchangeId, rootAccount: load.rootAccount, schemaFingerprint: { not: null } },
       orderBy: { lastCheckedAt: "desc" }, select: { schemaFingerprint: true } });
-    const mapped = mapAffiliateRecords(await readRawRows(loadId), accepted?.schemaFingerprint);
-    if (mapped.duplicate) throw new SyncError("DUPLICATE_UID", "QUARANTINE", "Bybit returned a duplicate UID");
+    if (load.sourceSystem !== "bybit" && load.sourceSystem !== "mexc") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Unknown API source");
+    const records = await readRawRows(loadId);
+    const mapped = load.sourceSystem === "mexc"
+      ? mapMexcRecords(records, accepted?.schemaFingerprint)
+      : mapAffiliateRecords(records, accepted?.schemaFingerprint);
+    if (mapped.duplicate) throw new SyncError("DUPLICATE_UID", "QUARANTINE", "Affiliate API returned a duplicate UID");
     await withJobLease(lease, async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(16092028, hashtext(${sliceKey(load)}))`;
       const current = await tx.rawLoad.findUniqueOrThrow({ where: { id: loadId } });
@@ -271,7 +315,7 @@ export async function transformApiJob(lease: JobLease, loadId: string) {
       await lockActivityPeriod(tx, `${load.exchangeId}|${load.rootAccount}|${day}`);
       const result = await publishApiDay(tx, { exchangeId: load.exchangeId, rootAccount: load.rootAccount, periodDate: day,
         runId: load.runId!, metrics: mapped.metrics, state: meta.dayState as ActivityDayState, fingerprint: mapped.fingerprint,
-        observedAt: new Date(meta.observedAt), sourceAsOf: null, updateRoster: meta.updateRoster === "true" });
+        observedAt: new Date(meta.observedAt), sourceAsOf: null, updateRoster: meta.updateRoster === "true", contractVersion: contract.version });
       await tx.rawLoad.update({ where: { id: loadId }, data: { state: "TRANSFORMED", transformedAt: new Date(), driftReport: { class: mapped.drift.class, fields: mapped.drift.fields } } });
       const run = await tx.syncRun.findUniqueOrThrow({ where: { id: load.runId! } });
       const days = Array.isArray(run.daysWritten) ? run.daysWritten.filter((value): value is string => typeof value === "string") : [];
@@ -281,7 +325,9 @@ export async function transformApiJob(lease: JobLease, loadId: string) {
       const previousDrift = (run.driftReport ?? {}) as { class?: string; fields?: string[]; notes?: string[] };
       const driftClass = mapped.drift.class !== "SAME" ? mapped.drift.class : previousDrift.class ?? "SAME";
       const driftFields = [...new Set([...(previousDrift.fields ?? []), ...mapped.drift.fields])];
-      const notes = previousDrift.notes ?? (process.env.BYBIT_VOL_TIMEZONE ? [] : ["volUpdateTime timezone is unconfirmed; sourceAsOf stays empty"]);
+      const notes = previousDrift.notes ?? (load.sourceSystem === "bybit" && !process.env.BYBIT_VOL_TIMEZONE
+        ? ["volUpdateTime timezone is unconfirmed; sourceAsOf stays empty"]
+        : load.sourceSystem === "mexc" ? ["MEXC day-filter aggregation needs portal reconciliation; reported activity only"] : []);
       await tx.syncRun.update({ where: { id: run.id }, data: { changedRows: { increment: result.changed }, daysWritten: days,
         driftReport: { class: driftClass, fields: driftFields, notes },
         ...(completed === expected && run.state === "RUNNING" ? { state: "SUCCEEDED", finishedAt: new Date() } : {}) } });
@@ -335,14 +381,14 @@ export async function getSyncConfig(exchangeId: string) {
       createdAt: run.createdAt.toISOString(), finishedAt: run.finishedAt?.toISOString() ?? null, driftReport: run.driftReport,
       failedLoads: failedLoads.filter((load) => load.runId === run.id).map((load) => ({ id: load.id, fieldNames: load.fieldNames, driftReport: load.driftReport }))
     })),
-    note: "commissionsVol is reported activity, not pending or settled commission, and it does not credit cashback."
+    note: "API commission is reported activity, not payable cashback; portal reconciliation is required before wallet attribution."
   };
 }
 
 export async function updateSyncConfig(adminId: string, exchangeId: string, patch: { enabled?: boolean; intervalMinutes?: SyncInterval }) {
   if (patch.intervalMinutes && !INTERVALS.includes(patch.intervalMinutes)) throw new SyncError("INTERVAL", "QUARANTINE", "Interval must be 30, 60, 720, or 1440 minutes");
   const exchange = await db.exchange.findUnique({ where: { id: exchangeId } });
-  if (!exchange || exchange.slug !== "bybit") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Only Bybit has an approved activity connector");
+  if (!exchange || !["bybit", "mexc"].includes(exchange.slug)) throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no activity connector");
   const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
   const enabling = patch.enabled === true && !current?.enabled;
   if (enabling) requireRecentReadiness(current);

@@ -1,5 +1,6 @@
-import { assertContract, bybitAffiliateContract, bybitCsvContract, mexcReferralContract, type FieldContract } from "./contract.js";
+import { assertContract, bybitAffiliateContract, bybitCsvContract, mexcAffiliateContract, mexcReferralContract, type FieldContract } from "./contract.js";
 import { fetchAffiliateDay, mapAffiliateRecords } from "./bybit-affiliate.js";
+import { fetchMexcDay, mapMexcRecords } from "./mexc-affiliate.js";
 import type { ImportMetadata } from "@cashback/contracts";
 import type { ImportBatch } from "@cashback/db";
 import { assertBybitCsvUpload, parseBybitCsv, parseBybitRecords, type ParsedRow } from "../services/bybit-parser.js";
@@ -110,6 +111,18 @@ export class BybitAffiliateApiAdapter extends ApiSourceAdapter {
   mapRecords = mapAffiliateRecords;
 }
 
+export class MexcAffiliateApiAdapter extends ApiSourceAdapter {
+  readonly id = "mexc-affiliate-api";
+  readonly exchangeSlug = "mexc";
+  readonly datasetKind = "REFERRAL_ACTIVITY" as const;
+  readonly accept = [] as string[];
+  readonly uploadFields = [] as string[];
+  readonly affectsCashback = false;
+  readonly contract = mexcAffiliateContract;
+  fetchDay = fetchMexcDay;
+  mapRecords = mapMexcRecords;
+}
+
 export function listFileAdapterDescriptors(): AdapterDescriptor[] {
   const active = new Map<string, FileSourceAdapter>();
   for (const adapter of ingestRegistry.values()) {
@@ -154,4 +167,4 @@ export function registerAdapter(adapter: SourceAdapter) {
   ingestRegistry.set(registryKey, adapter);
 }
 
-for (const adapter of [new BybitNormalizedCsvAdapter(), new MexcReferralXlsxAdapter(), new BybitAffiliateApiAdapter()]) registerAdapter(adapter);
+for (const adapter of [new BybitNormalizedCsvAdapter(), new MexcReferralXlsxAdapter(), new BybitAffiliateApiAdapter(), new MexcAffiliateApiAdapter()]) registerAdapter(adapter);

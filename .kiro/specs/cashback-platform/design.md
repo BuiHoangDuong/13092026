@@ -376,6 +376,23 @@ snapshot can show zero volume/earnings but cannot credit or reverse cashback. Ke
 `sourceAsOf` (when the source was exported) separate from `periodEnd` (what dates it
 covers) and `importedAt` (when this platform received it).
 
+#### Scheduled MEXC Affiliate referral activity (Req 13.15)
+
+A second `ApiSourceAdapter`
+calls signed `GET /api/v3/rebate/affiliate/referral` with `startTime` and
+`endTime` covering one UTC day, `page` and `pageSize`. It validates the response
+envelope, page sequence and total pages, and removes profile, deposit, withdrawal
+and identification fields before raw landing. The versioned contract maps only
+`uid`, `inviteCode`, `tradingAmount` and `commission`, with both amounts labeled
+USDT and commission labeled reported activity. The existing `RawLoad` →
+`TRANSFORM` → `publishApiDay` path supplies per-day replacement, required-field drift detection,
+run audit and no wallet writes. The worker owns `MEXC_AFFILIATE_API_KEY`,
+`MEXC_AFFILIATE_API_SECRET` and `MEXC_AFFILIATE_MASTER_UID`; its signed referral
+probe persists secret-free readiness. MEXC starts disabled and has its own
+rate slot. The API documentation does not specify the precise period aggregation
+semantics, so the admin must reconcile a nonzero day against the portal/export
+before treating those values as payable commission (Req 6.12–6.14, 11.1).
+
 #### Scheduled Bybit Affiliate activity sync (Req 6.17–6.20, 11.4, 13)
 
 **Scope and source semantics.** Use the official
@@ -2389,6 +2406,7 @@ most critical money/concurrency invariants, not an exhaustive suite.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-09-30 | design.md | Thiết kế MEXC Affiliate referral API qua worker, raw landing và activity sink; tách biến môi trường và rate slot | Giữ luồng chung với Bybit và chờ đối soát kỳ dữ liệu thực | updated |
 | 2026-09-15 | design.md | Tạo design ban đầu (heading chuẩn, Correctness Properties, Testing gọn); review round 1–2: CommissionVersion + delta/opKey + FOR UPDATE, reserved + WithdrawalEvent + cancel, reversal/receivable/CLAWBACK, rate snapshot + rate source trust, interim auth; Language & i18n English-only với locale registry; Tailwind v4 + shadcn/ui cho trang public | Chuyển requirements thành thiết kế và khắc phục review | added |
 | 2026-09-16 | design.md | Chuyển sang UID-first + Resend: `UidAccount`, `EmailOtp`, `UidSession`, `RateLimitCounter`, `Session` admin-only; FK ví/withdrawal/commission sang UidAccount; luồng lookup trả số dư thật, OTP binding + UID session 30 phút; core services lookup/otp/uidSession/emailPort; Property 3, 4, 6, 14, 16, 17; Open decision #12/#20/#21. `Exchange.logoUrl` là path asset trong repo | Operator chọn UID-first không cần tài khoản (Req 5, 14, 15, 16) | updated |
 | 2026-09-17 | design.md | Home Online Rebate Ledger dùng 100 credit giả lớn (`generateLedgerDemoRows`) + badge illustrative; lookup trả `transactions[]` commission vs cashback; kiến trúc dim/fact partition theo tháng cho 5,000 UID/ngày | Req 17, 14.2/14.7, NFR scale | added |

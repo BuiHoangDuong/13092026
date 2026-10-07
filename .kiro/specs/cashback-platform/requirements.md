@@ -584,8 +584,8 @@ without a usable API.
    "Sync now" controls. The interval SHALL be stored per exchange, not globally.
 2. WHILE an exchange lacks an approved official connector or usable credentials,
    THE SYSTEM SHALL keep its API schedule disabled and explain that state to the
-   admin. Manual imports SHALL remain available. Bybit Affiliate is the first
-   supported connector; MEXC and Binance remain manual until separately verified.
+   admin. Manual imports SHALL remain available. Bybit and MEXC Affiliate have
+   separate official API connectors; Binance remains manual until verified.
 3. WHEN a Bybit schedule is due, THE SYSTEM SHALL enqueue a worker `SYNC` job that
    reads the official Affiliate User List using the affiliate-only, read-only key,
    follows every cursor page, respects Bybit's response rate-limit headers, and
@@ -643,6 +643,14 @@ without a usable API.
     readiness error.
     WHEN the worker's check becomes ready, THE SYSTEM SHALL allow the admin to
     enable the schedule without copying credentials to the web service.
+15. WHEN MEXC affiliate credentials are configured on the worker, THE SYSTEM SHALL
+    check access with a signed, read-only affiliate referral request before enabling
+    its schedule. A MEXC sync SHALL request explicit UTC day boundaries, follow all
+    pages, retain only UID, referral code, USDT trading volume and reported USDT
+    commission, and publish fully fetched day slices through the existing raw activity and
+    change-history path. It SHALL NOT create payable commission or wallet entries.
+    An incomplete or malformed page SHALL quarantine the run; auth failures SHALL
+    pause the connector. MEXC keys SHALL be separate from Bybit keys.
 
 ### Requirement 14: Cashback lookup by exchange + UID
 **User Story:** As a visitor, I want to enter my exchange and UID and immediately see the
@@ -1003,9 +1011,10 @@ tab) to do several jobs without losing my place.
   manual payout.
 - **Phase 3 — Hardening:** analytics depth, KYC/compliance controls,
   observability/backups. No locale rollout is planned (Requirement 4).
-- **Phase 4 — Automation:** scheduled Bybit Affiliate API activity sync with
-  per-exchange admin intervals; add other official connectors only after their
-  permissions and data semantics are verified. SSE remains optional.
+- **Phase 4 — Automation:** scheduled Bybit and MEXC Affiliate API activity sync
+  with per-exchange admin intervals; MEXC day totals await live reconciliation.
+  Add other official connectors after permissions and data semantics are verified.
+  SSE remains optional.
 
 ---
 
@@ -1043,6 +1052,7 @@ tab) to do several jobs without losing my place.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-09-30 | requirements.md | Req 13.2, 13.15: thêm connector MEXC Affiliate read-only theo ngày, phân trang và chỉ ghi activity | Tích hợp API MEXC mà không tự động ghi ví | updated |
 | 2026-09-15 | requirements.md | Tạo bộ requirement EARS đầu tiên: reserved balance + withdrawal event audit (Req 8/9), rule cashback rate + snapshot (Req 7.3, 7.8), best-effort click (Req 2.2), versioned commission, receivable/clawback + chặn rút (Req 8.7, 9.11), cancel withdrawal (Req 9.10); English-only + locale registry (Req 4, 10.5) | Khởi tạo spec, khắc phục review round 1–2; sản phẩm không phục vụ tiếng Việt nhưng giữ seam i18n | added |
 | 2026-09-16 | requirements.md | Chốt mô hình UID-first, không tài khoản end user: Req 3 chỉ còn admin auth, Req 5 thành UID accounts, thêm Req 14 (lookup exchange + UID trả số tiền thật, rate limit per-IP, read-only), Req 15 (OTP 6 số + UID session 30 phút), Req 16 (email qua Resend); cập nhật Req 7/8/9 theo UidAccount, lệnh rút đầu tiên luôn admin duyệt; thêm "Accepted risk — first claimant wins"; đồng bộ API surface, data model, Open decision #12/#13/#20/#21 | Nhập UID + chọn sàn là xem tiền, chỉ xác thực khi rút; chủ dự án chấp nhận rủi ro không xác minh được chủ UID. Mô hình customer account/Hybrid trước đó đã bỏ | updated |
 | 2026-09-17 | requirements.md | Trỏ sang `happy-path-scenarios.md`; thêm Req 17 (Online Rebate Ledger, interim 100 hàng fake có badge illustrative); Req 14.2/14.7 + 8.5/8.6 lookup trả bảng commission vs cashback; NFR scale 5,000 UID/ngày (fact partition theo thời gian) | Social proof, visitor cần thấy sàn trả bao nhiêu và mình nhận bao nhiêu, tránh heap phình | updated |

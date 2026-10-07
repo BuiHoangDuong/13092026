@@ -17,20 +17,22 @@ async function read(response: Response) {
   return body as SyncView;
 }
 
-function readinessMessage(reason: string | null) {
+function readinessMessage(reason: string | null, exchangeSlug: "bybit" | "mexc") {
+  const name = exchangeSlug === "bybit" ? "Bybit" : "MEXC";
   switch (reason) {
     case "NOT_CHECKED": return "Waiting for the worker to check the connector.";
     case "READINESS_STALE": return "The worker's last check is too old. Check that the worker is running.";
-    case "MISSING_KEY": return "Set BYBIT_AFFILIATE_API_KEY, BYBIT_AFFILIATE_API_SECRET, and BYBIT_AFFILIATE_MASTER_UID on the worker.";
+    case "MISSING_KEY": return `Set ${exchangeSlug.toUpperCase()}_AFFILIATE_API_KEY, ${exchangeSlug.toUpperCase()}_AFFILIATE_API_SECRET, and ${exchangeSlug.toUpperCase()}_AFFILIATE_MASTER_UID on the worker.`;
     case "PERMISSION": return "The key must be read-only with Affiliate as its only permission.";
     case "EXPIRED": return "The Bybit API key has expired.";
     case "ROOT_MISMATCH": return "The worker master UID differs from this connector's saved root. Review the worker configuration.";
-    case "CHECK_UNAVAILABLE": return "The worker could not complete the Bybit key check. It will retry shortly.";
-    default: return reason ? `Bybit key check failed: ${reason}.` : "Connector is ready.";
+    case "CHECK_UNAVAILABLE": return `The worker could not complete the ${name} key check. It will retry shortly.`;
+    default: return reason ? `${name} key check failed: ${reason}.` : "Connector is ready.";
   }
 }
 
-export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
+export function SyncControls({ exchangeId, exchangeSlug }: { exchangeId: string | null; exchangeSlug: "bybit" | "mexc" }) {
+  const exchangeName = exchangeSlug === "bybit" ? "Bybit" : "MEXC";
   const [view, setView] = useState<SyncView | null>(null);
   const [error, setError] = useState("");
   const [interval, setIntervalValue] = useState("30");
@@ -58,12 +60,13 @@ export function SyncControls({ exchangeId }: { exchangeId: string | null }) {
     try { await fetch(`/api/admin/ingest/loads/${loadId}/retransform`, { method: "POST" }).then(read); await refresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to re-run transform"); }
   }
-  if (!exchangeId) return <p className="mt-8">Publish the Bybit exchange before configuring sync.</p>;
+  if (!exchangeId) return <p className="mt-8">Publish the {exchangeName} exchange before configuring sync.</p>;
   return <section className="mt-8 space-y-4">
+    <h2 className="text-lg font-semibold">{exchangeName} Affiliate</h2>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <p className="text-sm text-muted-foreground">{view?.note}</p>
-    <p className="text-sm" role="status">{view ? readinessMessage(view.readiness.reason) : "Loading worker readiness..."} {view?.readiness.checkedAt ? `Checked ${new Date(view.readiness.checkedAt).toLocaleString()}.` : ""} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : ""}</p>
-    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The Bybit key has no IP allowlist. Sync is allowed; review the key expiry below.</p>}
+    <p className="text-sm" role="status">{view ? readinessMessage(view.readiness.reason, exchangeSlug) : "Loading worker readiness..."} {view?.readiness.checkedAt ? `Checked ${new Date(view.readiness.checkedAt).toLocaleString()}.` : ""} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : ""}</p>
+    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The {exchangeName} key has no IP allowlist. Sync is allowed; review the key expiry below.</p>}
     {view?.readiness.expiresAt && <p className="text-sm text-muted-foreground">Key expiry: {new Date(view.readiness.expiresAt).toLocaleString()}.</p>}
     <p className="text-sm">Coverage {view?.coverage.days ?? 0} days{view?.coverage.from ? ` from ${view.coverage.from} to ${view.coverage.to}` : ""}. Next run {view?.nextRunAt ? new Date(view.nextRunAt).toLocaleString() : "not scheduled"}. Last success {view?.lastSuccessAt ? new Date(view.lastSuccessAt).toLocaleString() : "none"}.</p>
     <div className="flex flex-wrap items-end gap-3">

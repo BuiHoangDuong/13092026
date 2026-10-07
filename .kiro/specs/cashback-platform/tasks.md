@@ -42,13 +42,14 @@ numbers are stable identifiers cited in code and docs, not an execution order.
 - **Phase 1** — Import pipeline (versioned), UID accounts, attribution + cashback.
 - **Phase 2** — Lookup, wallet (reserved) & withdrawals.
 - **Phase 3** — Hardening: security, targeted tests, production observability/backups.
-- **Phase 4** — Planned: Bybit Affiliate activity API sync. Optional SSE and
+- **Phase 4** — Bybit activity API sync is implemented; MEXC connector code is
+  ready for Docker integration and live data reconciliation. Optional SSE and
   dimensional partitioning remain deferred.
 
-### Current status (2026-09-26)
+### Current status (2026-09-30)
 
-Phases 0–2 are implemented and verified against a Railway test/pre-golive Postgres (no
-local Docker, no mocked data layer): UID-first lookup, OTP + UID session, attribution,
+Phases 0–2 are implemented; current integration tests use the Docker Postgres stack
+per `.kiro/steering/`: UID-first lookup, OTP + UID session, attribution,
 wallet, withdrawals, admin shell and dashboard. Access model: a visitor enters exchange +
 UID and sees `pending`/`available` (Req 14); withdrawal needs an email bound by OTP via
 Resend and a 30-minute UID session (Req 15, 16); a UID's first withdrawal always goes to
@@ -65,7 +66,9 @@ Open:
   plan awaits user confirmation.
 - **Deployment:** Task 5.6 live check; Resend domain and credentials.
 - **API sync (Task 20 implemented; live rollout not run):** Bybit activity sync is in
-  code. `commissionsVol` stays reported activity and does not touch wallets. The
+  code. MEXC's referral API connector is implemented but awaits Docker integration
+  and a nonzero period comparison after credentials are supplied (Task 20.6).
+  Both keep reported activity separate from wallets. The
   2026-09-26 sink integration could not reach the Railway proxy, and the read-only
   probe was not executed in this session.
   Probe 2026-09-26 (read-only; roster had 54 UIDs at the time): one year of daily history, daily sums equal
@@ -496,7 +499,7 @@ flowchart TD
 ### Phase 4 — Bybit Affiliate API activity sync
 
 - [x] 20. Scheduled API sync by exchange (Bybit first; activity only)
-  - Keep MEXC/Binance manual until an official connector and credentials are verified.
+  - Keep Binance manual until an official connector and credentials are verified.
     A schedule row may exist for every exchange but starts disabled. No browser
     cookies, portal scraping, or wallet writes from this API dataset.
   - _Requirements: 6.17–6.19, 13; Design: Scheduled Bybit Affiliate activity sync_
@@ -616,6 +619,13 @@ flowchart TD
       30-minute schedule. Review request count, rate-limit headers, alert route,
       and stale display before production rollout.
     - _Requirements: 6.8, 6.17–6.21, 13; Design: Testing Strategy, Use cases, Security_
+
+  - [ ] 20.6 Add the MEXC Affiliate referral activity connector, worker-only
+    credentials and readiness, signed daily pagination, raw landing/transform,
+    per-exchange admin control and isolated rate slot. Code and unit verification
+    are complete; Docker integration and live period reconciliation remain pending.
+    Keep activity separate from payable commission.
+    - _Requirements: 13.15; Design: Scheduled MEXC Affiliate referral activity_
 
 - [ ] 21. (Optional) SSE near-real-time UI
   - Add `PostgreSQL NOTIFY → backend SSE → client refetch` with auth, heartbeat, reconnect snapshot, and streaming-capable proxy. Not required for MVP.
@@ -837,6 +847,7 @@ flowchart TD
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-09-30 | tasks.md | Thêm Task 20.6 connector MEXC Affiliate referral activity | Mở rộng API sync theo kiến trúc hiện có | added |
 | 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 (Overview, DAG, Notes); hoàn thành Phase 0: scaffold + boundary lint, Prisma versioned commission/wallet, contracts, test Postgres, seed, public SSR, redirect + click, interim auth, admin content, job queue có lease fencing | Hoàn tất spec và nền tảng | added |
 | 2026-09-16 | tasks.md | Chốt UID-first (v2.0): Task 22–26, attribution upsert `UidAccount`, Task 5.6 logo local; hoàn thành 10.1/10.4 và import Bybit CSV v1 | Đồng bộ requirements v0.6 / design v0.7 | added |
 | 2026-09-17 | tasks.md | Hoàn thành Task 16, 17, 22–28; re-run integration và backup drill (18/19); thêm Task 27, 28, 29 (deferred) | Đồng bộ tiến độ với code đã test | updated |

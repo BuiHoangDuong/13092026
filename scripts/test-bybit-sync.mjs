@@ -10,6 +10,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(root, ".env"), quiet: true });
 const originalUrl = process.env.TEST_DATABASE_URL;
 if (!originalUrl) throw new Error("Set TEST_DATABASE_URL explicitly to a dedicated test database");
+if (!["localhost", "127.0.0.1", "postgres"].includes(new URL(originalUrl).hostname))
+  throw new Error("TEST_DATABASE_URL must point to the local Docker Postgres service");
 const schema = `cashback_test_${randomUUID().replaceAll("-", "")}`;
 const url = new URL(originalUrl);
 url.searchParams.set("schema", schema);
@@ -32,7 +34,7 @@ try {
   const exchange = await db.exchange.create({ data: { slug: "bybit", name: "Bybit", status: "PUBLISHED" } });
   const run = await db.syncRun.create({ data: { exchangeId: exchange.id, rootAccount: "root", trigger: "MANUAL", state: "RUNNING", contractVersion: "bybit-affiliate@1", startedAt: new Date() } });
   const before = { commission: await db.commissionRecord.count(), wallet: await db.walletEntry.count(), withdrawal: await db.withdrawal.count() };
-  const day = { exchangeId: exchange.id, rootAccount: "root", periodDate: "2026-09-01", runId: run.id, fingerprint: "fp", observedAt: new Date(), sourceAsOf: null, state: "SEALED" };
+  const day = { exchangeId: exchange.id, rootAccount: "root", periodDate: "2026-09-01", runId: run.id, fingerprint: "fp", observedAt: new Date(), sourceAsOf: null, state: "SEALED", contractVersion: "bybit-affiliate@1" };
   const first = [metric("001", "TRADE_VOLUME", "USDT", "10.0000000000"), metric("001", "REPORTED_COMMISSION", "USDT", "1.0000000000"), metric("002", "TRADE_VOLUME", "USDT", "")];
   const created = await db.$transaction((tx) => publishApiDay(tx, { ...day, metrics: first, updateRoster: true }), { timeout: 30000 });
   assert.equal(created.unchanged, false);
@@ -99,7 +101,8 @@ try {
   await core.refreshBybitReadiness(fakeBybit("normal"));
   await core.updateSyncConfig("test-admin", exchange.id, { enabled: false });
   await db.job.deleteMany({ where: { type: "SYNC", payload: { path: ["exchangeId"], equals: exchange.id } } });
-  const bybit2 = await db.exchange.create({ data: { slug: "bybit-e2e", name: "Bybit E2E", status: "PUBLISHED" } });
+  await db.exchange.update({ where: { id: exchange.id }, data: { slug: "bybit-sink-test" } });
+  const bybit2 = await db.exchange.create({ data: { slug: "bybit", name: "Bybit E2E", status: "PUBLISHED" } });
   await db.exchangeSyncConfig.create({ data: { exchangeId: bybit2.id, rootAccount: "root-e2e", enabled: true, intervalMinutes: 30, nextRunAt: new Date(Date.now() - 1000) } });
   await Promise.all([core.scheduleDueSyncs(), core.scheduleDueSyncs()]);
   const queued = await db.job.findMany({ where: { type: "SYNC", payload: { path: ["exchangeId"], equals: bybit2.id } } });
@@ -172,7 +175,39 @@ try {
   const unfetched = await core.listReportedActivity({ exchangeId: exchange.id, periodStart: "2026-08-20T00:00:00.000Z", periodEnd: "2026-08-21T23:59:59.999Z", limit: 1 });
   assert.equal(unfetched.activity.find((row) => row.uid === "001" && row.rootAccount === "root").dataState, "INCOMPLETE");
   assert.deepEqual(unfetched.coverageDays.find((item) => item.rootAccount === "root"), { rootAccount: "root", expected: 2, fetched: 0, open: 0, missing: 2 });
-  console.log("PASS: Bybit activity sink versions metrics without touching wallets");
+  // MEXC follows the same worker → raw landing → transform → activity sink path.
+  const mexc = await db.exchange.create({ data: { slug: "mexc", name: "MEXC", status: "PUBLISHED" } });
+  process.env.MEXC_AFFILIATE_API_KEY = "fake-mexc-key";
+  process.env.MEXC_AFFILIATE_API_SECRET = "fake-mexc-secret";
+  process.env.MEXC_AFFILIATE_MASTER_UID = "mexc-root";
+  const fakeMexc = async (url) => {
+    const page = Number(new URL(url).searchParams.get("page"));
+    return { status: 200, json: async () => ({ success: true, code: 0, data: { currentPage: page, totalPage: 1, totalCount: 1,
+      resultList: [{ uid: "00123", inviteCode: "code", tradingAmount: "12.5", commission: "1.25", nickName: "private" }] } }) };
+  };
+  await core.refreshMexcReadiness(fakeMexc);
+  assert.equal((await core.getSyncConfig(mexc.id)).readiness.ready, true);
+  await db.exchangeSyncConfig.update({ where: { exchangeId: mexc.id }, data: { backfillDays: 0 } });
+  await core.updateSyncConfig("test-admin", mexc.id, { enabled: true });
+  const mexcJob = await core.claimNextJob(120, "mexc-sync-test");
+  assert.equal(mexcJob.type, "SYNC");
+  assert.equal(mexcJob.payload.exchangeId, mexc.id);
+  await core.runSyncJob({ id: mexcJob.id, lockedBy: mexcJob.lockedBy }, mexcJob.payload, fakeMexc);
+  for (;;) {
+    const pending = await db.job.findFirst({ where: { type: "TRANSFORM", state: "PENDING" } });
+    if (!pending) break;
+    const transform = await core.claimNextJob(120, "mexc-transform-test");
+    assert.equal(transform.type, "TRANSFORM");
+    await core.transformApiJob({ id: transform.id, lockedBy: transform.lockedBy }, transform.payload.loadId);
+  }
+  assert.equal((await db.syncRun.findFirst({ where: { exchangeId: mexc.id }, orderBy: { createdAt: "desc" } })).state, "SUCCEEDED");
+  assert.equal(await db.activityMetricCurrent.count({ where: { exchangeId: mexc.id, uid: "00123" } }), 6);
+  const mexcLoads = await db.rawLoad.findMany({ where: { exchangeId: mexc.id } });
+  assert.equal(mexcLoads.length, 3);
+  assert.ok(mexcLoads.every((load) => !load.fieldNames.includes("nickName")));
+  assert.equal(await db.commissionRecord.count(), before.commission);
+  assert.equal(await db.walletEntry.count(), before.wallet);
+  console.log("PASS: Bybit and MEXC API activity sync without wallet attribution");
 } finally {
   await control.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   await control.$disconnect();

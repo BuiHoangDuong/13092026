@@ -3,13 +3,16 @@ import { AdminPage } from "../../../admin-page";
 import { SyncControls } from "../../../sync-controls";
 
 async function ConnectorSection() {
-  const exchangeId = await getPublishedExchangeId("bybit");
-  return <SyncControls exchangeId={exchangeId} />;
+  const [bybitId, mexcId] = await Promise.all([getPublishedExchangeId("bybit"), getPublishedExchangeId("mexc")]);
+  return <>
+    <SyncControls exchangeId={bybitId} exchangeSlug="bybit" />
+    <SyncControls exchangeId={mexcId} exchangeSlug="mexc" />
+  </>;
 }
 
 export default async function ConnectorsPage() {
   return (
-    <AdminPage title="API connectors" description="Schedules for official exchange APIs. Bybit Affiliate is the first connector. Its reported commission is not cashback.">
+    <AdminPage title="API connectors" description="Schedules for official Bybit and MEXC affiliate activity APIs. Reported commission does not credit cashback.">
       <ConnectorSection />
     </AdminPage>
   );

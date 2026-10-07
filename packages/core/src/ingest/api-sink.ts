@@ -1,5 +1,5 @@
 import type { ActivityDayState, Prisma } from "@cashback/db";
-import { activityDigest, bybitAffiliateContract, type MetricDraft } from "./contract.js";
+import { activityDigest, type MetricDraft } from "./contract.js";
 
 /** A roster UID missing from this many consecutive complete fetches becomes GONE. */
 export const ROSTER_GONE_AFTER = 3;
@@ -36,6 +36,7 @@ export async function publishApiDay(tx: Prisma.TransactionClient, input: {
   observedAt: Date;
   sourceAsOf: Date | null;
   updateRoster: boolean;
+  contractVersion: string;
 }) {
   const digest = activityDigest(input.metrics);
   const existing = await tx.activityPeriodStatus.findUnique({
@@ -125,11 +126,11 @@ export async function publishApiDay(tx: Prisma.TransactionClient, input: {
     where: { exchangeId_rootAccount_periodDate: { exchangeId: input.exchangeId, rootAccount: input.rootAccount, periodDate: new Date(`${input.periodDate}T00:00:00.000Z`) } },
     create: {
       exchangeId: input.exchangeId, rootAccount: input.rootAccount, periodDate: new Date(`${input.periodDate}T00:00:00.000Z`),
-      state: input.state, contentDigest: digest, schemaFingerprint: input.fingerprint, contractVersion: bybitAffiliateContract.version,
+      state: input.state, contentDigest: digest, schemaFingerprint: input.fingerprint, contractVersion: input.contractVersion,
       rowCount: present.size, fetchedAt: now, responseObservedAt: input.observedAt, sourceAsOf: input.sourceAsOf, lastCheckedAt: now, lastChangedRunId: input.runId
     },
     update: {
-      state: input.state, contentDigest: digest, schemaFingerprint: input.fingerprint, rowCount: present.size,
+      state: input.state, contentDigest: digest, schemaFingerprint: input.fingerprint, contractVersion: input.contractVersion, rowCount: present.size,
       fetchedAt: now, responseObservedAt: input.observedAt, sourceAsOf: input.sourceAsOf, lastCheckedAt: now, lastChangedRunId: input.runId
     }
   });

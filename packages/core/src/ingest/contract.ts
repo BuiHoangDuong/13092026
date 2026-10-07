@@ -63,6 +63,18 @@ export const bybitAffiliateContract: FieldContract = {
   ]
 };
 
+export const mexcAffiliateContract: FieldContract = {
+  version: "mexc-affiliate-referral@1",
+  fields: [
+    { target: "uid", source: "uid", type: "uidText", required: true },
+    { target: "referralCode", source: "inviteCode", type: "text", required: false },
+    { target: "TRADE_VOLUME", source: "tradingAmount", type: "decimal", unit: "USDT", required: true },
+    { target: "REPORTED_COMMISSION", source: "commission", aliases: ["amount"], type: "decimal", unit: "USDT", required: true }
+  ],
+  personal: ["account", "nickName", "email", "identification", "asset", "registerTime", "inviteTime", "depositAmount", "firstDepositTime", "firstTradeTime", "lastDepositTime", "lastTradeTime", "withdrawAmount", "withdrawalAmount"],
+  ignored: ["account", "nickName", "email", "identification", "asset", "registerTime", "inviteTime", "depositAmount", "firstDepositTime", "firstTradeTime", "lastDepositTime", "lastTradeTime", "withdrawAmount", "withdrawalAmount"]
+};
+
 /** Normalized targets a contract may map to. A new target needs a sink change first. */
 export const KNOWN_TARGETS: ReadonlySet<string> = new Set([
   "uid", "asset", "commission", "transaction_id", "occurred_at", "referral_link_id", "referralCode", "tradingAsset", "earningsAsset",

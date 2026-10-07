@@ -92,6 +92,8 @@ The web app runs at `http://localhost:3000`. Bybit CSV reports are stored privat
 in Postgres so the web and worker can run in separate containers. See
 [Bybit cashback setup and CSV format](apps/web/docs/bybit-cashback.md) for the
 import/approval workflow, holding-period configuration, and isolated integration test.
+For the MEXC affiliate activity connector and worker environment variables, see
+[MEXC referral activity](apps/web/docs/mexc-referral-activity.md).
 
 ## Verification
 
