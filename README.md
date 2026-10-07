@@ -94,6 +94,8 @@ in Postgres so the web and worker can run in separate containers. See
 import/approval workflow, holding-period configuration, and isolated integration test.
 For the MEXC affiliate activity connector and worker environment variables, see
 [MEXC referral activity](apps/web/docs/mexc-referral-activity.md).
+For BingX API research, affiliate endpoints, and IP whitelist notes, see
+[BingX API notes](apps/web/docs/bingx-api.md).
 
 ## Verification
 

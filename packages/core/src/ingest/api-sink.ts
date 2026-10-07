@@ -6,7 +6,7 @@ export const ROSTER_GONE_AFTER = 3;
 
 // Arrays are bound as ONE parameter each (`$1::text[]`), so row count never hits
 // PostgreSQL's 65,535 bind-parameter limit (5,000 UIDs x 9 metrics would).
-async function updateRoster(tx: Prisma.TransactionClient, exchangeId: string, rootAccount: string, present: Map<string, string | null>, now: Date) {
+async function updateRoster(tx: Prisma.TransactionClient, exchangeId: string, rootAccount: string, present: Map<string, string | null>, now: Date, ageMissing = true) {
   // An empty complete fetch is quarantined by the caller; never age the whole roster on it.
   if (!present.size) return;
   const uids = [...present.keys()];
@@ -17,6 +17,7 @@ async function updateRoster(tx: Prisma.TransactionClient, exchangeId: string, ro
     FROM unnest(${uids}::text[], ${codes}::text[]) AS r(uid, code)
     ON CONFLICT ("exchangeId", "rootAccount", uid)
     DO UPDATE SET "referralCode" = EXCLUDED."referralCode", state = 'ACTIVE', "missedRuns" = 0, "lastSeenAt" = EXCLUDED."lastSeenAt"`;
+  if (!ageMissing) return;
   await tx.$executeRaw`
     UPDATE "ActivityRoster"
     SET "missedRuns" = "missedRuns" + 1,
@@ -36,6 +37,8 @@ export async function publishApiDay(tx: Prisma.TransactionClient, input: {
   observedAt: Date;
   sourceAsOf: Date | null;
   updateRoster: boolean;
+  preserveReportedZero?: boolean;
+  ageMissingRoster?: boolean;
   contractVersion: string;
 }) {
   const digest = activityDigest(input.metrics);
@@ -47,8 +50,8 @@ export async function publishApiDay(tx: Prisma.TransactionClient, input: {
   for (const row of input.metrics) if (!present.has(row.uid)) present.set(row.uid, row.referralCode);
   // Roster runs before the digest gate: a UID that stays missing must keep aging
   // even when the rest of the day is unchanged.
-  if (input.updateRoster) await updateRoster(tx, input.exchangeId, input.rootAccount, present, now);
-  if (existing?.contentDigest === digest) {
+  if (input.updateRoster) await updateRoster(tx, input.exchangeId, input.rootAccount, present, now, input.ageMissingRoster ?? true);
+  if (existing?.contentDigest === digest && existing.contractVersion === input.contractVersion) {
     await tx.activityPeriodStatus.update({
       where: { exchangeId_rootAccount_periodDate: { exchangeId: input.exchangeId, rootAccount: input.rootAccount, periodDate: existing.periodDate } },
       data: { lastCheckedAt: now, fetchedAt: now, responseObservedAt: input.observedAt, sourceAsOf: input.sourceAsOf }
@@ -80,7 +83,7 @@ export async function publishApiDay(tx: Prisma.TransactionClient, input: {
         ("exchangeId", "rootAccount", uid, "periodDate", kind, asset, "valueState", amount, "lastChangedRunId", "updatedAt")
       SELECT r.exchange_id, r.root_account, r.uid, r.period_date, r.kind::"ActivityMetricKind", r.asset, r.value_state::"MetricValueState", r.amount, ${input.runId}, now()
       FROM tmp_sync_rows r
-      WHERE (r.value_state = 'VALUE' AND r.amount IS NOT NULL AND r.amount <> 0)
+      WHERE (r.value_state = 'VALUE' AND r.amount IS NOT NULL AND (${input.preserveReportedZero ?? false} OR r.amount <> 0))
          OR EXISTS (
            SELECT 1 FROM existing e
            WHERE e.uid = r.uid AND e.kind::text = r.kind AND e.asset = r.asset

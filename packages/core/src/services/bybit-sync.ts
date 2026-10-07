@@ -7,6 +7,12 @@ import { readRawApi, readRawRows, sliceKey, writeRawLoad } from "../ingest/raw-l
 import { heartbeat, lockActivityPeriod, withJobLease, type JobLease } from "./jobs.js";
 
 const INTERVALS = [30, 60, 720, 1440] as const;
+const ACTIVITY_API_EXCHANGES = ["bybit", "mexc"];
+
+export async function listSyncExchanges() {
+  const exchanges = await db.exchange.findMany({ select: { id: true, slug: true, name: true }, orderBy: { name: "asc" } });
+  return exchanges.map(exchange => ({ ...exchange, apiSupported: ACTIVITY_API_EXCHANGES.includes(exchange.slug) }));
+}
 const READINESS_MAX_AGE_MS = 5 * 60_000;
 export type SyncInterval = (typeof INTERVALS)[number];
 
@@ -235,7 +241,7 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
     await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: "ROOT_MISMATCH" } });
     return withJobLease(lease, async () => {});
   }
-  if (trigger === "SCHEDULED" && (!config.enabled || config.pausedReason)) return withJobLease(lease, async () => {});
+  if (["SCHEDULED", "BACKFILL", "RECONCILE"].includes(trigger) && (!config.enabled || config.pausedReason)) return withJobLease(lease, async () => {});
   const readiness = await (slug === "bybit" ? bybitReadiness(fetchImpl) : mexcReadiness(fetchImpl));
   if (!readiness.ready) {
     // Pause but keep the admin's enabled choice, so Resume restores the schedule after the fix.
@@ -315,7 +321,9 @@ export async function transformApiJob(lease: JobLease, loadId: string) {
       await lockActivityPeriod(tx, `${load.exchangeId}|${load.rootAccount}|${day}`);
       const result = await publishApiDay(tx, { exchangeId: load.exchangeId, rootAccount: load.rootAccount, periodDate: day,
         runId: load.runId!, metrics: mapped.metrics, state: meta.dayState as ActivityDayState, fingerprint: mapped.fingerprint,
-        observedAt: new Date(meta.observedAt), sourceAsOf: null, updateRoster: meta.updateRoster === "true", contractVersion: contract.version });
+        observedAt: new Date(meta.observedAt), sourceAsOf: null, updateRoster: meta.updateRoster === "true",
+        preserveReportedZero: load.sourceSystem === "mexc", ageMissingRoster: load.sourceSystem !== "mexc",
+        contractVersion: contract.version, ...(load.sourceSystem === "mexc" ? { updateRoster: true } : {}) });
       await tx.rawLoad.update({ where: { id: loadId }, data: { state: "TRANSFORMED", transformedAt: new Date(), driftReport: { class: mapped.drift.class, fields: mapped.drift.fields } } });
       const run = await tx.syncRun.findUniqueOrThrow({ where: { id: load.runId! } });
       const days = Array.isArray(run.daysWritten) ? run.daysWritten.filter((value): value is string => typeof value === "string") : [];
@@ -388,17 +396,21 @@ export async function getSyncConfig(exchangeId: string) {
 export async function updateSyncConfig(adminId: string, exchangeId: string, patch: { enabled?: boolean; intervalMinutes?: SyncInterval }) {
   if (patch.intervalMinutes && !INTERVALS.includes(patch.intervalMinutes)) throw new SyncError("INTERVAL", "QUARANTINE", "Interval must be 30, 60, 720, or 1440 minutes");
   const exchange = await db.exchange.findUnique({ where: { id: exchangeId } });
-  if (!exchange || !["bybit", "mexc"].includes(exchange.slug)) throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no activity connector");
+  if (!exchange) throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange does not exist");
   const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
+  const supported = ACTIVITY_API_EXCHANGES.includes(exchange.slug);
+  const enabled = patch.enabled ?? current?.enabled ?? false;
+  if (enabled && !supported) throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no activity connector");
   const enabling = patch.enabled === true && !current?.enabled;
   if (enabling) requireRecentReadiness(current);
+  const intervalMinutes = patch.intervalMinutes ?? current?.intervalMinutes ?? 30;
   const data = {
     rootAccount: current?.rootAccount ?? "unconfigured",
-    enabled: patch.enabled ?? current?.enabled ?? false,
-    intervalMinutes: patch.intervalMinutes ?? current?.intervalMinutes ?? 30,
+    enabled,
+    intervalMinutes,
     // Enabling queues an immediate run below, so the first scheduled slot is one interval later.
-    nextRunAt: patch.enabled === false ? null : enabling || !current?.nextRunAt
-      ? new Date(Date.now() + (patch.intervalMinutes ?? current?.intervalMinutes ?? 30) * 60_000)
+    nextRunAt: !enabled ? null : enabling || !current?.nextRunAt || intervalMinutes !== current.intervalMinutes
+      ? new Date(Date.now() + intervalMinutes * 60_000)
       : current.nextRunAt,
     pausedReason: enabling ? null : current?.pausedReason,
     updatedBy: adminId

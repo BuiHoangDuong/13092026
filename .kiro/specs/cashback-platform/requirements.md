@@ -613,6 +613,13 @@ without a usable API.
 8. WHEN an admin changes an interval, disables a schedule, or starts a manual
    run, THE SYSTEM SHALL record the actor and change, apply it without restarting
    Railway, and prevent the control from exposing API credentials.
+   WHEN configuring ingestion, THE SYSTEM SHALL let the admin select a registered
+   exchange and save its own Manual (`enabled=false`) or Scheduled mode and
+   interval. Exchanges without an implemented API connector SHALL allow disabled
+   interval preferences only and clearly explain that API sync is unavailable.
+   An interval change SHALL reset the next scheduled run for that exchange only.
+   Manual mode SHALL prevent queued scheduled, backfill and reconciliation jobs
+   from starting further automatic requests; an already running request may finish.
 9. THE SYSTEM SHALL keep API keys on the worker as server-side secrets, minimize
    stored client fields, and never expose credentials, full source responses, or
    other customers' private data through public APIs or logs.
@@ -650,7 +657,11 @@ without a usable API.
     commission, and publish fully fetched day slices through the existing raw activity and
     change-history path. It SHALL NOT create payable commission or wallet entries.
     An incomplete or malformed page SHALL quarantine the run; auth failures SHALL
-    pause the connector. MEXC keys SHALL be separate from Bybit keys.
+    pause the connector. MEXC keys SHALL be separate from Bybit keys and absent
+    from the web environment. A returned UID with zero amounts SHALL remain visible
+    as reported zero; missing rows SHALL remain distinguishable from zero.
+    The schedule SHALL remain disabled until nonzero daily values are reconciled
+    against the affiliate portal/export; activity SHALL never become payable commission.
 
 ### Requirement 14: Cashback lookup by exchange + UID
 **User Story:** As a visitor, I want to enter my exchange and UID and immediately see the
@@ -1052,6 +1063,8 @@ tab) to do several jobs without losing my place.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-07 | requirements.md | Req 13.8: exchange selector, per-exchange manual/scheduled settings and disabled preferences for unsupported connectors | Configure different frequencies without implying an OKX API integration exists | updated |
+| 2026-10-07 | requirements.md | Req 13.15: preserve MEXC reported zero, isolate web credentials and gate scheduled rollout on period reconciliation | Complete activity connector without losing zero UIDs or assuming daily semantics | updated |
 | 2026-09-30 | requirements.md | Req 13.2, 13.15: thêm connector MEXC Affiliate read-only theo ngày, phân trang và chỉ ghi activity | Tích hợp API MEXC mà không tự động ghi ví | updated |
 | 2026-09-15 | requirements.md | Tạo bộ requirement EARS đầu tiên: reserved balance + withdrawal event audit (Req 8/9), rule cashback rate + snapshot (Req 7.3, 7.8), best-effort click (Req 2.2), versioned commission, receivable/clawback + chặn rút (Req 8.7, 9.11), cancel withdrawal (Req 9.10); English-only + locale registry (Req 4, 10.5) | Khởi tạo spec, khắc phục review round 1–2; sản phẩm không phục vụ tiếng Việt nhưng giữ seam i18n | added |
 | 2026-09-16 | requirements.md | Chốt mô hình UID-first, không tài khoản end user: Req 3 chỉ còn admin auth, Req 5 thành UID accounts, thêm Req 14 (lookup exchange + UID trả số tiền thật, rate limit per-IP, read-only), Req 15 (OTP 6 số + UID session 30 phút), Req 16 (email qua Resend); cập nhật Req 7/8/9 theo UidAccount, lệnh rút đầu tiên luôn admin duyệt; thêm "Accepted risk — first claimant wins"; đồng bộ API surface, data model, Open decision #12/#13/#20/#21 | Nhập UID + chọn sàn là xem tiền, chỉ xác thực khi rút; chủ dự án chấp nhận rủi ro không xác minh được chủ UID. Mô hình customer account/Hybrid trước đó đã bỏ | updated |

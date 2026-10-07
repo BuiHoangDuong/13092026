@@ -39,3 +39,16 @@ test("MEXC rejects incomplete pagination, duplicate UID and unsafe numeric UID",
   assert.throws(() => mapMexcRecords([row({ uid: 9_007_199_254_740_992 })]), /UID is invalid/);
   assert.throws(() => mapMexcRecords([row({ commission: "1e3" })]), /Invalid MEXC commission/);
 });
+
+test("MEXC empty pages are valid; auth pauses and transient failures retry", async () => {
+  const empty = await fetchMexcDay({ day: "2026-09-25", apiKey: "key", apiSecret: "secret",
+    fetchImpl: async () => ({ status: 200, json: async () => ({ success: true, code: 0,
+      data: { currentPage: 1, totalPage: 0, totalCount: 0, resultList: [] } }) }) });
+  assert.deepEqual(empty.records, []);
+  for (const [status, action] of [[401, "PAUSE"], [403, "PAUSE"], [429, "RETRY"], [503, "RETRY"]]) {
+    await assert.rejects(() => fetchMexcDay({ day: "2026-09-25", apiKey: "key", apiSecret: "secret",
+      fetchImpl: async () => ({ status }) }), error => error.action === action);
+  }
+  await assert.rejects(() => fetchMexcDay({ day: "2026-02-30", apiKey: "key", apiSecret: "secret",
+    fetchImpl: async () => { throw new Error("Must not fetch invalid dates"); } }), error => error.code === "INVALID_DAY");
+});

@@ -66,8 +66,9 @@ Open:
   plan awaits user confirmation.
 - **Deployment:** Task 5.6 live check; Resend domain and credentials.
 - **API sync (Task 20 implemented; live rollout not run):** Bybit activity sync is in
-  code. MEXC's referral API connector is implemented but awaits Docker integration
-  and a nonzero period comparison after credentials are supplied (Task 20.6).
+  code. MEXC's referral API connector and Docker integration are verified on
+  2026-10-07; root UID configuration and a nonzero period comparison remain
+  pending (Task 20.6). Its schedule stays disabled until that evidence is supplied.
   Both keep reported activity separate from wallets. The
   2026-09-26 sink integration could not reach the Railway proxy, and the read-only
   probe was not executed in this session.
@@ -623,9 +624,31 @@ flowchart TD
   - [ ] 20.6 Add the MEXC Affiliate referral activity connector, worker-only
     credentials and readiness, signed daily pagination, raw landing/transform,
     per-exchange admin control and isolated rate slot. Code and unit verification
-    are complete; Docker integration and live period reconciliation remain pending.
+    are complete; Docker integration passed on 2026-10-07. Root UID configuration
+    and live period reconciliation remain pending; do not mark this task complete
+    or enable the live schedule before that gate passes.
+    - Verified on Docker Postgres 18.6: worker build, updated core build, core lint,
+      worker/web typecheck, 28 core unit tests passed (one private fixture skipped),
+      `scripts/test-bybit-sync.mjs` and `scripts/test-mexc-activity.mjs` passed.
+      Coverage includes zero UID visibility, referral codes, contract-version replay,
+      missing-day reporting, correction to zero, digest idempotency, XLSX override,
+      root mismatch, and no commission/wallet writes. Compose config confirms
+      MEXC affiliate and legacy credentials are cleared on web.
     Keep activity separate from payable commission.
     - _Requirements: 13.15; Design: Scheduled MEXC Affiliate referral activity_
+
+  - [x] 20.7 Exchange selector and independent Manual/Scheduled API settings.
+    - List registered exchanges, remount the controls on selection, preserve draft
+      settings during polling, and save mode/interval by exchange ID. Unsupported
+      connectors can save disabled preferences but cannot enable API runs.
+    - Changing interval resets only that exchange's next slot. Manual mode skips
+      queued scheduled/backfill/reconciliation requests; Sync now remains a ready
+      connector's explicit one-time action. No schema migration or credential UI.
+    - Verified 2026-10-07 on Docker: core build/lint, web typecheck/lint, and
+      Bybit/MEXC integration. Synthetic OKX preferences at 720 minutes remain
+      independent of MEXC at 30 minutes; unsupported enable is rejected and
+      manual mode makes no automatic exchange requests.
+    - _Requirements: 13.8; Design: API connector exchange selection_
 
 - [ ] 21. (Optional) SSE near-real-time UI
   - Add `PostgreSQL NOTIFY → backend SSE → client refetch` with auth, heartbeat, reconnect snapshot, and streaming-capable proxy. Not required for MVP.

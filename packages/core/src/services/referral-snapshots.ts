@@ -8,6 +8,7 @@ type ActivitySqlRow = {
   source: "MANUAL" | "API"; rootAccount: string; uid: string; referralCode: string | null;
   partial: boolean; sourceAsOf: Date | null; kind: string; asset: string;
   valueState: string; amount: string | null;
+  periodStart: Date;
 };
 
 const DAY_MS = 86_400_000;
@@ -29,6 +30,7 @@ export async function listReportedActivity(input: { exchangeId: string; periodSt
   }
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
   const days = overlappingUtcDays(periodStart, periodEnd);
+  const mexc = (await db.exchange.findUnique({ where: { id: input.exchangeId }, select: { slug: true } }))?.slug === "mexc";
   if (days.expected > 366) throw new ImportError("IMPORT_INVALID", "Choose at most 366 complete UTC days");
   const manualFilter = Prisma.sql`v.source = 'MANUAL' AND v."periodStart" = ${periodStart} AND v."periodEnd" = ${periodEnd}`;
   const apiFilter = days.expected ? Prisma.sql`v.source = 'API' AND v."periodStart" >= ${days.first} AND v."periodEnd" < ${days.lastExclusive}` : Prisma.sql`FALSE`;
@@ -46,7 +48,7 @@ export async function listReportedActivity(input: { exchangeId: string; periodSt
   const nextCursor = ids.length > limit ? pageIds.at(-1) ?? null : null;
   const [rows, roster] = pageIds.length ? await Promise.all([
     db.$queryRaw<ActivitySqlRow[]>`
-      SELECT v.source, v."rootAccount", v.uid, v."referralCode", v.partial, v."sourceAsOf", v.kind,
+      SELECT v.source, v."rootAccount", v.uid, v."referralCode", v.partial, v."sourceAsOf", v.kind, v."periodStart",
         v.asset, v."valueState"::text AS "valueState", v.amount::text AS amount
       FROM "referral_activity_v" v WHERE v."exchangeId" = ${input.exchangeId}
         AND v.uid IN (${Prisma.join(pageIds)}) AND (${manualFilter} OR ${apiFilter})
@@ -74,18 +76,25 @@ export async function listReportedActivity(input: { exchangeId: string; periodSt
     groups.set(`API:${item.rootAccount}:${item.uid}`, { uid: item.uid, source: "API", rootAccount: item.rootAccount,
       referralCode: item.referralCode, partial: days.boundaryPartial || coverage.open > 0 || coverage.missing > 0,
       sourceAsOf: coverage.sourceAsOf, fetchedAt: coverage.fetchedAt,
-      dataState: coverage.open || coverage.missing ? "INCOMPLETE" : "NO_ACTIVITY", metrics: [] });
+      dataState: mexc || coverage.open || coverage.missing ? "INCOMPLETE" : "NO_ACTIVITY", metrics: [] });
   }
   const metricTotals = new Map<string, Prisma.Decimal>();
+  const reportedDays = new Map<string, Set<string>>();
   for (const row of rows) {
     const key = `${row.source}:${row.rootAccount}:${row.uid}`;
+    if (mexc && row.source === "API") {
+      const present = reportedDays.get(key) ?? new Set<string>();
+      present.add(new Date(row.periodStart).toISOString().slice(0, 10));
+      reportedDays.set(key, present);
+    }
     const coverage = byRoot.get(row.rootAccount);
     const current = groups.get(key) ?? { uid: row.uid, source: row.source, rootAccount: row.rootAccount,
       referralCode: row.referralCode, partial: row.source === "API" ? Boolean(days.boundaryPartial || row.partial || (coverage && (coverage.open || coverage.missing))) : row.partial,
       sourceAsOf: row.source === "API" ? coverage?.sourceAsOf ?? null : row.sourceAsOf?.toISOString() ?? null,
       fetchedAt: row.source === "API" ? coverage?.fetchedAt ?? null : null,
       dataState: "REPORTED" as const, metrics: [] };
-    current.dataState = "REPORTED";
+    const missingUidDay = mexc && row.source === "API" && reportedDays.get(key)!.size < days.expected;
+    current.dataState = missingUidDay ? "INCOMPLETE" : "REPORTED";
     const metricKey = `${key}:${row.kind}:${row.asset}`;
     const previous = metricTotals.get(metricKey) ?? new Prisma.Decimal(0);
     if (row.amount != null) metricTotals.set(metricKey, previous.plus(row.amount));
@@ -93,6 +102,9 @@ export async function listReportedActivity(input: { exchangeId: string; periodSt
     if (!existing) current.metrics.push({ kind: row.kind, asset: row.asset, valueState: row.valueState, amount: row.amount });
     else if (row.amount != null) { existing.amount = metricTotals.get(metricKey)!.toFixed(10); existing.valueState = "VALUE"; }
     groups.set(key, current);
+  }
+  if (mexc) for (const [key, group] of groups) {
+    if (group.source === "API" && (reportedDays.get(key)?.size ?? 0) < days.expected) group.partial = true;
   }
   const activity = [...groups.values()].sort((a, b) => a.uid.localeCompare(b.uid) || a.source.localeCompare(b.source) || a.rootAccount.localeCompare(b.rootAccount));
   return { note: NOTE, nextCursor, coverageDays: [...byRoot.values()].map(({ rootAccount, expected, fetched, open, missing }) => ({ rootAccount, expected, fetched, open, missing })), activity };

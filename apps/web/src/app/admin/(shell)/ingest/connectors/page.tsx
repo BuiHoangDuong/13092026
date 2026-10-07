@@ -1,18 +1,14 @@
-import { getPublishedExchangeId } from "@cashback/core";
+import { listSyncExchanges } from "@cashback/core";
 import { AdminPage } from "../../../admin-page";
-import { SyncControls } from "../../../sync-controls";
+import { ConnectorSettings } from "../../../connector-settings";
 
 async function ConnectorSection() {
-  const [bybitId, mexcId] = await Promise.all([getPublishedExchangeId("bybit"), getPublishedExchangeId("mexc")]);
-  return <>
-    <SyncControls exchangeId={bybitId} exchangeSlug="bybit" />
-    <SyncControls exchangeId={mexcId} exchangeSlug="mexc" />
-  </>;
+  return <ConnectorSettings exchanges={await listSyncExchanges()} />;
 }
 
 export default async function ConnectorsPage() {
   return (
-    <AdminPage title="API connectors" description="Schedules for official Bybit and MEXC affiliate activity APIs. Reported commission does not credit cashback.">
+    <AdminPage title="API connectors" description="Choose an exchange and configure its own manual or scheduled API sync. Reported commission does not credit cashback.">
       <ConnectorSection />
     </AdminPage>
   );

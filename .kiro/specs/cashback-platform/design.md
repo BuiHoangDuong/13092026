@@ -389,9 +389,19 @@ USDT and commission labeled reported activity. The existing `RawLoad` →
 run audit and no wallet writes. The worker owns `MEXC_AFFILIATE_API_KEY`,
 `MEXC_AFFILIATE_API_SECRET` and `MEXC_AFFILIATE_MASTER_UID`; its signed referral
 probe persists secret-free readiness. MEXC starts disabled and has its own
-rate slot. The API documentation does not specify the precise period aggregation
-semantics, so the admin must reconcile a nonzero day against the portal/export
-before treating those values as payable commission (Req 6.12–6.14, 11.1).
+rate slot. Docker clears both MEXC affiliate and legacy credentials from the web
+environment. `publishApiDay` accepts `preserveReportedZero` (default false), enabled
+only for MEXC: initial zero metrics are retained without changing Bybit's sparse
+policy. Missing metrics continue to become ABSENT. MEXC upserts observed roster
+members and referral codes but never ages missing members from filtered results.
+Reports mark a MEXC UID incomplete when it lacks reported metrics for any selected
+day; absence is not inferred as zero. Existing zero-only days must be re-fetched with a new
+MEXC contract version so the previous digest cannot skip materialization.
+The API documentation does not specify the precise period aggregation semantics.
+Reconcile at least two adjacent nonzero UTC days against the portal/export before
+enabling automated daily reporting. If daily semantics cannot be confirmed, leave
+the schedule disabled and Task 20.6 incomplete. This activity is never payable
+commission; Task 11.1 is a separate evidence gate (Req 6.12–6.14).
 
 #### Scheduled Bybit Affiliate activity sync (Req 6.17–6.20, 11.4, 13)
 
@@ -1391,6 +1401,16 @@ decimal string with an `asset`. Errors use a consistent envelope
 | `/api/admin/ingest/connectors/:exchangeId` | GET/PATCH | admin | read/change enabled and interval (30/60/720/1440 minutes); audit actor |
 | `/api/admin/ingest/connectors/:exchangeId/run` | POST | admin | enqueue immediate run or `from`/`to` re-sync if ready and no active run; 202 |
 | `/api/admin/ingest/connectors/:exchangeId/resume` | POST | admin | clear a pause after readiness passes; audit actor |
+
+The connector page lists registered exchanges in one selector, including API
+availability. Selection remounts the controls so readiness, draft values and run
+history cannot leak across exchanges. Manual maps to `enabled=false`; Scheduled
+maps to `enabled=true`. Existing GET/PATCH contracts remain unchanged. Unsupported
+exchanges may save a disabled interval preference but cannot enable or run an API.
+Only ready supported connectors can enable Scheduled. Changing a saved interval
+resets `nextRunAt` from now if enabled; manual configs have no next run. Worker
+skips queued SCHEDULED/BACKFILL/RECONCILE jobs while disabled or paused. Selection
+polling preserves unsaved mode/interval edits.
 
 Retired aliases (Req 18.8): `/api/admin/imports*` →
 `/api/admin/ingest/batches*`, `/api/admin/sync-config/*` →
@@ -2406,6 +2426,8 @@ most critical money/concurrency invariants, not an exhaustive suite.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-07 | design.md | Exchange selector and per-exchange schedule drafts; unsupported preference saves; next-slot recalculation and manual-mode worker guard | Independent admin configuration for multiple exchanges | updated |
+| 2026-10-07 | design.md | MEXC zero-preserving sink option and contract refresh; Docker credential isolation; explicit period reconciliation rollout gate | Complete activity integration and preserve Bybit sparse behavior | updated |
 | 2026-09-30 | design.md | Thiết kế MEXC Affiliate referral API qua worker, raw landing và activity sink; tách biến môi trường và rate slot | Giữ luồng chung với Bybit và chờ đối soát kỳ dữ liệu thực | updated |
 | 2026-09-15 | design.md | Tạo design ban đầu (heading chuẩn, Correctness Properties, Testing gọn); review round 1–2: CommissionVersion + delta/opKey + FOR UPDATE, reserved + WithdrawalEvent + cancel, reversal/receivable/CLAWBACK, rate snapshot + rate source trust, interim auth; Language & i18n English-only với locale registry; Tailwind v4 + shadcn/ui cho trang public | Chuyển requirements thành thiết kế và khắc phục review | added |
 | 2026-09-16 | design.md | Chuyển sang UID-first + Resend: `UidAccount`, `EmailOtp`, `UidSession`, `RateLimitCounter`, `Session` admin-only; FK ví/withdrawal/commission sang UidAccount; luồng lookup trả số dư thật, OTP binding + UID session 30 phút; core services lookup/otp/uidSession/emailPort; Property 3, 4, 6, 14, 16, 17; Open decision #12/#20/#21. `Exchange.logoUrl` là path asset trong repo | Operator chọn UID-first không cần tài khoản (Req 5, 14, 15, 16) | updated |

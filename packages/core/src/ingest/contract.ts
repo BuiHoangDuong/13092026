@@ -64,7 +64,7 @@ export const bybitAffiliateContract: FieldContract = {
 };
 
 export const mexcAffiliateContract: FieldContract = {
-  version: "mexc-affiliate-referral@1",
+  version: "mexc-affiliate-referral@2",
   fields: [
     { target: "uid", source: "uid", type: "uidText", required: true },
     { target: "referralCode", source: "inviteCode", type: "text", required: false },

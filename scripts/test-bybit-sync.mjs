@@ -180,13 +180,24 @@ try {
   process.env.MEXC_AFFILIATE_API_KEY = "fake-mexc-key";
   process.env.MEXC_AFFILIATE_API_SECRET = "fake-mexc-secret";
   process.env.MEXC_AFFILIATE_MASTER_UID = "mexc-root";
+  delete process.env.MEXC_AFFILIATE_MASTER_UID;
+  assert.equal((await core.mexcReadiness(async () => { throw new Error("Missing UID must not probe"); })).reason, "MISSING_KEY");
+  process.env.MEXC_AFFILIATE_MASTER_UID = "mexc-root";
   const fakeMexc = async (url) => {
     const page = Number(new URL(url).searchParams.get("page"));
-    return { status: 200, json: async () => ({ success: true, code: 0, data: { currentPage: page, totalPage: 1, totalCount: 1,
-      resultList: [{ uid: "00123", inviteCode: "code", tradingAmount: "12.5", commission: "1.25", nickName: "private" }] } }) };
+    return { status: 200, json: async () => ({ success: true, code: 0, data: { currentPage: page, totalPage: 1, totalCount: 2,
+      resultList: [{ uid: "00123", inviteCode: "code", tradingAmount: "12.5", commission: "1.25", nickName: "private" },
+        { uid: "00000", inviteCode: "code", tradingAmount: "0", commission: "0", email: "private@example.test" }] } }) };
   };
   await core.refreshMexcReadiness(fakeMexc);
   assert.equal((await core.getSyncConfig(mexc.id)).readiness.ready, true);
+  assert.equal((await core.getSyncConfig(mexc.id)).enabled, false);
+  process.env.MEXC_AFFILIATE_MASTER_UID = "different-root";
+  await core.refreshMexcReadiness(fakeMexc);
+  assert.equal((await core.getSyncConfig(mexc.id)).readiness.reason, "ROOT_MISMATCH");
+  process.env.MEXC_AFFILIATE_MASTER_UID = "mexc-root";
+  await core.refreshMexcReadiness(fakeMexc);
+  await core.resumeSync("test-admin", mexc.id);
   await db.exchangeSyncConfig.update({ where: { exchangeId: mexc.id }, data: { backfillDays: 0 } });
   await core.updateSyncConfig("test-admin", mexc.id, { enabled: true });
   const mexcJob = await core.claimNextJob(120, "mexc-sync-test");
@@ -205,8 +216,74 @@ try {
   const mexcLoads = await db.rawLoad.findMany({ where: { exchangeId: mexc.id } });
   assert.equal(mexcLoads.length, 3);
   assert.ok(mexcLoads.every((load) => !load.fieldNames.includes("nickName")));
+  assert.ok(mexcLoads.every((load) => !load.fieldNames.includes("email")));
+  assert.equal(await db.activityMetricCurrent.count({ where: { exchangeId: mexc.id, uid: "00000", amount: 0 } }), 6);
+  const mexcDay = { ...day, exchangeId: mexc.id, rootAccount: "mexc-root", runId: mexcLoads[0].runId,
+    contractVersion: "mexc-affiliate-referral@2", preserveReportedZero: true, updateRoster: true, ageMissingRoster: false };
+  const zeros = [metric("00000", "TRADE_VOLUME", "USDT", "0.0000000000"), metric("00000", "REPORTED_COMMISSION", "USDT", "0.0000000000")];
+  // Simulate an old zero-only day: it has a digest but no materialized metrics.
+  await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, contractVersion: "mexc-affiliate-referral@1", preserveReportedZero: false, metrics: zeros }));
+  const refreshed = await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, metrics: zeros }));
+  assert.equal(refreshed.changed, 2);
+  const sameZeros = await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, metrics: zeros }));
+  assert.equal(sameZeros.unchanged, true);
+  const reportInput = { exchangeId: mexc.id, periodStart: "2026-09-01T00:00:00.000Z", periodEnd: "2026-09-01T23:59:59.999Z" };
+  const zeroReport = await core.listReportedActivity(reportInput);
+  assert.equal(zeroReport.activity.find(row => row.uid === "00000").metrics.length, 2);
+  assert.equal(zeroReport.activity.find(row => row.uid === "00000").referralCode, "code");
+  assert.equal(zeroReport.activity.find(row => row.uid === "00000").dataState, "REPORTED");
+  const twoDays = await core.listReportedActivity({ ...reportInput, periodEnd: "2026-09-02T23:59:59.999Z" });
+  assert.equal(twoDays.activity.find(row => row.uid === "00000").dataState, "INCOMPLETE");
+  const overrideBatch = await db.importBatch.create({ data: { exchangeId: mexc.id, rootAccount: "mexc-root", datasetKind: "REFERRAL_ACTIVITY",
+    sourceMethod: "NATIVE_FILE", sourceTz: "UTC", sourceAsOf: new Date("2026-09-02"), fileRef: "synthetic.xlsx", status: "PUBLISHED",
+    periodStart: new Date(reportInput.periodStart), periodEnd: new Date(reportInput.periodEnd) } });
+  await db.referralSnapshot.create({ data: { batchId: overrideBatch.id, exchangeId: mexc.id, rootAccount: "mexc-root", uid: "00000",
+    periodStart: new Date(reportInput.periodStart), periodEnd: new Date(reportInput.periodEnd), tradingVolume: "7", tradingAsset: "USDT",
+    reportedEarnings: "0", earningsAsset: "USDT", referralCode: "manual-code",
+    metrics: { create: [{ kind: "TRADE_VOLUME", asset: "USDT", valueState: "VALUE", amount: "7" }] } } });
+  await db.activityPeriodOverride.create({ data: { exchangeId: mexc.id, rootAccount: "mexc-root",
+    periodStart: new Date(reportInput.periodStart), periodEnd: new Date(reportInput.periodEnd), manualBatchId: overrideBatch.id, updatedBy: "test-admin" } });
+  const overridden = await core.listReportedActivity(reportInput);
+  assert.deepEqual(overridden.activity.filter(row => row.uid === "00000").map(row => row.source), ["MANUAL"]);
+  assert.equal(overridden.activity.find(row => row.uid === "00000").metrics[0].amount, "7.0000000000");
+  await db.activityPeriodOverride.deleteMany({ where: { exchangeId: mexc.id } });
+  await db.referralSnapshot.updateMany({ where: { batchId: overrideBatch.id }, data: { current: false } });
+  await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, metrics: [metric("00000", "TRADE_VOLUME", "USDT", "9.0000000000"), zeros[1]] }));
+  await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, metrics: zeros }));
+  assert.equal((await db.activityMetricCurrent.findFirst({ where: { exchangeId: mexc.id, uid: "00000", periodDate: new Date("2026-09-01"), kind: "TRADE_VOLUME" } })).amount.toFixed(10), "0.0000000000");
+  await db.$transaction(tx => publishApiDay(tx, { ...mexcDay, metrics: [] }));
+  const absentReport = await core.listReportedActivity(reportInput);
+  const absent = absentReport.activity.find(row => row.uid === "00000");
+  assert.equal(absent.dataState, "INCOMPLETE");
+  assert.equal(absent.partial, true);
+  assert.deepEqual(absent.metrics, []);
+  assert.equal(await db.activityMetricCurrent.count({ where: { exchangeId: mexc.id, uid: "00000", periodDate: new Date("2026-09-01"), valueState: "ABSENT", amount: null } }), 2);
+  assert.equal(await db.activityRoster.count({ where: { exchangeId: mexc.id, state: "GONE" } }), 0);
   assert.equal(await db.commissionRecord.count(), before.commission);
   assert.equal(await db.walletEntry.count(), before.wallet);
+  // Exchange preferences are independent, including an unsupported future connector.
+  const okx = await db.exchange.create({ data: { slug: "okx", name: "OKX", status: "DRAFT" } });
+  const okxPreferences = await core.updateSyncConfig("test-admin", okx.id, { enabled: false, intervalMinutes: 720 });
+  assert.equal(okxPreferences.intervalMinutes, 720);
+  assert.equal(okxPreferences.enabled, false);
+  assert.equal(okxPreferences.nextRunAt, null);
+  assert.equal((await core.listSyncExchanges()).find(exchange => exchange.id === okx.id).apiSupported, false);
+  await assert.rejects(() => core.updateSyncConfig("test-admin", okx.id, { enabled: true }), error => error.code === "UNSUPPORTED");
+  const changedAt = Date.now();
+  const hourly = await core.updateSyncConfig("test-admin", mexc.id, { intervalMinutes: 60 });
+  assert.ok(Date.parse(hourly.nextRunAt) >= changedAt + 60 * 60_000);
+  assert.ok(Date.parse(hourly.nextRunAt) <= Date.now() + 60 * 60_000);
+  await core.updateSyncConfig("test-admin", mexc.id, { intervalMinutes: 30 });
+  assert.equal((await core.getSyncConfig(okx.id)).intervalMinutes, 720);
+  await core.updateSyncConfig("test-admin", mexc.id, { enabled: false });
+  assert.equal((await core.getSyncConfig(mexc.id)).nextRunAt, null);
+  await db.job.deleteMany({ where: { type: "SYNC", state: "PENDING" } });
+  for (const trigger of ["SCHEDULED", "BACKFILL", "RECONCILE"]) {
+    await db.job.create({ data: { type: "SYNC", payload: { exchangeId: mexc.id, trigger, dates: [today] } } });
+    const job = await core.claimNextJob(120, "manual-mode-test");
+    await core.runSyncJob({ id: job.id, lockedBy: job.lockedBy }, job.payload, async () => { throw new Error("Manual mode must not call an exchange automatically"); });
+    assert.equal((await db.job.findUnique({ where: { id: job.id } })).state, "DONE");
+  }
   console.log("PASS: Bybit and MEXC API activity sync without wallet attribution");
 } finally {
   await control.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
