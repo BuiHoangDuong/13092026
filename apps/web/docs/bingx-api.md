@@ -1,80 +1,119 @@
-# BingX API — ghi chú cho nền tảng cashback
+# BingX API — dữ liệu affiliate cho nền tảng cashback
 
-Ngày đối chiếu: **07/10/2026**. Đây là tài liệu khảo sát; connector BingX chưa được triển khai trong dự án.
+Ngày đối chiếu: **09/10/2026**. Tài liệu khảo sát, chưa có connector BingX trong worker. Đọc cùng [Bybit](bybit-cashback.md), [MEXC](mexc-referral-activity.md) và [Binance](binance-api.md).
 
-## Nguồn chính thức
+Đã tra Context7 `/bingx-api/docs`; phần Agent chưa có kết quả đủ dùng nên đối chiếu repository chính thức `BingX-API/api-ai-skills`. API tài khoản giao dịch cá nhân chưa chứng minh quyền Agent.
 
-- [BingX API Docs](https://bingx-api.github.io/docs/).
-- [Authentication](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/authentication.md).
-- [Agent overview](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/SKILL.md) và [Agent API reference](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/api-reference.md).
-- [Base URLs](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/base-urls.md).
-- [Error codes](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/error-codes.md).
+## 1. Lấy API key
 
-Đã đối chiếu thêm qua Context7 `/bingx-api/docs`: tạo key, quyền mặc định và API restrictions. Context7 chưa trả được tài liệu Agent; phần này dùng reference chính thức ở trên.
+Đăng nhập tài khoản affiliate/agent → User Center → [API Management](https://bingx.com/en/accounts/api) → tạo key riêng cho worker. Lưu API key/secret riêng tư; key mới mặc định read-only. Xác minh quyền Agent với BingX; không tự bật trading/withdrawal khi endpoint đọc báo thiếu quyền. IP whitelist được khuyến nghị. [Authentication](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/authentication.md).
 
-## Tạo key và địa chỉ IP
+IP whitelist là **IP public outbound của worker**. Domain web, IP LAN/Docker không thay thế được địa chỉ này. Chưa kiểm tra outbound IP Railway trong lần khảo sát này.
 
-Tạo tại [API Management](https://bingx.com/en/accounts/api). Key mới mặc định **read-only**. BingX khuyến nghị IP whitelist; tài liệu Authentication không nêu IP là điều kiện bắt buộc chung để tạo key. Nếu giao diện bắt nhập IP, cần kiểm tra loại key và quyền đang chọn. Chưa xác minh riêng quy định quyền rút tiền hoặc thời hạn key.
+### Cấu hình dự kiến
 
-Khi whitelist, dùng **IP public outbound của server gọi API**. Với dự án này cần xác định IP của worker; domain web và IP nội bộ không thay thế được IP outbound. Chưa kiểm tra IP Railway trong lần khảo sát này.
+`.env.example` đã có placeholder sau; connector chưa đọc chúng:
 
-Đề xuất cho cashback: key của tài khoản affiliate/agent, quyền đọc tối thiểu, secret chỉ ở worker. Chưa xác minh quyền Agent thực tế bằng credential.
+```dotenv
+BINGX_AFFILIATE_API_KEY=
+BINGX_AFFILIATE_API_SECRET=
+BINGX_AFFILIATE_MASTER_UID=
+```
 
-Đã chuẩn bị biến trống trong `.env` và `.env.example`: `BINGX_AFFILIATE_API_KEY`, `BINGX_AFFILIATE_API_SECRET`, `BINGX_AFFILIATE_MASTER_UID` (UID tài khoản affiliate/agent). Đây là tên cấu hình dự kiến của dự án; hiện chưa có connector đọc các biến này.
+Khi triển khai, secret chỉ nằm ở worker. Master UID là agent sở hữu key, không phải khách được mời. Có thể lấy `data.currentAgentUid` từ response roster/commission hợp lệ, đối chiếu portal trước khi cấu hình. [Agent reference](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/api-reference.md).
 
-## Kết nối và xác thực
+## 2. Kết nối và xác thực
 
-Production: `https://open-api.bingx.com`; fallback `https://open-api.bingx.pro` khi lỗi mạng/timeout, không chuyển domain khi API trả lỗi nghiệp vụ. Môi trường VST: `https://open-api-vst.bingx.com`; chưa xác minh có dữ liệu Agent để thử nghiệm. [Nguồn base URLs](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/base-urls.md).
+Production `https://open-api.bingx.com`; `.pro` chỉ fallback khi lỗi mạng/timeout, không đổi domain khi lỗi nghiệp vụ. Chưa xác minh VST có dữ liệu Agent phù hợp. [Base URLs](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/base-urls.md).
 
-Request có `X-BX-APIKEY`, `timestamp` (milliseconds), `signature` HMAC-SHA256 dạng hex. Sắp tham số theo ASCII, ký chuỗi giá trị chưa encode, loại `signature`. Reference AI hiện còn yêu cầu `X-SOURCE-KEY: BX-AI-SKILL`. [Nguồn xác thực](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/authentication.md).
+GET dùng `X-BX-APIKEY`, `timestamp` milliseconds, `signature` hex HMAC-SHA256. Sắp tham số ASCII, ký giá trị chưa URL-encode, bỏ `signature`; encode khi dựng URL. Reference AI còn yêu cầu `X-SOURCE-KEY: BX-AI-SKILL`: cần kiểm tra yêu cầu với client OpenAPI thực tế; đây không phải mã affiliate. [Authentication](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/authentication.md).
 
-Có thể kiểm tra `ipRestrict` và `enableReading` bằng `GET /openApi/v1/account/apiRestrictions`. [Nguồn account API, đối chiếu qua Context7](https://github.com/bingx-api/docs/blob/main/_autodocs/api-reference/16-common-account-wallet.md).
+## 3. Endpoint và dữ liệu lấy được
 
-## Agent API cần đọc
+Các endpoint đều GET có xác thực:
 
-Các endpoint dưới đây dùng **GET**, có xác thực. [Nguồn Agent overview](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/SKILL.md).
-
-| Endpoint | Mục đích |
+| Path | Mục đích |
 | --- | --- |
-| `/openApi/agent/v1/account/inviteAccountList` | Danh sách invitee |
-| `/openApi/agent/v1/account/inviteRelationCheck` | Kiểm tra quan hệ theo UID |
-| `/openApi/agent/v2/reward/commissionDataList` | Hoa hồng ngày theo invitee |
-| `/openApi/agent/v1/reward/third/commissionDataList` | Hoa hồng giao dịch API ngoài quan hệ mời |
-| `/openApi/agent/v1/asset/partnerData` | Dữ liệu đối tác |
-| `/openApi/agent/v1/asset/depositDetailList` | Chi tiết nạp của invitee |
-| `/openApi/agent/v1/commissionDataList/referralCode` | Tổng hợp theo mã mời |
-| `/openApi/agent/v1/account/superiorCheck` | Kiểm tra quan hệ cấp trên |
+| `/openApi/agent/v1/account/inviteAccountList` | Roster invitee |
+| `/openApi/agent/v2/reward/commissionDataList` | Volume/hoa hồng ngày |
+| `/openApi/agent/v1/account/inviteRelationCheck` | Quan hệ UID |
+| `/openApi/agent/v1/reward/third/commissionDataList` | Hoa hồng API ngoài referral |
+| `/openApi/agent/v1/asset/partnerData` | Thống kê đối tác |
+| `/openApi/agent/v1/asset/depositDetailList` | Nạp tiền |
+| `/openApi/agent/v1/commissionDataList/referralCode` | Tổng theo mã |
+| `/openApi/agent/v1/account/superiorCheck` | Quan hệ cấp trên |
 
-### Tham số và dữ liệu quan trọng
+Roster: `pageIndex` từ 1, `pageSize`; thời gian milliseconds, cửa sổ ≤30 ngày; bỏ hai mốc lấy toàn bộ; trên 10.000 dòng dùng `lastUid`. Commission v2: ngày `YYYYMMDD`, ≤30 ngày/cửa sổ, lịch sử 365 ngày, `pageSize` ≤100. Giới hạn phổ biến 20 request/s/UID và 2 request/s/IP. [Agent overview](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/SKILL.md).
 
-| API | Ghi chú |
+### Trường dùng cho activity
+
+| Nguồn | Trường |
 | --- | --- |
-| `inviteAccountList` | `pageIndex`, `pageSize`; thời gian milliseconds, tối đa 30 ngày; bỏ cả hai mốc để lấy toàn bộ. Trên 10.000 bản ghi dùng `lastUid`. |
-| `commissionDataList` v2 | `startTime`, `endTime`: `YYYYMMDD`; tối đa 30 ngày/lượt, lịch sử 365 ngày; `pageSize` ≤ 100. |
-| `inviteRelationCheck` | Bắt buộc `uid`; đọc `inviteResult`, `directInvitation`. |
+| Roster | `uid`, `InvitationCode` (mã cấp trên), `ownInviteCode` (mã invitee), `directInvitation`, `registerTime` |
+| Commission v2 | `uid`, `commissionTime`, `tradingVolume`, `commissionVolume` |
 
-V2 trả `uid`, `commissionTime`, `tradingVolume`, `commissionVolume` cùng breakdown theo sản phẩm. Giá trị tiền là string, đơn vị USDT. Response: `{ code, msg, data }`; thành công `code: 0`, danh sách ở `data.list`. Giới hạn các endpoint Agent: **20 request/s/UID, 2 request/s/IP**. [Nguồn Agent reference](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/api-reference.md).
+V2 có breakdown Spot, perpetual, standard futures, copy trading, MT5. Volume/commission là string USDT. Thành công `code: 0`; danh sách `data.list`, tổng `data.total`. [Agent reference](https://github.com/BingX-API/api-ai-skills/blob/main/skills/agent/api-reference.md).
 
-## Xử lý lỗi
+**Quy tắc dự kiến của project:** không cộng tổng với breakdown. Giữ `third/commissionDataList` riêng để không trộn giao dịch ngoài referral vào cây mời. Các trường KYC/nạp/tài sản không cần lưu raw activity chỉ để hiển thị volume/hoa hồng.
+
+## 4. Probe GET dự kiến
+
+Mẫu thiết kế, chưa có script BingX trong repo. Thay placeholder, tính chữ ký mới từng request:
+
+```http
+GET https://open-api.bingx.com/openApi/agent/v1/account/inviteAccountList?pageIndex=1&pageSize=100&recvWindow=5000&timestamp=<now_ms>&signature=<hex>
+X-BX-APIKEY: <private_key>
+
+GET https://open-api.bingx.com/openApi/agent/v2/reward/commissionDataList?endTime=20261008&pageIndex=1&pageSize=100&recvWindow=5000&startTime=20261008&timestamp=<now_ms>&signature=<hex>
+X-BX-APIKEY: <private_key>
+
+GET https://open-api.bingx.com/openApi/agent/v1/account/inviteRelationCheck?recvWindow=5000&timestamp=<now_ms>&uid=<known_invitee_uid>&signature=<hex>
+X-BX-APIKEY: <private_key>
+```
+
+Áp dụng header nguồn theo client đã xác minh ở mục 2. Probe chỉ nên in status/code, số dòng và việc master UID khớp; không in khách hàng/credential. Roster rỗng chưa đủ kết luận quyền đầy đủ hay không có giao dịch: đối chiếu một UID đã biết trên portal và kỳ có hoa hồng.
+
+### Chẩn đoán lỗi
 
 | Code | Kiểm tra |
 | --- | --- |
 | `100001` | Chữ ký |
 | `100413` | Key/header |
-| `100419` | IP ngoài whitelist |
-| `100421` | Timestamp, đồng hồ |
-| `100410`, HTTP `429` | Rate limit |
+| `100419` | IP whitelist |
+| `100421` | Đồng hồ/timestamp |
+| `100410`, HTTP `429` | Rate limit, backoff |
 
-Code có thể khác nghĩa theo nhóm API; cần đọc cả `msg`. [Nguồn error codes](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/error-codes.md).
+Đọc cả `msg`; xác minh quyền Agent trước khi đổi quyền key. [Error reference](https://github.com/BingX-API/api-ai-skills/blob/main/skills/references/error-codes.md).
 
-## Điểm cần chốt trước tích hợp
+## 5. Mapping vào project
 
-Đề xuất theo kiến trúc hiện tại của dự án:
+Đề xuất sau khi cập nhật requirements/design:
 
-- Probe GET để xác minh quyền Agent; kết quả rỗng không chứng minh đầy đủ quyền.
-- Giữ UID dưới dạng string, tiền dưới dạng decimal; loại trường cá nhân không cần thiết trước khi lưu raw.
-- Chia kỳ, phân trang đầy đủ, giới hạn tốc độ chung theo IP và retry có backoff.
-- Đối chiếu một ngày có hoa hồng với portal/export: timezone, ranh giới ngày, ngày chốt và điều chỉnh chưa được xác minh.
-- Dữ liệu activity và hoa hồng báo cáo cần qua quy trình kiểm chứng của dự án trước khi ghi nhận số dư cashback. Không tự cộng ví chỉ vì API có `commissionVolume`.
+```text
+Worker GET → loại dữ liệu cá nhân → RawLoad/raw_bingx
+           → TRANSFORM → ActivityMetricCurrent/history → Referral activity
+```
 
-Chưa gọi API bằng key thật, chưa thay đổi spec hoặc hành vi hệ thống.
+| Dữ liệu sàn | Xử lý dự kiến |
+| --- | --- |
+| `uid` | UID dạng string |
+| Roster `InvitationCode` | Referral code đã đối chiếu; giữ đúng chữ hoa I |
+| `tradingVolume` | TRADE_VOLUME, USDT |
+| `commissionVolume` | REPORTED_COMMISSION, USDT |
+| `commissionTime` | Kỳ sau khi xác minh timezone/đơn vị |
+
+ID kiểu long cần parser giữ chính xác số nguyên lớn ngay từ JSON; đổi sang string sau `JSON.parse` thông thường có thể đã mất chữ số. Dùng decimal cho tiền. Chưa xác minh đơn vị `commissionTime` hoặc timezone ngày hoa hồng, không suy từ timestamp request.
+
+Giống activity MEXC, báo cáo chưa tạo `CommissionRecord` hay cộng ví. Khi thiết kế adapter, phân biệt số 0 thực sự với trường thiếu; roster và metric là hai nguồn khác nhau. Không coi UID vắng một ngày là đã rời cây referral.
+
+## 6. Bằng chứng cần có trước triển khai
+
+- Đọc được một UID đã biết, quan hệ referral đúng, master UID khớp portal.
+- Hai ngày liền nhau có volume/hoa hồng khác 0; khớp từng UID và tổng.
+- Chốt timezone, ranh giới ngày, ngày chốt, điều chỉnh, độ trễ.
+- Lấy đủ page/cursor; limiter chung theo IP cho các job, retry có giới hạn.
+- Chạy lại cùng kỳ không cộng dồn; số 0 hiển thị, trường thiếu báo chưa đầy đủ.
+- Chốt hợp đồng dữ liệu và bằng chứng commission đủ điều kiện trước luồng payable.
+- Cập nhật spec trước connector/scheduler, kiểm thử trên Docker theo rule project.
+
+Đối soát từ [Partner portal](https://agent.bingx.com/). Chưa gọi API bằng credential thật, chưa thay đổi runtime/spec trong lần viết tài liệu này.
