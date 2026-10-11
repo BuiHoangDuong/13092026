@@ -20,5 +20,6 @@ export * from "./ingest/contract.js";
 export * from "./ingest/source-adapter.js";
 export * from "./ingest/bybit-affiliate.js";
 export * from "./ingest/mexc-affiliate.js";
+export * from "./ingest/binance-affiliate.js";
 export * from "./ingest/api-sink.js";
 export * from "./ingest/raw-landing.js";

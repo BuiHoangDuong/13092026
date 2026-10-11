@@ -2422,10 +2422,36 @@ most critical money/concurrency invariants, not an exhaustive suite.
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
   credits (Req 8.7). Revisit if business prefers correction-only-before-holding.
 
+## Binance GET-only connector (Req 13.2, 13.9, 13.14)
+
+Binance is registered as an official API connector in admin settings. The worker
+checks read-only permissions and persists readiness; only the worker receives
+`BINANCE_AFFILIATE_API_KEY` and `BINANCE_AFFILIATE_API_SECRET`. No master UID is
+required for this GET-only phase. Root scope is a SHA-256 fingerprint of the key,
+not a claimed UID; key rotation switches scope and resets fetched coverage.
+
+Sync now and scheduled jobs fetch Spot broker rebate and USD-M Futures trader
+summary in UTC day windows. Empty arrays succeed. Each endpoint must succeed
+before that day's minimized slice is written to `raw_binance`; retain product,
+customerId (drop email-like identifiers), decimals, asset/unit, time and trade
+IDs only. A response at the documented limit is quarantined as potentially
+truncated. GET uses server time, HMAC, bounded timeouts, no redirects, and a
+shared PostgreSQL request slot. 418 pauses; 429 defers the slot by Retry-After.
+Default backfill is zero; there is no automatic historical reconciliation or
+claim of verified retention. Explicit ranges are limited to seven recent days.
+
+The async Binance handler finalizes the GET-only load and reports fetched row
+counts on the run. It does not write UID metrics, rosters, CommissionRecord or
+wallets. Admin sees GET-only mode and raw day counts instead of normalized
+activity coverage. Verified customerId-to-UID mapping and period semantics are
+required for a later activity publishing implementation.
+
 ## Changelog
+
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-11 | design.md | Binance GET-only worker connector, raw intake, readiness and admin counts; no UID publishing | Operator requested GET flow with current empty account and later key rotation | added |
 | 2026-10-07 | design.md | Exchange selector and per-exchange schedule drafts; unsupported preference saves; next-slot recalculation and manual-mode worker guard | Independent admin configuration for multiple exchanges | updated |
 | 2026-10-07 | design.md | MEXC zero-preserving sink option and contract refresh; Docker credential isolation; explicit period reconciliation rollout gate | Complete activity integration and preserve Bybit sparse behavior | updated |
 | 2026-09-30 | design.md | Thiết kế MEXC Affiliate referral API qua worker, raw landing và activity sink; tách biến môi trường và rate slot | Giữ luồng chung với Bybit và chờ đối soát kỳ dữ liệu thực | updated |

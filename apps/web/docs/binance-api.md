@@ -1,12 +1,12 @@
 # Binance API — dữ liệu affiliate cho nền tảng cashback
 
-Ngày đối chiếu: **09/10/2026**. Tài liệu khảo sát, chưa có connector Binance trong worker. Đọc cùng [Bybit](bybit-cashback.md), [MEXC](mexc-referral-activity.md) và [BingX](bingx-api.md).
+Ngày cập nhật: **11/10/2026**. Đã có connector Binance GET-only trong worker và màn hình quản trị. Đọc cùng [Bybit](bybit-cashback.md), [MEXC](mexc-referral-activity.md) và [BingX](bingx-api.md).
 
 ## 1. Xác định chương trình và lấy key
 
 Binance Link & Trade cần đăng ký và được cấp Link ID. Chưa xác minh API key thông thường có thể đọc toàn bộ khách hàng Referral Pro. Cần Binance xác nhận quyền Api-Agent và phạm vi Spot/Futures. [Hướng dẫn Link ID](https://www.binance.com/en/support/faq/detail/a78a065d0c4846aaa1af474d8e712ab9).
 
-Các endpoint bên dưới lấy từ tài liệu Api-Agent chính thức cũ. Khi đối chiếu, đường dẫn Developer Docs Link & Trade Spot chuyển sang trang mang tên OMS; cần Binance xác nhận tài liệu áp dụng trước khi implement. [Developer Docs](https://developers.binance.com/en/docs/catalog/vip-and-institutional-link-and-trade/api/rest-api/spot).
+Các endpoint bên dưới lấy từ tài liệu Api-Agent chính thức cũ và đã GET thành công với key hiện tại. Khi đối chiếu, đường dẫn Developer Docs Link & Trade Spot chuyển sang trang mang tên OMS; phạm vi khách affiliate và ý nghĩa dữ liệu vẫn cần xác minh trước khi xuất activity theo UID. [Developer Docs](https://developers.binance.com/en/docs/catalog/vip-and-institutional-link-and-trade/api/rest-api/spot).
 
 1. Đăng nhập tài khoản đối tác → Account → API Management → Create API.
 2. Chọn **System generated** để lấy cặp HMAC key/secret.
@@ -16,18 +16,18 @@ Các endpoint bên dưới lấy từ tài liệu Api-Agent chính thức cũ. K
 
 FAQ nêu điều kiện 2FA, KYC và kích hoạt ví Spot bằng khoản nạp. Quyền đọc không tự chứng minh quyền affiliate. [Hướng dẫn tạo API](https://www.binance.com/en/support/faq/detail/360002502072).
 
-### Cấu hình dự kiến
+### Cấu hình worker
 
-Đã chuẩn bị các biến trống trong `.env` và `.env.example` để điền cặp key HMAC của tài khoản Binance. Các biến này **chưa được connector sử dụng**:
+Worker sử dụng hai biến trong `.env` hoặc cấu hình Railway worker:
 
 ```dotenv
 BINANCE_AFFILIATE_API_KEY=
 BINANCE_AFFILIATE_API_SECRET=
 ```
 
-Khi triển khai, secret chỉ nằm ở worker. Chưa chốt biến master UID/Link ID; không đồng nhất Link ID, UID tài khoản và `customerId`.
+Secret chỉ nằm ở worker. GET-only không cần master UID/Link ID; không đồng nhất Link ID, UID tài khoản và `customerId`. Root scope được tạo từ fingerprint SHA-256 của API key để tách dữ liệu khi đổi key; không phải UID đã xác minh.
 
-Trạng thái 11/10/2026: đã gọi GET thật bằng credential trong `.env` từ máy local. Key được chấp nhận; hai endpoint affiliate trả HTTP 200 nhưng dữ liệu rỗng, nên chưa xác minh được phạm vi chương trình và mapping `customerId` ↔ UID. Chưa triển khai/bật lịch sync Binance.
+Luồng đã triển khai: admin chọn Binance → worker kiểm tra key read-only → Sync now hoặc Scheduled → GET Spot rebate + USD-M Futures traderSummary theo ngày UTC → lưu slice `raw_binance` đã loại dữ liệu cá nhân → hoàn tất GET-only, hiển thị số dòng fetched. Mảng rỗng là kết quả thành công. Không backfill/reconcile lịch sử tự động; yêu cầu range giới hạn bảy ngày UTC gần nhất. Kết quả chạm limit bị cách ly, không lưu ngày có khả năng thiếu dữ liệu. Key chưa giới hạn IP chỉ tạo cảnh báo.
 
 ## 2. Kết nối và xác thực
 
@@ -101,7 +101,7 @@ Worker GET → loại dữ liệu cá nhân → RawLoad/raw_binance
 
 Không mặc định `customerId` là UID: mẫu reference có định danh tùy biến và email che. Chưa có mapping thì giữ ở vùng đối soát, chưa hiển thị theo UID. Giữ ID dạng string, tiền dạng decimal; không suy volume từ commission hoặc cộng aggregate vào chi tiết.
 
-Giống activity MEXC, dữ liệu chưa tạo `CommissionRecord` hoặc cộng ví. Binance vẫn manual theo spec hiện tại cho đến khi bằng chứng tích hợp được chốt.
+GET-only chưa tạo metric theo UID, `CommissionRecord` hoặc cộng ví. Dữ liệu raw giữ riêng product/asset/unit, tiền dạng chuỗi; bỏ email và customerId dạng email. Mapping và xuất Referral activity là bước tiếp theo sau khi có bằng chứng đối soát. Import commission thủ công vẫn giữ nguyên.
 
 ## 6. Bằng chứng cần có trước triển khai
 
@@ -124,3 +124,7 @@ Nếu quyền API chưa được xác nhận, dùng portal làm bằng chứng k
 | Futures `/fapi/v1/apiReferral/traderSummary`, `type=1` | HTTP 200; 0 dòng ở cả cửa sổ 1 ngày và 7 ngày |
 
 Kết quả chứng minh credential và chữ ký được chấp nhận từ máy local, chưa chứng minh đọc được khách hàng của Referral Pro/Link & Trade. Chưa có dòng dữ liệu để đối soát UID, đơn vị, timezone hoặc hoa hồng. Key hiện chưa giới hạn IP; quyền truy cập từ worker khi triển khai cần kiểm tra riêng. Probe không ghi database, không thay đổi quyền key và không bật lịch sync.
+
+Kiểm thử triển khai 11/10/2026: worker build và web typecheck qua trên Docker; unit tests qua (32 pass, 1 fixture riêng tư skip). `scripts/test-binance-sync.mjs` kiểm tra end-to-end admin → job → raw → GET-only completion bằng dữ liệu mẫu, gồm dữ liệu rỗng/có dòng, thay slice, đổi key, tắt backfill/reconcile và không ghi ví. Chạy thêm `--live` trên schema Docker riêng với key thật: thành công, 0 dòng. Schema test được dọn sau kiểm tra; không dùng database Railway cho test.
+
+Đã deploy production 11/10/2026: worker `8844a841-0cd6-4872-be89-3d97dd2c4bba` và web `a4cae153-13d3-49c1-8f24-e68cfaf62938` đều SUCCESS. Kiểm tra chỉ đọc trên worker: Binance supported/configured/ready, không paused; GET thực tế trả 0 Spot và 0 USD-M Futures. Web health OK. Admin tải lại `/admin/ingest/connectors`, chọn Binance rồi Sync now; muốn tự động chạy thì chọn Scheduled và lưu. Lịch hiện giữ disabled theo cấu hình hiện có. Không chạy test suite, migrate thủ công hay script ghi database production để kiểm chứng.

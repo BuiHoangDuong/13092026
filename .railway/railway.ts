@@ -18,6 +18,8 @@ export default defineRailway(() => {
       BYBIT_AFFILIATE_API_KEY: preserve(),
       BYBIT_AFFILIATE_API_SECRET: preserve(),
       BYBIT_AFFILIATE_MASTER_UID: preserve(),
+      BINANCE_AFFILIATE_API_KEY: preserve(),
+      BINANCE_AFFILIATE_API_SECRET: preserve(),
     },
   });
   const _cashbackweb = service("@cashback/web", {

@@ -585,7 +585,12 @@ without a usable API.
 2. WHILE an exchange lacks an approved official connector or usable credentials,
    THE SYSTEM SHALL keep its API schedule disabled and explain that state to the
    admin. Manual imports SHALL remain available. Bybit and MEXC Affiliate have
-   separate official API connectors; Binance remains manual until verified.
+   separate official API connectors. Binance SHALL support a GET-only connector:
+   read-only key checks and Spot/Futures API fetches, including empty responses,
+   without requiring verified affiliate customers to enable a run. Binance SHALL
+   retain minimized raw records and counts for reconciliation, and SHALL NOT
+   publish UID metrics or credit wallets until customerId-to-UID mapping and
+   period semantics are verified. Manual commission imports remain available.
 3. WHEN a Bybit schedule is due, THE SYSTEM SHALL enqueue a worker `SYNC` job that
    reads the official Affiliate User List using the affiliate-only, read-only key,
    follows every cursor page, respects Bybit's response rate-limit headers, and
@@ -631,7 +636,7 @@ without a usable API.
     late corrections, and mark an in-progress calendar day as partial. A short
     interval SHALL NOT imply that Bybit's T+1 volume data has refreshed; commission
     for a day can appear before that day's volume.
-12. BEFORE enabling a connector and on every run, THE SYSTEM SHALL check the key via
+12. BEFORE enabling the Bybit connector and on every Bybit run, THE SYSTEM SHALL check the key via
     `/v5/user/query-api`: `readOnly = 1`, Affiliate as the only permission, and not
     expired. It SHALL refuse a key with any other permission, and SHALL alert at
     least 14 days before `expiredAt`. IF the key has no IP allowlist, THEN THE
@@ -1061,8 +1066,11 @@ tab) to do several jobs without losing my place.
 
 ## Changelog
 
+
+
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-11 | requirements.md | Req 13.2 allows Binance GET-only sync with empty responses and raw reconciliation data | Operator narrowed scope to API GET flow before switching affiliate account | updated |
 | 2026-10-07 | requirements.md | Req 13.8: exchange selector, per-exchange manual/scheduled settings and disabled preferences for unsupported connectors | Configure different frequencies without implying an OKX API integration exists | updated |
 | 2026-10-07 | requirements.md | Req 13.15: preserve MEXC reported zero, isolate web credentials and gate scheduled rollout on period reconciliation | Complete activity connector without losing zero UIDs or assuming daily semantics | updated |
 | 2026-09-30 | requirements.md | Req 13.2, 13.15: thêm connector MEXC Affiliate read-only theo ngày, phân trang và chỉ ghi activity | Tích hợp API MEXC mà không tự động ghi ví | updated |

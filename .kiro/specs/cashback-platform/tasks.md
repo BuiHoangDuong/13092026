@@ -500,7 +500,8 @@ flowchart TD
 ### Phase 4 — Bybit Affiliate API activity sync
 
 - [x] 20. Scheduled API sync by exchange (Bybit first; activity only)
-  - Keep Binance manual until an official connector and credentials are verified.
+  - Binance supports GET-only raw intake; UID activity publishing stays gated on
+    verified customerId mapping and period semantics.
     A schedule row may exist for every exchange but starts disabled. No browser
     cookies, portal scraping, or wallet writes from this API dataset.
   - _Requirements: 6.17–6.19, 13; Design: Scheduled Bybit Affiliate activity sync_
@@ -866,10 +867,25 @@ flowchart TD
   (Tasks 17/25) so KYC/retention can be added later.
 - Verify build/typecheck/tests on local/SIT before pushing and deploying to Railway.
 
+### Binance GET-only integration — 11/10/2026
+
+- [x] Register Binance in the source registry and admin connector selector.
+- [x] Worker-only read-only key check, secret-free readiness, Sync now/Scheduled.
+- [x] GET Spot rebate and USD-M Futures summary; finalize minimized raw slices
+  and fetched counts, accept empty arrays, keep activity/ledger writes disabled.
+- [x] Key rotation scopes, bounded ranges, throttle/IP-ban handling and Docker
+  unit/integration checks with fixture data and a live key returning zero rows.
+- [x] Deploy web and worker to Railway production and verify readiness there
+  (11/10/2026): both SUCCESS; Binance supported/configured/ready, unpaused;
+  read-only GET from the deployed worker returned 0 Spot and 0 USD-M Futures
+  records; public health OK. Automatic sync remains disabled until admin enables it.
+
 ## Changelog
+
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-11 | tasks.md | Implement Binance GET-only connector, worker readiness and admin fetched counts; verify on Docker | Operator requested the admin/worker GET flow | added |
 | 2026-09-30 | tasks.md | Thêm Task 20.6 connector MEXC Affiliate referral activity | Mở rộng API sync theo kiến trúc hiện có | added |
 | 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 (Overview, DAG, Notes); hoàn thành Phase 0: scaffold + boundary lint, Prisma versioned commission/wallet, contracts, test Postgres, seed, public SSR, redirect + click, interim auth, admin content, job queue có lease fencing | Hoàn tất spec và nền tảng | added |
 | 2026-09-16 | tasks.md | Chốt UID-first (v2.0): Task 22–26, attribution upsert `UidAccount`, Task 5.6 logo local; hoàn thành 10.1/10.4 và import Bybit CSV v1 | Đồng bộ requirements v0.6 / design v0.7 | added |

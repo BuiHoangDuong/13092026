@@ -1,4 +1,5 @@
-import { db, Prisma, type ActivityDayState, type ExchangeSyncConfig, type SyncTrigger } from "@cashback/db";
+import { db, Prisma, type ActivityDayState, type ExchangeSyncConfig, type SyncTrigger, type RawLoad } from "@cashback/db";
+import { binanceAffiliateContract, binanceCredentials, checkBinanceKey, fetchBinanceDay } from "../ingest/binance-affiliate.js";
 import { bybitAffiliateContract, mexcAffiliateContract, signBybit } from "../ingest/contract.js";
 import { assessQueryApi, fetchAffiliateDay, mapAffiliateRecords, SyncError, type Readiness } from "../ingest/bybit-affiliate.js";
 import { fetchMexcDay, fetchMexcPage, mapMexcRecords, minimizeMexcRecords } from "../ingest/mexc-affiliate.js";
@@ -7,7 +8,17 @@ import { readRawApi, readRawRows, sliceKey, writeRawLoad } from "../ingest/raw-l
 import { heartbeat, lockActivityPeriod, withJobLease, type JobLease } from "./jobs.js";
 
 const INTERVALS = [30, 60, 720, 1440] as const;
-const ACTIVITY_API_EXCHANGES = ["bybit", "mexc"];
+const ACTIVITY_API_EXCHANGES = ["bybit", "mexc", "binance"];
+const credentialsFor = (slug: string) => slug === "bybit" ? bybitCredentials() : slug === "binance" ? binanceCredentials() : mexcCredentials();
+const readinessFor = (slug: string, fetchImpl?: typeof fetch) => slug === "bybit" ? bybitReadiness(fetchImpl) : slug === "binance" ? binanceReadiness(fetchImpl) : mexcReadiness(fetchImpl);
+const contractFor = (slug: string) => slug === "bybit" ? bybitAffiliateContract : slug === "binance" ? binanceAffiliateContract : mexcAffiliateContract;
+function validateBinanceDates(dates: string[]) {
+  const today = dayStamp(new Date());
+  if (!dates.length || dates.length > 7 || new Set(dates).size !== dates.length || dates.some(day => {
+    const stamp = Date.parse(`${day}T00:00:00.000Z`);
+    return !/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(stamp) || day < addDays(today, -6) || day > today || dayStamp(new Date(stamp)) !== day;
+  })) throw new SyncError("BINANCE_RANGE", "QUARANTINE", "Binance GET-only runs cover up to seven recent UTC days");
+}
 
 export async function listSyncExchanges() {
   const exchanges = await db.exchange.findMany({ select: { id: true, slug: true, name: true }, orderBy: { name: "asc" } });
@@ -70,6 +81,22 @@ async function reserveSlot(id: string, milliseconds: number) {
 
 const reserveBybitSlot = () => reserveSlot("bybit-affiliate", 100);
 const reserveMexcSlot = () => reserveSlot("mexc-affiliate", 250);
+const reserveBinanceSlot = () => reserveSlot("binance-affiliate", 1500);
+async function deferBinanceSlot(milliseconds: number) {
+  await db.$executeRaw`UPDATE "SyncRateSlot" SET "nextRequestAt" = GREATEST("nextRequestAt", clock_timestamp() + (${milliseconds} * interval '1 millisecond')) WHERE id = 'binance-affiliate'`;
+}
+export async function binanceReadiness(fetchImpl: typeof fetch = fetch): Promise<Readiness> {
+  const credentials = binanceCredentials();
+  if (!credentials.configured) return { ready: false, reason: "MISSING_KEY", expiresAt: null, expiryWarning: false, ipWarning: false };
+  await db.syncRateSlot.upsert({ where: { id: "binance-affiliate" }, create: { id: "binance-affiliate", nextRequestAt: new Date() }, update: {} });
+  const slot = await db.syncRateSlot.findUniqueOrThrow({ where: { id: "binance-affiliate" } });
+  if (slot.nextRequestAt.getTime() > Date.now() + 5000) throw new SyncError("BINANCE_COOLDOWN", "RETRY", "Binance rate limit cooldown");
+  try { return await checkBinanceKey({ ...credentials, fetchImpl, reserve: reserveBinanceSlot, onThrottle: deferBinanceSlot }); }
+  catch (error) {
+    if (error instanceof SyncError && error.action !== "RETRY") return { ready: false, reason: error.code, expiresAt: null, expiryWarning: false, ipWarning: false };
+    throw error;
+  }
+}
 
 export async function mexcReadiness(fetchImpl: typeof fetch = fetch): Promise<Readiness> {
   const credentials = mexcCredentials();
@@ -113,20 +140,20 @@ export async function bybitReadiness(fetchImpl: typeof fetch = fetch): Promise<R
 }
 
 /** The worker is the only process that probes exchanges or reads credentials. */
-async function refreshReadiness(slug: "bybit" | "mexc", fetchImpl: typeof fetch, now: Date) {
+async function refreshReadiness(slug: "bybit" | "mexc" | "binance", fetchImpl: typeof fetch, now: Date) {
   const exchange = await db.exchange.findUnique({ where: { slug }, select: { id: true } });
   if (!exchange) return;
   const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId: exchange.id } });
-  const credentials = slug === "bybit" ? bybitCredentials() : mexcCredentials();
+  const credentials = credentialsFor(slug);
   let check: Readiness;
   try {
-    check = await (slug === "bybit" ? bybitReadiness(fetchImpl) : mexcReadiness(fetchImpl));
+    check = await readinessFor(slug, fetchImpl);
   } catch {
     check = { ready: false, reason: "CHECK_UNAVAILABLE", expiresAt: null, expiryWarning: false, ipWarning: false };
   }
-  const rootMismatch = credentials.configured && current?.rootAccount !== undefined &&
+  const rootMismatch = slug !== "binance" && credentials.configured && current?.rootAccount !== undefined &&
     current.rootAccount !== "unconfigured" && current.rootAccount !== credentials.rootAccount;
-  const rootAccount = current?.rootAccount && current.rootAccount !== "unconfigured"
+  const rootAccount = slug === "binance" ? credentials.rootAccount || current?.rootAccount || "unconfigured" : current?.rootAccount && current.rootAccount !== "unconfigured"
     ? current.rootAccount : credentials.rootAccount || "unconfigured";
   const data = {
     rootAccount,
@@ -136,17 +163,19 @@ async function refreshReadiness(slug: "bybit" | "mexc", fetchImpl: typeof fetch,
     readinessCheckedAt: now,
     readinessExpiresAt: check.expiresAt && !Number.isNaN(Date.parse(check.expiresAt)) ? new Date(check.expiresAt) : null,
     readinessIpWarning: check.ipWarning,
-    ...(rootMismatch ? { pausedReason: "ROOT_MISMATCH" } : {})
+    ...(rootMismatch ? { pausedReason: "ROOT_MISMATCH" } : {}),
+    ...(slug === "binance" && credentials.configured && current?.rootAccount !== credentials.rootAccount ? { pausedReason: null } : {})
   };
   await db.exchangeSyncConfig.upsert({
     where: { exchangeId: exchange.id },
-    create: { exchangeId: exchange.id, backfillDays: slug === "mexc" ? 30 : 365, ...data },
-    update: { ...data, ...(slug === "mexc" ? { backfillDays: 30 } : {}) }
+    create: { exchangeId: exchange.id, backfillDays: slug === "binance" ? 0 : slug === "mexc" ? 30 : 365, ...data },
+    update: { ...data, ...(slug === "binance" ? { backfillDays: 0, lastFetchedPeriodEnd: current?.rootAccount !== rootAccount ? null : current?.lastFetchedPeriodEnd } : slug === "mexc" ? { backfillDays: 30 } : {}) }
   });
 }
 
 export const refreshBybitReadiness = (fetchImpl: typeof fetch = fetch, now = new Date()) => refreshReadiness("bybit", fetchImpl, now);
 export const refreshMexcReadiness = (fetchImpl: typeof fetch = fetch, now = new Date()) => refreshReadiness("mexc", fetchImpl, now);
+export const refreshBinanceReadiness = (fetchImpl: typeof fetch = fetch, now = new Date()) => refreshReadiness("binance", fetchImpl, now);
 
 function recentReadiness(config: ExchangeSyncConfig | null, now = new Date()) {
   if (!config?.readinessCheckedAt) return { ready: false, reason: "NOT_CHECKED", checkedAt: null };
@@ -194,6 +223,8 @@ export async function scheduleDueSyncs(now = new Date()) {
   const ready = await db.exchangeSyncConfig.findMany({ where: { enabled: true, pausedReason: null } });
   const today = dayStamp(now);
   for (const config of ready) {
+    const exchange = await db.exchange.findUnique({ where: { id: config.exchangeId }, select: { slug: true } });
+    if (exchange?.slug === "binance") continue; // GET-only: no unverified historical reconciliation.
     const reconciled = await db.syncRun.count({ where: { exchangeId: config.exchangeId, trigger: "RECONCILE", createdAt: { gte: new Date(`${today}T00:00:00.000Z`) } } });
     if (reconciled) continue;
     const dates = Array.from({ length: 30 }, (_, index) => addDays(today, -(index + 3)));
@@ -233,16 +264,17 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
     db.exchange.findUnique({ where: { id: exchangeId }, select: { slug: true } })
   ]);
   const slug = exchange?.slug;
-  if (slug !== "bybit" && slug !== "mexc") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no API connector");
-  const credentials = slug === "bybit" ? bybitCredentials() : mexcCredentials();
-  const contract = slug === "bybit" ? bybitAffiliateContract : mexcAffiliateContract;
+  if (slug !== "bybit" && slug !== "mexc" && slug !== "binance") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no API connector");
+  if (slug === "binance") validateBinanceDates(dates);
+  const credentials = credentialsFor(slug);
+  const contract = contractFor(slug);
   if (!config || !credentials.configured) throw new SyncError("MISSING_KEY", "PAUSE", "Affiliate credentials are not configured");
   if (config.rootAccount !== credentials.rootAccount) {
     await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: "ROOT_MISMATCH" } });
     return withJobLease(lease, async () => {});
   }
   if (["SCHEDULED", "BACKFILL", "RECONCILE"].includes(trigger) && (!config.enabled || config.pausedReason)) return withJobLease(lease, async () => {});
-  const readiness = await (slug === "bybit" ? bybitReadiness(fetchImpl) : mexcReadiness(fetchImpl));
+  const readiness = await readinessFor(slug, fetchImpl);
   if (!readiness.ready) {
     // Pause but keep the admin's enabled choice, so Resume restores the schedule after the fix.
     await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: readiness.reason } });
@@ -267,7 +299,9 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
     const roster = await db.activityRoster.count({ where: { exchangeId, rootAccount: config.rootAccount, state: "ACTIVE" } });
     for (const day of dates) {
       await heartbeat(lease, Number(process.env.JOB_LEASE_SECONDS ?? 120));
-      const fetched = slug === "bybit"
+      const fetched = slug === "binance"
+        ? await fetchBinanceDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret, fetchImpl, reserve: reserveBinanceSlot, onThrottle: deferBinanceSlot })
+        : slug === "bybit"
         ? await fetchAffiliateDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
           baseUrl: process.env.BYBIT_API_BASE, fetchImpl, reserve: reserveBybitSlot })
         : await fetchMexcDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
@@ -297,10 +331,35 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   }
 }
 
+async function finishBinanceLoad(lease: JobLease, load: RawLoad) {
+  return withJobLease(lease, async tx => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(16092028, hashtext(${sliceKey(load)}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(16092029, hashtext(${load.runId!}))`;
+    const current = await tx.rawLoad.findUniqueOrThrow({ where: { id: load.id } });
+    if (current.state === "SUPERSEDED" || current.state === "TRANSFORMED") return;
+    // This phase only finalizes minimized GET intake. No UID metrics or ledger writes.
+    await tx.rawLoad.update({ where: { id: load.id }, data: { state: "TRANSFORMED", transformedAt: new Date() } });
+    const run = await tx.syncRun.findUniqueOrThrow({ where: { id: load.runId! } });
+    const completed = await tx.rawLoad.aggregate({ where: { runId: run.id, state: "TRANSFORMED" }, _count: true, _sum: { rowCount: true } });
+    const expected = Number((run.checkpoint as { expectedDays?: number } | null)?.expectedDays ?? 0);
+    const finished = completed._count === expected && run.state === "RUNNING";
+    const loads = await tx.rawLoad.findMany({ where: { runId: run.id, state: "TRANSFORMED" }, select: { periodStart: true } });
+    await tx.syncRun.update({ where: { id: run.id }, data: {
+      checkpoint: { expectedDays: expected, fetchedRows: completed._sum.rowCount ?? 0, mode: "GET_ONLY" },
+      daysWritten: loads.map(item => dayStamp(item.periodStart)),
+      driftReport: { class: "SAME", fields: [], notes: ["GET-only raw intake; no verified UID activity or wallet attribution"] },
+      ...(finished ? { state: "SUCCEEDED", finishedAt: new Date() } : {})
+    } });
+    if (finished) await tx.exchangeSyncConfig.updateMany({ where: { exchangeId: load.exchangeId, rootAccount: load.rootAccount },
+      data: { consecutiveFailures: 0, lastSuccessAt: new Date() } });
+  });
+}
+
 export async function transformApiJob(lease: JobLease, loadId: string) {
   const load = await db.rawLoad.findUniqueOrThrow({ where: { id: loadId } });
   if (load.state === "SUPERSEDED" || load.state === "TRANSFORMED") return withJobLease(lease, async () => {});
   if (!load.runId) throw new Error("API transform has no sync run");
+  if (load.sourceSystem === "binance") return finishBinanceLoad(lease, load);
   const meta = (load.sourceMetadata ?? {}) as Record<string, string>;
   const contract = load.sourceSystem === "mexc" ? mexcAffiliateContract : bybitAffiliateContract;
   try {
@@ -360,12 +419,15 @@ export async function transformApiJob(lease: JobLease, loadId: string) {
 }
 
 export async function getSyncConfig(exchangeId: string) {
+  const exchange = await db.exchange.findUnique({ where: { id: exchangeId }, select: { slug: true } });
   const [config, runs, coverage] = await Promise.all([
     db.exchangeSyncConfig.findUnique({ where: { exchangeId } }),
     db.syncRun.findMany({ where: { exchangeId }, orderBy: { createdAt: "desc" }, take: 20 }),
     db.activityPeriodStatus.aggregate({ where: { exchangeId }, _min: { periodDate: true }, _max: { periodDate: true }, _count: true })
   ]);
   const failedLoads = await db.rawLoad.findMany({ where: { runId: { in: runs.map((run) => run.id) }, state: "FAILED" }, select: { id: true, runId: true, fieldNames: true, driftReport: true } });
+  const binanceLoads = exchange?.slug === "binance" ? await db.rawLoad.findMany({ where: { exchangeId, rootAccount: config?.rootAccount, sourceSystem: "binance", state: "TRANSFORMED" }, select: { periodStart: true, rowCount: true, runId: true } }) : [];
+  const rawDays = [...new Set(binanceLoads.map(load => dayStamp(load.periodStart)))].sort();
   const readiness = recentReadiness(config);
   return {
     exchangeId,
@@ -383,13 +445,14 @@ export async function getSyncConfig(exchangeId: string) {
     lastSuccessAt: config?.lastSuccessAt?.toISOString() ?? null,
     pausedReason: config?.pausedReason ?? null,
     consecutiveFailures: config?.consecutiveFailures ?? 0,
-    coverage: { from: coverage._min.periodDate ? dayStamp(coverage._min.periodDate) : null, to: coverage._max.periodDate ? dayStamp(coverage._max.periodDate) : null, days: coverage._count },
+    coverage: exchange?.slug === "binance" ? { from: rawDays[0] ?? null, to: rawDays.at(-1) ?? null, days: rawDays.length } : { from: coverage._min.periodDate ? dayStamp(coverage._min.periodDate) : null, to: coverage._max.periodDate ? dayStamp(coverage._max.periodDate) : null, days: coverage._count },
     runs: runs.map((run) => ({
       id: run.id, trigger: run.trigger, state: run.state, changedRows: run.changedRows, safeErrorCode: run.safeErrorCode,
+      fetchedRows: exchange?.slug === "binance" ? Number((run.checkpoint as { fetchedRows?: number } | null)?.fetchedRows ?? 0) : null,
       createdAt: run.createdAt.toISOString(), finishedAt: run.finishedAt?.toISOString() ?? null, driftReport: run.driftReport,
       failedLoads: failedLoads.filter((load) => load.runId === run.id).map((load) => ({ id: load.id, fieldNames: load.fieldNames, driftReport: load.driftReport }))
     })),
-    note: "API commission is reported activity, not payable cashback; portal reconciliation is required before wallet attribution."
+    note: exchange?.slug === "binance" ? "Binance GET-only: fetches Spot and USD-M Futures data. Empty responses are valid. Fetched rows stay in raw storage; UID mapping and activity publishing are not enabled." : "API commission is reported activity, not payable cashback; portal reconciliation is required before wallet attribution."
   };
 }
 
@@ -441,6 +504,8 @@ export async function requestSync(adminId: string, exchangeId: string, trigger: 
   requireRecentReadiness(config);
   if (config.pausedReason && trigger !== "RESYNC") throw new SyncError(config.pausedReason, "PAUSE", "Connector is paused");
   if (!dates.length || dates.length > 366) throw new SyncError("RANGE", "QUARANTINE", "Choose between 1 and 366 days");
+  const exchange = await db.exchange.findUnique({ where: { id: exchangeId }, select: { slug: true } });
+  if (exchange?.slug === "binance") validateBinanceDates(dates);
   if (!await enqueue(exchangeId, config.rootAccount, trigger, dates)) throw new SyncError("ACTIVE_RUN", "RETRY", "A sync is already queued or running");
   await db.syncConfigAudit.create({ data: { exchangeId, adminId, action: trigger === "RESYNC" ? "RESYNC_RANGE" : "RUN_NOW", after: { dates } } });
   return { accepted: true };

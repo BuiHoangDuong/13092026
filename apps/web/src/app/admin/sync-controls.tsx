@@ -8,7 +8,7 @@ type SyncView = {
   lastAttemptAt: string | null; lastSuccessAt: string | null; pausedReason: string | null;
   consecutiveFailures: number; note: string;
   coverage: { from: string | null; to: string | null; days: number };
-  runs: Array<{ id: string; trigger: string; state: string; changedRows: number; safeErrorCode: string | null; createdAt: string; failedLoads: Array<{ id: string; fieldNames: string[] }> }>;
+  runs: Array<{ id: string; trigger: string; state: string; changedRows: number; fetchedRows: number | null; safeErrorCode: string | null; createdAt: string; failedLoads: Array<{ id: string; fieldNames: string[] }> }>;
 };
 
 async function read(response: Response) {
@@ -21,7 +21,8 @@ function readinessMessage(reason: string | null, exchangeSlug: string, name: str
   switch (reason) {
     case "NOT_CHECKED": return "Waiting for the worker to check the connector.";
     case "READINESS_STALE": return "The worker's last check is too old. Check that the worker is running.";
-    case "MISSING_KEY": return `Set ${exchangeSlug.toUpperCase()}_AFFILIATE_API_KEY, ${exchangeSlug.toUpperCase()}_AFFILIATE_API_SECRET, and ${exchangeSlug.toUpperCase()}_AFFILIATE_MASTER_UID on the worker.`;
+    case "MISSING_KEY": return exchangeSlug === "binance" ? "Set BINANCE_AFFILIATE_API_KEY and BINANCE_AFFILIATE_API_SECRET on the worker." : `Set ${exchangeSlug.toUpperCase()}_AFFILIATE_API_KEY, ${exchangeSlug.toUpperCase()}_AFFILIATE_API_SECRET, and ${exchangeSlug.toUpperCase()}_AFFILIATE_MASTER_UID on the worker.`;
+    case "BINANCE_READ_ONLY_REQUIRED": return "Use a Binance key with reading enabled and trading, transfers and withdrawals disabled.";
     case "PERMISSION": return "The key must be read-only with Affiliate as its only permission.";
     case "EXPIRED": return "The Bybit API key has expired.";
     case "ROOT_MISMATCH": return "The worker master UID differs from this connector's saved root. Review the worker configuration.";
@@ -77,7 +78,7 @@ export function SyncControls({ exchangeId, exchangeSlug, exchangeName, apiSuppor
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <p className="text-sm text-muted-foreground">{view?.note}</p>
     <p className="text-sm" role="status">{!apiSupported ? "This exchange's API connector is not integrated. You can save its interval preference; automatic and manual API runs are unavailable." : view ? readinessMessage(view.readiness.reason, exchangeSlug, exchangeName) : "Loading worker readiness..."} {view?.readiness.checkedAt ? `Checked ${new Date(view.readiness.checkedAt).toLocaleString()}.` : ""} {view?.pausedReason ? `Paused: ${view.pausedReason}.` : ""}</p>
-    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The {exchangeName} key has no IP allowlist. Sync is allowed; review the key expiry below.</p>}
+    {view?.readiness.ipWarning && <p className="text-sm text-amber-500">The {exchangeName} key has no IP allowlist. Sync is allowed; review the worker's outbound IP restrictions.</p>}
     {view?.readiness.expiresAt && <p className="text-sm text-muted-foreground">Key expiry: {new Date(view.readiness.expiresAt).toLocaleString()}.</p>}
     <p className="text-sm">Coverage {view?.coverage.days ?? 0} days{view?.coverage.from ? ` from ${view.coverage.from} to ${view.coverage.to}` : ""}. Next run {view?.nextRunAt ? new Date(view.nextRunAt).toLocaleString() : "not scheduled"}. Last success {view?.lastSuccessAt ? new Date(view.lastSuccessAt).toLocaleString() : "none"}.</p>
     <div className="flex flex-wrap items-end gap-3">
@@ -101,7 +102,7 @@ export function SyncControls({ exchangeId, exchangeSlug, exchangeName, apiSuppor
     </div>
     <p className="text-xs text-muted-foreground">Manual stops automatic sync for this exchange. The interval is retained for its next schedule. Sync now runs once using the saved configuration. Scheduled connectors may also backfill and reconcile older data.</p>
     <ul className="space-y-1 text-sm">
-      {view?.runs.map((run) => <li key={run.id}>{run.createdAt.slice(0, 16)} · {run.trigger} · {run.state} · {run.changedRows} changed{run.safeErrorCode ? ` · ${run.safeErrorCode}` : ""}
+      {view?.runs.map((run) => <li key={run.id}>{run.createdAt.slice(0, 16)} · {run.trigger} · {run.state} · {run.fetchedRows !== null && run.fetchedRows !== undefined ? `${run.fetchedRows} fetched` : `${run.changedRows} changed`}{run.safeErrorCode ? ` · ${run.safeErrorCode}` : ""}
         {run.failedLoads?.map((load) => <span key={load.id}> · {load.fieldNames.join(", ")} <Button type="button" variant="outline" onClick={() => void retransform(load.id)}>Re-run transform</Button></span>)}
       </li>)}
       {!view?.runs.length && <li className="text-muted-foreground">No sync runs yet.</li>}

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
+import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, refreshBinanceReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
 import type { SyncTrigger } from "@cashback/db";
 import { db } from "@cashback/db";
 
@@ -14,7 +14,7 @@ process.on("SIGINT", () => { stopping = true; });
 async function tick() {
   await recordWorkerHeartbeat(workerId);
   await reapExpiredJobs();
-  if (Date.now() - lastReadiness > 60_000) { await refreshBybitReadiness(); await refreshMexcReadiness(); lastReadiness = Date.now(); }
+  if (Date.now() - lastReadiness > 60_000) { await refreshBybitReadiness(); await refreshMexcReadiness(); await refreshBinanceReadiness(); lastReadiness = Date.now(); }
   if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); await scheduleDueSyncs(); lastSchedule = Date.now(); }
   if (Date.now() - lastRawPurge > 86_400_000) { await purgeTransformedRaw(); lastRawPurge = Date.now(); }
   const job = await claimNextJob(leaseSeconds, workerId);
