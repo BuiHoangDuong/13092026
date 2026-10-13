@@ -4,12 +4,11 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Public-site theme: dark marketplace-catalog style (reference: plati.market) —
+ * Baseline/admin theme: dark marketplace-catalog style (reference: plati.market) —
  * near-black background with a subtle blue tint, slightly lighter neutral-gray panels
  * for cards and pill controls, vivid orange/amber as the single accent color for CTAs
- * and highlights. Admin screens intentionally reuse the same tokens but stay visually
- * plain (see .admin-* utility classes below) since admin UI is out of scope for the
- * template refresh.
+ * and highlights. Public Dark Aurora overrides tokens only within its own shell
+ * (aurora.css); admin screens keep these baseline tokens and plain layout.
  */
 :root {
   --radius: 0.65rem;

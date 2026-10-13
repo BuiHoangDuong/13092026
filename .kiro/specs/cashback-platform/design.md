@@ -1,7 +1,7 @@
 # Design — Cashback Affiliate Platform
 
 - **Status:** Draft v1.0 (UID-first; adapter framework, drift policy, API write model)
-- **Last updated:** 2026-09-26
+- **Last updated:** 2026-10-14
 - **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.9), `architecture.html` v0.4 (context only)
 - **Audience:** implementers and AI coding agents (Kiro / Claude / Codex)
 
@@ -13,6 +13,8 @@
 > **Reference convention:** `Req N.M` cites an EARS acceptance criterion in
 > `requirements.md`. `Open decision #N` cites a numbered row in `requirements.md` →
 > "Open decisions" (a stakeholder answer), NOT Requirement N.
+
+> **Rà soát ngày 2026-10-14:** Người dùng tự đọc và báo sửa; không cần hỏi xác nhận ở từng bước. Dark Aurora và calculator theo plan (#23–25, Req 19–20) đã triển khai Docker local; tên mới (#22) còn mở. Req 21 tiếp tục rà soát riêng. Quyết định chưa chốt nằm trong Open decisions của requirements và Open design decisions; hoàn thiện requirements → design → tasks trước code.
 
 ## Overview
 
@@ -78,7 +80,7 @@ flowchart TD
 | Validation | zod in `packages/contracts` | One schema for API + parser boundaries. |
 | Money | `Decimal` (Prisma `Decimal`/numeric); API returns strings | No float error (Req 7.4). |
 | Auth | **[PENDING]** provider (open decision #13); interim email+password | Abstracted behind an auth port; see Components/Auth. |
-| Styling (public site) | Tailwind CSS v4 + shadcn/ui (Radix primitives), copied into `src/components/ui` | Free/open-source component kit; replaces hand-rolled CSS for the public marketing pages (home, exchanges, guides) with a light, blue/teal "friendly-professional" theme. Admin uses the same tokens plus a **simple left-nav shell** (Req 18); do not import the full reference `cashback/` admin SPA. |
+| Styling (public site) | Tailwind CSS v4 + shadcn/ui (Radix primitives), copied into `src/components/ui` | **Dark Aurora** đã chốt (Req 20): nền xanh đen, glow aurora nhẹ, điểm nhấn cam ấm, typography và khoảng trống theo mockup. Áp theme qua public shell cho home/exchanges/guides và luồng khách; giữ giao diện/token admin cùng **simple left-nav shell** (Req 18). Không import toàn bộ reference `cashback/` admin SPA. |
 | Hosting | Local/SIT + Railway prod, dual-track | Verify local, push, deploy (Req 6.5). |
 | Language / i18n | Single locale registry + message catalogs + locale-segment routing | English is the only enabled locale; enabling another is a registry + catalog change, not a routing change (Req 4). |
 
@@ -1051,6 +1053,36 @@ for that UID account (Req 9.1); admin transitions require an admin session.
 - Every transition writes a `WithdrawalEvent` (fromStatus, toStatus, actor, time,
   note/reference) (Req 9.8). Only `available` is withdrawable (Req 9.7).
 
+#### Thanh toán coin gốc theo mạng (Req 21.1–2, 21.11, bản nháp)
+
+Contracts cần phân biệt ETH/Ethereum mainnet, BNB/BSC mainnet, SOL/Solana mainnet. Xác thực mạng RPC trước khi gửi: EVM so `eth_chainId` (Ethereum `1`, BSC `56`; testnet Sepolia `11155111`, BSC testnet `97`), Solana so genesis hash của cluster. EVM dùng địa chỉ 20 byte không phải zero, kiểm checksum EIP-55 khi chuỗi có chữ hoa/thường lẫn lộn (Req 21.2); Solana dùng base58 giải mã 32 byte, loại system address toàn zero. Định dạng hợp lệ không chứng minh quyền sở hữu. Cùng một địa chỉ EVM hợp lệ trên cả Ethereum và BSC, nên UI phải hiển thị rõ mạng đích trước khi xác nhận.
+
+Sổ ví hiện dùng `Decimal(30,10)`. ETH/BNB có 18 chữ số thập phân (wei), SOL có 9 (lamports): `Decimal(30,10)` đủ cho SOL nhưng không biểu diễn hết wei; cần chốt precision lưu trữ cho ETH/BNB (ví dụ giới hạn số tiền rút ở 10 chữ số thập phân, hoặc nâng scale). Chuyển sang đơn vị nhỏ nhất bằng phép nhân số nguyên (`bigint`) khi ký; không tự làm tròn giảm số tiền rút hay dùng float để chuyển đơn vị.
+
+Mức tối thiểu theo mạng (Req 21.16): Solana từ chối chuyển SOL vào tài khoản chưa tồn tại nếu số lamports nhỏ hơn mức rent-exempt (lấy bằng `getMinimumBalanceForRentExemption(0)` tại thời điểm gửi, không hard-code); EVM cần mức tối thiểu sao cho phí gas không vượt tỷ lệ đã duyệt. Khoản dưới mức tối thiểu không vào luồng tự động.
+
+Nếu ledger là USDT, chỉ thiết kế chuyển đổi/khóa báo giá/fee/bút toán sau khi nghiệp vụ được duyệt. Khi triển khai hoặc review SDK, đối chiếu Context7/tài liệu chính thức theo steering.
+
+#### Xét điều kiện thanh toán dưới 20 USD (Req 21.3–5, bản nháp)
+
+Đề xuất dịch vụ định giá cung cấp coin/USD, nguồn và thời điểm báo giá. Tính bằng Decimal và kiểm tra `< 20`; ngưỡng số lượng coin hiện có không thay thế được ngưỡng USD.
+
+Lưu dữ liệu định giá cho quyết định, kiểm tra lại trước khi gửi. Nếu giá thiếu/quá hạn hoặc vượt ngưỡng, không gửi theo quyết định cũ. Giữ first review, reservation, receivable và session. Design phải tách tự động duyệt khỏi gửi và xác nhận trả tiền.
+
+Cần chốt nguồn/tuổi tỷ giá, khóa giá, ngưỡng theo khoản hay tổng ngày và cách tính phí vào ngưỡng. Chưa đặt mặc định cho các quyết định này.
+
+#### Chống gửi trùng và đối soát (Req 21.7–10, bản nháp)
+
+Claim phối hợp transaction/lock với withdrawal và reservation. Trước broadcast, lưu đủ dữ liệu khôi phục cùng giao dịch. Hủy/từ chối/mark paid thủ công phải phối hợp state machine sender để tránh vừa hoàn vừa trả tiền.
+
+Retry ưu tiên đối soát hoặc gửi lại cùng giao dịch. EVM cần quản lý nonce ví nguồn và việc dùng ví ngoài hệ thống; Solana cần theo dõi signature/blockhash, chỉ tạo giao dịch thay thế sau đối soát an toàn. Mất lease hoặc timeout không chứng minh chưa gửi.
+
+Chỉ settle `reserved → withdrawn` một lần sau xác nhận theo chính sách. Trạng thái chưa rõ giữ reservation; mô tả rõ phục hồi, giải phóng tiền khi thất bại chắc chắn và can thiệp thủ công trước khi viết code.
+
+Hạn mức và tạm dừng (Req 21.14–15): trước broadcast, cùng transaction với claim, cộng dồn số coin đã cam kết trong ngày thanh toán theo mạng và so hạn mức; kiểm số dư ví chi trả ≥ số coin + phí ước tính. Cờ tạm dừng theo mạng lưu DB, đọc lại ngay trước broadcast; tạm dừng chỉ chặn broadcast mới, job đối soát vẫn chạy. Cảnh báo admin khi số dư ví chi trả dưới ngưỡng nạp.
+
+Cần chốt model/state machine, nonce/blockhash, confirmation, gas/hạn mức và trách nhiệm đối soát. Bổ sung các invariant liên quan vào Correctness Properties hiện hành khi design được duyệt.
+
 ### Job queue design (Postgres)
 
 - Claim (correct PostgreSQL clause order):
@@ -1070,6 +1102,16 @@ for that UID account (Req 9.1); admin transitions require an admin session.
 - `SYNC` uses the same queue but is eligible only for an enabled, ready exchange
   schedule. A due check and enqueue/update of `nextRunAt` occur in one database
   transaction; an active-run uniqueness guard also protects multi-replica workers.
+
+#### Lịch thanh toán và cơ chế ký (Req 21.6, 21.12; Req 12, bản nháp)
+
+Nếu duyệt một đợt/ngày, worker quản lý lịch với định danh ngày/múi giờ và claim chống trùng giữa replica. Chốt xử lý ngày bỏ lỡ/yêu cầu sau giờ chạy; không mặc định giờ hoặc quét toàn bộ số dư.
+
+Đề xuất adapter sender EVM và Solana để chuẩn bị/gửi/tra cứu giao dịch. Nghiệp vụ chung ở core, contracts an toàn cho browser, model/migration ở db, tác vụ nền ở worker; web cung cấp UI/API có kiểm soát truy cập.
+
+Người dùng tự tạo MetaMask; cần chốt đó là ví nguồn hay ví nhận test. Ký tự động không có người thao tác cần signer cho worker: đánh giá dịch vụ ký được quản lý hoặc ví chi trả riêng với secret chỉ ở worker. Chưa chọn phương án thì chưa chốt SDK/secret. Khung đã dựng (Task 39): biến worker-only `PAYOUT_AUTO_ENABLED`, `PAYOUT_CHAIN_ENV` (`testnet` mặc định; `mainnet` bị chặn khi `NODE_ENV` khác `production`), `PAYOUT_EVM_PRIVATE_KEY` (dùng chung Ethereum/BSC), `PAYOUT_SOLANA_SECRET_KEY` (base58, 64 byte), `PAYOUT_{ETHEREUM,BSC,SOLANA}_RPC_URL` (https; http chỉ cho localhost ngoài production), `PAYOUT_DAILY_LIMITS` (JSON theo asset). `payoutReadiness()` chỉ trả tên biến lỗi, không trả giá trị; `enabled` luôn false cho tới khi có sender. Web container ghi đè rỗng các khóa này.
+
+Không điều khiển MetaMask browser để giả lập ký nền; không thu recovery phrase qua UI/chat. Khuyến nghị (Open decision #30): MetaMask cá nhân chỉ dùng làm ví nhận khi test; ví chi trả là ví riêng tạo cho từng môi trường, khóa riêng chỉ nằm trong secret của worker (Docker local/testnet, Railway mainnet), không có trong web app, repo, log hay seed data; số dư giữ ở mức hạn mức ngày.
 
 ### Environments & deployment (Req 6.5)
 
@@ -1311,6 +1353,31 @@ until the reset.
   is the visitor's own wallet — they still look up exchange + UID (Req 14).
 
   No new public `/api/*` route.
+
+#### Bảng tính tiền hoàn phí bị bỏ lỡ (Req 19)
+
+Component phía client dùng đầu vào đã được duyệt; nhãn/thông báo nằm trong catalog tiếng Anh. Tách hàm tính và validation khỏi phần hiển thị.
+
+Đã chốt #23–24 theo plan triển khai: phí/tháng bằng USDT (0–1,000,000, tối đa 8 chữ số thập phân), affiliate commission assumption có thể chỉnh (0–100%, mặc định minh họa 50%), share từ published offer cụ thể, kết quả tháng/12 tháng. Công thức: `hoàn phí/tháng = phí/tháng × tỷ lệ hoa hồng affiliate × tỷ lệ hoàn cho khách`; ví dụ mẫu Bybit `500 USDT × 50% × 30% = 75 USDT/tháng`, `75 × 12 = 900 USDT` cho 12 tháng tương tự. Không tự chuyển USD sang USDT hoặc suy ra tỷ lệ affiliate đã xác minh.
+
+Dùng fixed-point BigInt scale 10^8 cho input và tỷ lệ, nhân/chia chính xác; chỉ round half-up đến cents khi format tháng/12 tháng. Tách hàm tính/validation trong `apps/web/src/lib/opportunity.ts`. Không gọi API ghi ví hay tạo `WalletEntry`; không trộn ước tính với số dư thực. Calculator là client island nhận props offer trong trang SSR; không cần route mới, đầu vào không gửi lên server (Req 19.7–19.8). Một sàn nhiều offers có selector offer, tỷ lệ và CTA gắn với cùng offer; thiếu published offer hợp lệ thì không có kết quả tiền.
+
+#### Giao diện và tên website (Req 20, Dark Aurora đã chốt)
+
+Tham chiếu thiết kế: `mockups/dark-aurora.html`; kế hoạch chi tiết: `docs/dark-aurora-ui-plan.md`; tasks triển khai: Task 40. Mockup là preview tiếng Anh, không phải ứng dụng đã tích hợp. Vì `mockups/` đang bị Git ignore, spec này ghi lại các quyết định cần thiết để checkout không có mockup vẫn đọc được phạm vi.
+
+**Thứ tự trang chủ:** header → hero và toàn bộ hình ví cũ → **THE CASHBACK OPPORTUNITY CHECK** → dải logo sàn → tra cứu exchange + UID → published offers → How it works → rebate ledger hiện có (Req 17) → FAQ → footer. Calculator luôn nằm dưới hình ví; mô hình tháng/12 tháng đã chốt theo #23–24.
+
+- **Hero:** giữ headline `Same trades. More coming back.`, CTA tìm offer/tra cashback, hình ví 248.50 USDT available / 42.80 USDT pending / 1,206.00 USDT paid out và hai thẻ nổi. Giữ nhãn `Illustrative wallet` và chú thích không phải tài khoản thật; không dùng các con số này làm kết quả lookup.
+- **Opportunity Check:** khung viền/glow cam ấm, kết quả tiền lớn, copy `See what you could be missing.` và CTA tới lookup/offer. Hiển thị assumptions/công thức/điều kiện và `Past fees cannot be claimed retroactively.`; không khẳng định khách đã mất khoản tiền thật hoặc thêm countdown giả (Req 19.1–19.7).
+- **Sàn/offer:** bộ seed và mockup hiện có Bybit/Binance/MEXC, tỷ lệ mẫu lần lượt 30/40/35% trên eligible affiliate commission. Dải logo dùng ảnh local và deduplicate theo exchange ID. Card rộng ba cột desktop, một cột mobile; tỷ lệ/điều kiện/link trên ứng dụng lấy từ published data, không hard-code seed hoặc giới hạn hệ thống vĩnh viễn ở ba sàn. Một sàn nhiều offers vẫn giữ định danh và link đúng từng offer (Req 1, 7).
+- **Tích hợp:** `HomeContent` và offers giữ SSR; calculator là client island nhận props published offer. Restyle `CashbackLookup` nhưng giữ `/api/lookup`, schema, số dư theo asset, transactions, timestamps, empty/loading/error/429 và UID dạng chuỗi. Tính calculator không gửi/lưu input lên server, không ghi ví.
+- **Wallet:** trỏ `/withdraw` hiện có, giữ OTP/session; CTA từ kết quả lookup giữ exchange ID/UID trong query. Sửa link header `/me/wallet` chưa có route trong app; không tạo một luồng auth/rút tiền mới (Req 14–16, 20.4).
+- **Public shell:** header/footer và theme scoped cho public routes; giữ admin shell/token hiện tại. Menu mobile có control mở/đóng dùng được bằng bàn phím; anchors có scroll offset. Đồng bộ cards và typography trên exchanges/detail/guides.
+- **Dữ liệu minh họa:** giữ rebate ledger generator/badge theo Req 17; không biến ticker thành lịch sử ví thật. Bỏ stats người dùng/quốc gia chưa có nguồn, chỉ dùng số sàn nếu lấy từ `getPublicStats()`. Thiếu dữ liệu thật thì hiển thị empty/unavailable, không thay bằng ví/offer demo.
+- **Accessibility:** dùng được 360–1440px không cuộn ngang; labels, focus rõ, tương phản WCAG 2.1 AA, `prefers-reduced-motion`; hình ví/thẻ nổi không tràn hoặc che calculator (Req 20.2–20.3).
+
+Giữ tên hiện tại **Cashback Hub** và UI tiếng Anh (Req 4, 20.5–20.6). Tập trung tên ở một hằng số cấu hình hoặc English message catalog, dùng chung header/footer/metadata/email OTP; không dùng biến `NEXT_PUBLIC_*` cho tên. Đổi tên sang `RebateFlow` chưa được duyệt, vẫn thuộc Open decision #22; quyết định đó không chặn triển khai layout với tên hiện tại.
 
 ### apps/worker
 - Boot connects to Postgres, starts a poll loop (~10s) that claims one job via
@@ -2007,6 +2074,10 @@ Enums:
 `JobType{PARSE,LOAD,TRANSFORM,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}` (`PARSE` kept only so queued jobs deserialize; new jobs never use it),
 `JobState{PENDING,CLAIMED,DONE,FAILED}`.
 
+### PayoutIntent — phương án sơ bộ cho Req 21
+
+Đề xuất `PayoutIntent` duy nhất theo withdrawal (`@@unique([withdrawalId])`), chứa coin/mạng, số tiền (cả đơn vị nhỏ nhất dạng chuỗi số nguyên), quote, destination, định danh giao dịch (EVM: nonce + tx hash của ví chi trả; Solana: signature + `lastValidBlockHeight`), trạng thái và dữ liệu lỗi/lần thử. Trạng thái đề xuất để duyệt: `PREPARED → BROADCAST → CONFIRMED` hoặc `FAILED` (chắc chắn chưa lên chain) hoặc `UNKNOWN` (cần đối soát/can thiệp). `WithdrawalStatus` hiện tại cần bổ sung trạng thái tương ứng giữa `APPROVED` và `PAID`. Đây chưa phải schema đã chốt.
+
 ## Dimensional store & fact partitioning (5,000 transacting UIDs/day)
 
 This is the **scale architecture** for when ~5,000 UIDs generate cashback
@@ -2321,6 +2392,24 @@ most critical money/concurrency invariants, not an exhaustive suite.
 - Run these on local/SIT before deploying to Railway; broaden coverage later only if the
   money logic grows.
 
+### Kiểm chứng Req 19–21 và chuyển sang tasks (bản nháp)
+
+Giữ smoke gọn và kiểm tra có trọng tâm cho invariant tiền/concurrency. Quote/RPC/signer giả lập; integration trên Docker Postgres đúng steering với schema/dữ liệu biệt lập. Giả lập nhiều ngày bằng thời gian test.
+
+- Bảng tính: công thức, đơn vị, input sai, ước tính khác số dư thực.
+- UI state tests chạy trong Docker bằng React `act`/`createRoot` và jsdom: render component thật, đổi sàn/offer/props, input rỗng/sai, loading/no-data/lỗi/429, response cũ sau đổi UID/sàn hoặc unmount; assert đúng CTA Wallet và menu Escape/focus. Esbuild chỉ bundle TSX cho tests, mock Next Link/navigation; route/referral thật tiếp tục kiểm tra HTTP. jsdom không render layout nên không thay thế screenshot, contrast hoặc responsive/browser QA.
+- Khi published props thay đổi, calculator giữ offer đang chọn nếu còn hợp lệ; nếu không, chọn offer Bybit hợp lệ hoặc offer hợp lệ đầu tiên, không giữ một ID đã bị gỡ. Chỉ tham chiếu control đang có trong output/ARIA và gắn lỗi đúng field. Lookup hiển thị thông báo lỗi tiếng Anh trong catalog cho response/network/JSON/schema lỗi, giữ thông báo 429 với Retry-After; không đưa lỗi transport/schema ra UI (Req 14, 19.4, 20.3).
+- UI Dark Aurora (Task 40): hero cũ trước calculator, logo ba sàn theo seed, published offer/link đúng, dữ liệu demo có nhãn; tên nhất quán, Wallet `/withdraw`, 360/390/768/1024/1440px không cuộn ngang, keyboard/menu mobile, contrast và reduced motion; admin không bị đổi theme.
+- Payout: ba cặp coin/mạng, precision, dưới/bằng/trên 20 USD, stale quote, first review.
+- Tính đúng đắn: concurrency, retry, crash trước/sau broadcast, trạng thái chưa rõ và đua hủy/thanh toán.
+- Thiếu tiền/gas/cấu hình: không gửi và không hạch toán sai.
+
+Thứ tự môi trường: (1) local Docker với RPC/signer giả lập (có thể thêm chain local như Anvil và `solana-test-validator` nếu cần kiểm nonce/blockhash thật); (2) testnet Sepolia, BSC testnet, Solana devnet với ví chi trả testnet riêng, chạy giả lập nhiều ngày (Req 21.13); (3) mainnet là bước riêng sau khi testnet đạt và chốt ví, địa chỉ công khai, số tiền, phí và kế hoạch chạy. Không gửi mainnet trong build/test local; CI không giữ khóa riêng mainnet.
+
+Bổ sung kiểm thử: hạn mức ngày/thiếu số dư ví chi trả (21.14), tạm dừng giữa chừng (21.15), dưới mức tối thiểu và rent-exempt SOL (21.16), địa chỉ EIP-55 sai checksum (21.2).
+
+UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, checks tự động Docker đạt. Visual QA còn chờ browser khả dụng hoặc người dùng kiểm tra bản local. Với phần payout còn đang rà soát, sau duyệt mới cập nhật model/API/luồng/Correctness Properties và lập tasks tiếp theo; không coi checklist UI là phê duyệt các quyết định payout.
+
 ## Security (Req 6.2)
 - Server-side authorization on every non-public route; the acting `UidAccount` is derived
   from the `UidSession` only, never from a request parameter.
@@ -2372,6 +2461,9 @@ most critical money/concurrency invariants, not an exhaustive suite.
 | R12 Worker/jobs | Components/apps/worker, Job queue |
 | R13 Scheduled API sync | Key flows (Scheduled Bybit Affiliate activity sync, API write model, Use cases), Job queue, Data Models (`ExchangeSyncConfig`, `SyncRun`, `ActivityPeriodStatus`, `ActivityMetricCurrent`, `ActivityMetricChange`, `ActivityRoster`) |
 | R6.21 Schema drift | Key flows (Source adapter framework, Schema drift policy) |
+| R19 Bảng tính tiền bỏ lỡ | Components/apps/web — Bảng tính tiền hoàn phí bị bỏ lỡ; Testing Strategy; Task 40 |
+| R20 Giao diện Dark Aurora và tên tiếng Anh (hướng UI đã chốt, tên mới còn mở) | Components/apps/web — Giao diện và tên website; Testing Strategy; Task 40 |
+| R21 Thanh toán ETH/BNB/SOL (bản nháp) | Key flows — Thanh toán coin gốc, điều kiện USD, chống gửi trùng; Job queue — Lịch thanh toán và cơ chế ký; Data Models — PayoutIntent; Testing Strategy |
 | NFR security | Security |
 | NFR deploy | Environments & deployment |
 | NFR scale 5k UID/day | Dimensional store & fact partitioning |
@@ -2422,6 +2514,15 @@ most critical money/concurrency invariants, not an exhaustive suite.
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
   credits (Req 8.7). Revisit if business prefers correction-only-before-holding.
 
+### Quyết định thiết kế cho Req 19–21 đang rà soát
+
+- **Tên mới (Open decision #22):** vẫn mở; giữ Cashback Hub. **#23–25 đã chốt theo plan triển khai:** phí/tháng USDT, commission assumption có thể chỉnh, published offer share, tháng/12 tháng và Dark Aurora giữ hero/hình ví, calculator bên dưới, logo Bybit/Binance/MEXC. Task 40 đã có code và checks Docker local, không phụ thuộc đổi tên hay payout.
+- **Lịch chạy/ngưỡng USD (Open decisions #26–28):** đợt thanh toán theo ngày, giờ/múi giờ, ngày bỏ lỡ; ngưỡng theo khoản hay tổng ngày, có gồm phí; nhà cung cấp/tuổi báo giá và khóa giá.
+- **Sổ ví/chuyển đổi (Open decision #29):** coin gốc hay USDT, precision, chuyển đơn vị nhỏ nhất, phí và bút toán khi đổi tài sản.
+- **Ví nguồn/ký (Open decision #30):** vai trò MetaMask, signer worker, SDK và vị trí lưu secret.
+- **Thực thi/đối soát (Open decision #31):** model/state machine, nonce/blockhash, confirmation, gas, hạn mức, xử lý thất bại và can thiệp thủ công.
+- **Test mainnet (Open decision #32):** địa chỉ công khai, số tiền, phí và kế hoạch chạy sau khi local đạt.
+
 ## Binance GET-only connector (Req 13.2, 13.9, 13.14)
 
 Binance is registered as an official API connector in admin settings. The worker
@@ -2451,6 +2552,13 @@ required for a later activity publishing implementation.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | design.md | Bổ sung DOM component tests trong Docker cho calculator/lookup/menu và tách khỏi visual QA | Hoàn thiện kiểm tra tương tác trước khi rà phương án các task còn lại | added |
+| 2026-10-14 | design.md | Ghi trạng thái UI/calculator triển khai Docker local, dùng route-aware public shell giữ SSR children và legacy admin chrome; automated checks đạt, visual QA còn mở | Bàn giao localhost theo plan đã triển khai | updated |
+| 2026-10-14 | design.md | Chốt calculator tháng USDT/published offer, fixed-point decimal và round half-up theo Req 19.8 | Triển khai plan Dark Aurora trên Docker local | updated |
+| 2026-10-14 | design.md | Chốt Dark Aurora: thay Styling cũ, giữ hero/hình ví, calculator bên dưới, ba logo sàn; mô tả public shell, tích hợp lookup/offer và QA Task 40; giữ #22–24 mở | Đồng bộ thiết kế đã chọn trước khi code giao diện chính | updated |
+| 2026-10-13 | design.md | Ghi biến `PAYOUT_*` và hành vi `payoutReadiness()` của khung Task 39 | Dựng khung trước, chưa gửi giao dịch | added |
+| 2026-10-13 | design.md | Review Req 19–21: chainId/genesis, EIP-55, precision wei vs `Decimal(30,10)`, mức tối thiểu + rent-exempt SOL, hạn mức ngày/tạm dừng/số dư ví chi trả, khuyến nghị ví chi trả riêng, client island cho bảng tính, tên site không dùng `NEXT_PUBLIC_*`, trạng thái `PayoutIntent`, testnet trước mainnet; ghi nhận lệch Styling | Đồng bộ với Req 19.7, 21.2, 21.13–16 | added/updated |
+| 2026-10-13 | design.md | Đưa thiết kế Req 19–21 vào Key flows, Job queue, Components, Data Models và Testing; cập nhật Requirements mapping/Open design decisions | Giữ cấu trúc design hiện có, bỏ phụ lục sơ bộ riêng; người dùng tự rà soát | added/updated |
 | 2026-10-11 | design.md | Binance GET-only worker connector, raw intake, readiness and admin counts; no UID publishing | Operator requested GET flow with current empty account and later key rotation | added |
 | 2026-10-07 | design.md | Exchange selector and per-exchange schedule drafts; unsupported preference saves; next-slot recalculation and manual-mode worker guard | Independent admin configuration for multiple exchanges | updated |
 | 2026-10-07 | design.md | MEXC zero-preserving sink option and contract refresh; Docker credential isolation; explicit period reconciliation rollout gate | Complete activity integration and preserve Bybit sparse behavior | updated |

@@ -1,5 +1,5 @@
 "use client";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { lookupResponseSchema, type LookupResponse } from "@cashback/contracts";
 import { Button } from "./ui/button";
@@ -16,27 +16,46 @@ function rateLabel(value: string | null, unknown: string) {
 }
 export function CashbackLookup({ exchanges, locale }: { exchanges: Array<{ id: string; name: string }>; locale: Locale }) {
   const m = getMessages(locale).lookup;
+  const a = getMessages(locale).aurora;
   const [result, setResult] = useState<LookupResponse | null>(null); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState<{ exchangeId: string; uid: string } | null>(null);
+  const generation = useRef(0);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => { generation.current++; request.current?.abort(); }, []);
+  function clearResult() { generation.current++; request.current?.abort(); setBusy(false); setResult(null); setError(""); setSelection(null); }
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setError(""); setResult(null);
+    event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const submitted = { exchangeId: String(data.get("exchangeId") ?? ""), uid: String(data.get("uid") ?? "").trim() };
+    if (!submitted.uid || !submitted.exchangeId) { setError(m.help); return; }
+    request.current?.abort(); const controller = new AbortController(); request.current = controller;
+    const current = ++generation.current;
+    setBusy(true); setError(""); setResult(null); setSelection(null);
+    let visibleError = m.unavailable;
     try {
-      const response = await fetch("/api/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exchangeId: data.get("exchangeId"), uid: data.get("uid") }), cache: "no-store" });
+      const response = await fetch("/api/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(submitted), cache: "no-store", signal: controller.signal });
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("retry-after") ?? "60";
+        visibleError = m.rateLimited.replace("{{seconds}}", /^\d{1,6}$/.test(retryAfter) ? retryAfter : "60");
+        throw new Error(visibleError);
+      }
+      if (!response.ok) throw new Error(m.unavailable);
       const body = await response.json();
-      if (!response.ok) throw new Error(response.status === 429 ? m.rateLimited.replace("{{seconds}}", response.headers.get("retry-after") ?? "60") : m.unavailable);
+      if (current !== generation.current) return;
       setResult(lookupResponseSchema.parse(body));
-      setSelection({ exchangeId: String(data.get("exchangeId")), uid: String(data.get("uid")).trim() });
-    } catch (e) { setError(e instanceof Error ? e.message : m.unavailable); } finally { setBusy(false); }
+      setSelection(submitted);
+    } catch { if (current === generation.current) setError(visibleError); } finally { if (current === generation.current) setBusy(false); }
   }
-  return <section aria-labelledby="cashback-lookup-title" className="mb-10 rounded-2xl border border-primary/40 bg-card p-6 sm:p-8">
-    <h2 id="cashback-lookup-title" className="text-3xl font-bold">{m.title}</h2><p className="mt-2 text-muted-foreground">{m.lead}</p>
-    <form onSubmit={submit} className="mt-6 grid items-end gap-4 sm:grid-cols-[1fr_2fr_auto]">
-      <label className="text-sm">{m.exchange}<select name="exchangeId" required disabled={busy} onChange={() => setResult(null)} defaultValue={exchanges.find(x => x.name.toLowerCase() === "bybit")?.id ?? ""} className="mt-2 block h-10 w-full rounded-md border border-border bg-background px-3"><option value="" disabled>{m.choose}</option>{exchanges.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
-      <label className="text-sm">{m.uid}<Input name="uid" disabled={busy} required maxLength={128} autoComplete="off" className="mt-2" placeholder={m.uidPlaceholder} onChange={() => setResult(null)} /></label>
-      <Button disabled={busy || !exchanges.length}>{busy ? m.loading : m.check}</Button>
-    </form><p className="mt-3 text-xs text-muted-foreground">{m.help}</p>
-    <div aria-live="polite">{error && <p role="alert" className="mt-4 text-destructive">{error}</p>}{result && <div className="mt-6 space-y-4">{!result.hasData ? <p>{m.noData}</p> : <><div className="grid gap-4 sm:grid-cols-2">{result.balances.map(w => <div key={w.asset} className="rounded-xl bg-muted p-5"><p className="font-semibold">{w.asset}</p><p className="mt-2 text-sm">{m.received}</p><p className="break-all text-3xl font-bold text-primary">{money(w.available)}</p><p className="mt-1 text-xs text-muted-foreground">{m.available}</p><p className="mt-3 break-all text-sm">{m.pending}: {money(w.pending)}</p></div>)}</div>
+  return <section id="lookup" aria-labelledby="cashback-lookup-title" className="aurora-section">
+    <div className="aurora-lookup-panel"><div><p className="aurora-eyebrow">{a.lookupEyebrow}</p><h2 id="cashback-lookup-title">{a.lookupTitle}</h2><p>{a.lookupLead}</p><p className="aurora-email-note">{a.emailNote}</p></div>
+    <form onSubmit={submit} className="aurora-lookup-form">
+      <label>{m.exchange}<select name="exchangeId" required disabled={busy || !exchanges.length} onChange={clearResult} defaultValue={exchanges.find(x => x.name.toLowerCase() === "bybit")?.id ?? ""}><option value="" disabled>{m.choose}</option>{exchanges.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+      <label>{m.uid}<Input name="uid" disabled={busy || !exchanges.length} required maxLength={128} autoComplete="off" placeholder={m.uidPlaceholder} onChange={clearResult} /></label>
+      <button className="aurora-btn primary full" disabled={busy || !exchanges.length}>{busy ? m.loading : m.check}</button>
+      <p className="aurora-form-help">{m.help}</p>
+      {!exchanges.length && <p role="status">{m.unavailable}</p>}
+    </form></div>
+    <div aria-live="polite" aria-busy={busy}>{error && <p role="alert" className="aurora-error mt-4">{error}</p>}{result && <div className="aurora-lookup-results mt-6 space-y-4">{!result.hasData ? <p>{m.noData}</p> : <><div className="grid gap-4 sm:grid-cols-2">{result.balances.map(w => <div key={w.asset} className="rounded-xl bg-muted p-5"><p className="font-semibold">{w.asset}</p><p className="mt-2 text-sm">{m.received}</p><p className="break-all text-3xl font-bold text-primary">{money(w.available)}</p><p className="mt-1 text-xs text-muted-foreground">{m.available}</p><p className="mt-3 break-all text-sm">{m.pending}: {money(w.pending)}</p></div>)}</div>
       <div className="overflow-x-auto rounded-xl border border-border">
         <p className="px-4 pt-4 text-sm font-semibold">{m.txTitle}</p>
         <p className="px-4 pt-1 text-xs text-muted-foreground">{m.txLead}</p>

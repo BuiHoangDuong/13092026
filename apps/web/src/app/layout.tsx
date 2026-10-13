@@ -3,9 +3,12 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import { defaultLocale, getMessages, isLocale, localePath } from "../i18n";
 import { LocaleProvider } from "../i18n/locale-provider";
+import { PublicShell } from "../components/public/public-shell";
+import { site } from "../lib/site";
 import "./globals.css";
+import "./aurora.css";
 
-export const metadata: Metadata = { title: "Cashback Hub", description: "Crypto exchange cashback, made transparent." };
+export const metadata: Metadata = { title: site.name, description: site.description };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const requestedLocale = (await headers()).get("x-cashback-locale") ?? defaultLocale;
@@ -15,7 +18,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang={locale}>
       <body className="min-h-screen bg-background text-foreground antialiased">
         <LocaleProvider locale={locale} messages={messages}>
-          <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur">
+          <PublicShell locale={locale} legacyHeader={<header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur">
             <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
               <Link href={localePath(locale, "/")} className="flex items-center gap-2 text-lg font-bold tracking-tight text-foreground">
                 <span className="flex size-8 items-center justify-center rounded-md bg-primary text-sm text-primary-foreground">
@@ -32,14 +35,12 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                 </Link>
               </nav>
               <div className="ml-auto flex items-center gap-4 text-sm font-medium text-muted-foreground">
-                <Link href="/me/wallet" className="transition-colors hover:text-foreground">
+                <Link href="/withdraw" className="transition-colors hover:text-foreground">
                   {messages.nav.wallet}
                 </Link>
               </div>
             </div>
-          </header>
-          {children}
-          <footer className="border-t border-border">
+          </header>} legacyFooter={<footer className="border-t border-border">
             <div className="mx-auto max-w-6xl px-6 py-14">
               <Link href={localePath(locale, "/")} className="flex items-center gap-2 text-lg font-bold tracking-tight text-foreground">
                 <span className="flex size-8 items-center justify-center rounded-md bg-primary text-sm text-primary-foreground">
@@ -71,7 +72,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                 <p className="mt-1">{messages.siteFooter.placeholderNote}</p>
               </div>
             </div>
-          </footer>
+          </footer>}>{children}</PublicShell>
         </LocaleProvider>
       </body>
     </html>

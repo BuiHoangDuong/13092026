@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, refreshBinanceReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth } from "@cashback/core";
+import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, refreshBinanceReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth, payoutReadiness } from "@cashback/core";
 import type { SyncTrigger } from "@cashback/db";
 import { db } from "@cashback/db";
 
@@ -59,6 +59,7 @@ async function reportOperationalHealth() {
 
 async function main() {
   console.log(`Cashback worker polling every ${pollSeconds}s`);
+  console.log(JSON.stringify({ event: "payout_readiness", ...payoutReadiness() }));
   try { await recordWorkerHeartbeat(workerId, true); } catch (error) { console.error("worker_heartbeat_start_failed", error); }
   while (!stopping) {
     try { await tick(); await reportOperationalHealth(); } catch (error) { console.error("worker_tick_failed", error); }

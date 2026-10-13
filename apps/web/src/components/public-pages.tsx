@@ -1,10 +1,9 @@
 import Link from "next/link";
-import Image from "next/image";
 import { notFound } from "next/navigation";
 import { ArrowRight, ExternalLink } from "lucide-react";
 import {
   getExchangeOfferCards,
-  getPublicStats,
+  listPublishedExchanges,
   getPublishedExchange,
   getPublishedGuide,
   listPublishedGuides,
@@ -12,11 +11,14 @@ import {
   type PublicOfferCard
 } from "@cashback/core";
 import { getMessages, localePath, type Locale } from "../i18n";
-import { marketingStatsPlaceholder } from "../content/marketing-stats";
+import { calculateOpportunity, sharePercent } from "../lib/opportunity";
 import { generateLedgerDemoRows } from "../content/ledger-demo";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { CashbackLookup } from "./cashback-lookup";
+import { AuroraHero } from "./public/aurora-hero";
+import { OpportunityCheck } from "./public/opportunity-check";
+import { ExchangeLogo } from "./public/exchange-logo";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
 function conditionsText(conditions: unknown, fallback: string): string {
@@ -29,67 +31,30 @@ function conditionsText(conditions: unknown, fallback: string): string {
 }
 
 /** $100 affiliate commission -> $X cashback. This is not the customer's trading fee. */
-function exampleBack(rate: string): number {
-  return Math.round(100 * Number(rate) * 100) / 100;
+function exampleBack(rate: string): string {
+  return calculateOpportunity("100", "100", rate)?.monthly ?? "—";
 }
 
-/** Deterministic placeholder tile color per exchange, so tiles look distinct without real logos. */
-const TILE_HUES = [45, 200, 265, 140, 320, 15] as const;
-function tileHue(seed: string): number {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  return TILE_HUES[hash % TILE_HUES.length] ?? TILE_HUES[0];
-}
-
-/**
- * Marketplace-style square tile (reference: plati.market catalog grid): an exchange logo
- * (or colored placeholder) on top, exchange name below, cashback rate as a corner badge. Clicking the
- * tile opens the exchange detail page rather than the referral link directly, matching the
- * reference site's "browse first" flow.
- */
+/** Published data stays server-rendered; the image alone handles a missing logo. */
 function OfferCard({ card, locale }: { card: PublicOfferCard; locale: Locale }) {
-  const messages = getMessages(locale);
-  const ratePercent = Number(card.cashbackRate) * 100;
-  const hue = tileHue(card.exchange.slug);
-  return (
-    <Link href={localePath(locale, `/exchanges/${card.exchange.slug}`)} className="group flex flex-col">
-      <div
-        className="relative flex aspect-square items-center justify-center overflow-hidden rounded-xl border border-border bg-card transition-transform group-hover:scale-[1.02]"
-        style={card.exchange.logoUrl ? undefined : { background: `linear-gradient(155deg, oklch(0.4 0.12 ${hue}), oklch(0.24 0.08 ${hue}))` }}
-      >
-        {card.exchange.logoUrl ? (
-          <div className="absolute inset-x-5 top-1/2 h-[18%] -translate-y-1/2">
-            <Image
-              src={card.exchange.logoUrl}
-              alt=""
-              fill
-              sizes="(min-width: 1152px) 130px, (min-width: 1024px) 12vw, (min-width: 768px) 19vw, (min-width: 640px) 26vw, 40vw"
-              className="object-contain"
-            />
-          </div>
-        ) : (
-          <span className="px-3 text-center text-xl font-bold text-white/95">{card.exchange.name}</span>
-        )}
-        <Badge variant="success" className="absolute right-2 top-2 shadow-sm">
-          {ratePercent}%
-        </Badge>
-      </div>
-      <p className="mt-2 truncate text-sm font-medium text-foreground">{card.exchange.name}</p>
-      <p className="truncate text-xs text-muted-foreground">
-        {messages.exchanges.exampleTemplate.replace("{{amount}}", String(exampleBack(card.cashbackRate)))}
-      </p>
-    </Link>
-  );
+  const m = getMessages(locale).aurora;
+  return <article className="aurora-offer-card">
+    <div className="aurora-offer-top"><ExchangeLogo name={card.exchange.name} src={card.exchange.logoUrl} /><span className="aurora-offer-tag">{m.publishedOffer}</span></div>
+    <div className="aurora-offer-rate"><strong>{sharePercent(card.cashbackRate) ?? "—"}%</strong><span>{m.offerShare}</span></div>
+    <p className="aurora-offer-description">{getMessages(locale).exchanges.exampleTemplate.replace("{{amount}}", exampleBack(card.cashbackRate))}</p>
+    <p className="aurora-offer-conditions">{conditionsText(card.conditions, getMessages(locale).exchanges.conditionsFallback)}</p>
+    <Link className="aurora-btn full" href={localePath(locale, "/exchanges/" + card.exchange.slug)}>{m.viewDetails}<ArrowRight size={16} aria-hidden="true" /></Link>
+  </article>;
 }
 
-/** Full offer detail used on the exchange page and the top-3 home preview (not the tile grid). */
+/** Full published offer details and referral links on the exchange page. */
 function OfferDetailCard({ card, locale }: { card: PublicOfferCard; locale: Locale }) {
   const messages = getMessages(locale);
-  const ratePercent = Number(card.cashbackRate) * 100;
+  const ratePercent = sharePercent(card.cashbackRate) ?? "—";
   return (
     <Card className="flex h-full flex-col justify-between transition-shadow hover:shadow-md">
       <CardHeader>
-        <CardTitle>{card.exchange.name}</CardTitle>
+        <ExchangeLogo name={card.exchange.name} src={card.exchange.logoUrl} decorative /><CardTitle>{card.exchange.name}</CardTitle>
         <p className="text-sm text-muted-foreground">{card.exchange.description}</p>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -101,7 +66,7 @@ function OfferDetailCard({ card, locale }: { card: PublicOfferCard; locale: Loca
             {messages.exchanges.exampleLabel}
           </p>
           <p className="mt-1 text-lg font-semibold text-foreground">
-            {messages.exchanges.exampleTemplate.replace("{{amount}}", String(exampleBack(card.cashbackRate)))}
+            {messages.exchanges.exampleTemplate.replace("{{amount}}", exampleBack(card.cashbackRate))}
           </p>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -131,59 +96,27 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 }
 
 export async function HomeContent({ locale }: { locale: Locale }) {
-  const messages = getMessages(locale);
-  let cards: PublicOfferCard[] = [];
-  let stats = { exchangeCount: 0 };
-  try {
-    [cards, stats] = await Promise.all([listPublishedOfferCards(locale), getPublicStats()]);
-  } catch {
-    /* DB may not be bootstrapped during build. */
-  }
-  return (
-    <main className="mx-auto max-w-6xl px-6 py-10">
-      <CashbackLookup locale={locale} exchanges={[...new Map(cards.map(card => [card.exchange.id, { id: card.exchange.id, name: card.exchange.name }])).values()]} />
-      <Eyebrow>{messages.home.eyebrow}</Eyebrow>
-      <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-foreground sm:text-6xl">{messages.home.title}</h1>
-      <p className="mt-6 max-w-xl text-lg text-muted-foreground">{messages.home.lead}</p>
-
-      <div className="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-        {cards.slice(0, 12).map((card) => <OfferCard key={card.offerId} card={card} locale={locale} />)}
-      </div>
-      {!cards.length && (
-        <div className="mt-12">
-          <EmptyState>{messages.home.empty}</EmptyState>
-        </div>
-      )}
-      {cards.length > 0 && (
-        <div className="mt-8">
-          <Link href={localePath(locale, "/exchanges")} className="text-sm font-medium text-primary hover:underline">
-            {messages.home.viewOffer}
-            <ArrowRight className="ml-1 inline size-4" />
-          </Link>
-        </div>
-      )}
-
-      <section className="mt-20 border-t border-border pt-12">
-        <h2 className="text-2xl font-bold tracking-tight text-foreground">{messages.home.statsTitle}</h2>
-        <div className="mt-8 grid gap-6 sm:grid-cols-3">
-          <StatBlock value={marketingStatsPlaceholder.userCount} label={messages.home.statsUsers} />
-          <StatBlock value={marketingStatsPlaceholder.countryCount} label={messages.home.statsCountries} />
-          <StatBlock value={`${stats.exchangeCount}+`} label={messages.home.statsExchanges} />
-        </div>
-      </section>
-
-      <RebateLedgerDemo locale={locale} />
-    </main>
-  );
-}
-
-function StatBlock({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="text-center">
-      <p className="text-4xl font-bold text-primary">{value}</p>
-      <p className="mt-1 text-sm text-muted-foreground">{label}</p>
-    </div>
-  );
+  const m = getMessages(locale).aurora;
+  const [offerResult, exchangeResult] = await Promise.allSettled([listPublishedOfferCards(locale), listPublishedExchanges(locale)]);
+  const cards = offerResult.status === "fulfilled" ? offerResult.value : [];
+  const exchanges = exchangeResult.status === "fulfilled" ? exchangeResult.value : [];
+  const order = ["bybit", "binance", "mexc"];
+  const rank = (slug: string) => { const value = order.indexOf(slug); return value < 0 ? order.length : value; };
+  const orderedCards = [...cards].sort((a, b) => rank(a.exchange.slug) - rank(b.exchange.slug));
+  const orderedExchanges = [...exchanges].sort((a, b) => rank(a.slug) - rank(b.slug));
+  return <main id="main-content" className="aurora-wrap aurora-home">
+    <AuroraHero locale={locale} />
+    <OpportunityCheck locale={locale} offers={orderedCards.map(card => ({ id: card.offerId, exchangeId: card.exchange.id, exchangeName: card.exchange.name, slug: card.exchange.slug, rate: card.cashbackRate }))} />
+    {orderedExchanges.length > 0 && <div className="aurora-exchange-strip" aria-label={getMessages(locale).exchanges.title}>{orderedExchanges.map(exchange => <Link key={exchange.id} href={localePath(locale, "/exchanges/" + exchange.slug)}><ExchangeLogo name={exchange.name} src={exchange.logoUrl} /></Link>)}</div>}
+    <CashbackLookup locale={locale} exchanges={orderedExchanges.map(exchange => ({ id: exchange.id, name: exchange.name }))} />
+    <section id="offers" className="aurora-section"><div className="aurora-section-heading"><p className="aurora-eyebrow">{m.offersEyebrow}</p><h2>{m.offersTitle}</h2><p>{m.offersLead}</p></div>
+      {orderedCards.length ? <div className="aurora-offer-grid">{orderedCards.map(card => <OfferCard key={card.offerId} card={card} locale={locale} />)}</div> : <EmptyState>{offerResult.status === "rejected" ? m.offersUnavailable : m.offersEmpty}</EmptyState>}
+      <p className="aurora-data-note">{m.offersNote}</p>
+    </section>
+    <section id="how-it-works" className="aurora-section aurora-divider"><p className="aurora-eyebrow">{m.howEyebrow}</p><h2>{m.howTitle}</h2><div className="aurora-steps">{m.steps.map(step => <article key={step.number}><p className="aurora-step-num">{step.number}</p><h3>{step.title}</h3><p>{step.lead}</p></article>)}</div></section>
+    <RebateLedgerDemo locale={locale} />
+    <section id="faq" className="aurora-section aurora-divider aurora-faq"><div><p className="aurora-eyebrow">{m.faqEyebrow}</p><h2>{m.faqTitle}</h2><p>{m.faqLead}</p></div><div>{m.questions.map((question, index) => <details key={question.title} open={index === 0}><summary>{question.title}</summary><p>{question.answer}</p></details>)}</div></section>
+  </main>;
 }
 
 /**
@@ -239,10 +172,10 @@ export async function ExchangesContent({ locale }: { locale: Locale }) {
   const messages = getMessages(locale);
   const cards = await listPublishedOfferCards(locale);
   return (
-    <main className="mx-auto max-w-6xl px-6 py-16">
+    <main id="main-content" className="mx-auto max-w-6xl px-6 py-16">
       <Eyebrow>{messages.exchanges.eyebrow}</Eyebrow>
       <h1 className="text-4xl font-bold tracking-tight text-foreground">{messages.exchanges.title}</h1>
-      <div className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+      <div className="mt-10 aurora-offer-grid">
         {cards.map((card) => <OfferCard key={card.offerId} card={card} locale={locale} />)}
       </div>
       {!cards.length && (
@@ -260,7 +193,7 @@ export async function ExchangeContent({ locale, slug }: { locale: Locale; slug: 
   if (!exchange) notFound();
   const offerCards = await getExchangeOfferCards(slug, locale);
   return (
-    <main className="mx-auto max-w-6xl px-6 py-16">
+    <main id="main-content" className="mx-auto max-w-6xl px-6 py-16">
       <Eyebrow>{messages.exchange.eyebrow}</Eyebrow>
       <h1 className="text-4xl font-bold tracking-tight text-foreground">{exchange.name}</h1>
       <p className="mt-4 max-w-2xl text-lg text-muted-foreground">{exchange.description}</p>
@@ -276,7 +209,7 @@ export async function GuidesContent({ locale }: { locale: Locale }) {
   const messages = getMessages(locale);
   const guides = await listPublishedGuides(locale);
   return (
-    <main className="mx-auto max-w-6xl px-6 py-16">
+    <main id="main-content" className="mx-auto max-w-6xl px-6 py-16">
       <Eyebrow>{messages.guides.eyebrow}</Eyebrow>
       <h1 className="text-4xl font-bold tracking-tight text-foreground">{messages.guides.title}</h1>
       <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -305,7 +238,7 @@ export async function GuideContent({ locale, slug }: { locale: Locale; slug: str
   const guide = await getPublishedGuide(slug, locale);
   if (!guide) notFound();
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
+    <main id="main-content" className="mx-auto max-w-3xl px-6 py-16">
       <Eyebrow>{messages.guide.eyebrow}</Eyebrow>
       <h1 className="text-4xl font-bold tracking-tight text-foreground">{guide.title ?? guide.slug}</h1>
       <p className="mt-6 text-lg leading-relaxed text-muted-foreground">{guide.content ?? messages.guide.comingSoon}</p>

@@ -2,7 +2,7 @@
 
 - **Status:** Draft v2.3 (UID-first: no customer accounts; cashback lookup by exchange + UID;
   email OTP via Resend + UID session)
-- **Last updated:** 2026-09-26
+- **Last updated:** 2026-10-14
 - **Derives from:** `requirements.md` (Draft v0.9), `design.md` (Draft v1.0)
 
 ## Mandatory: follow `.kiro/steering/` before every task
@@ -45,6 +45,9 @@ numbers are stable identifiers cited in code and docs, not an execution order.
 - **Phase 4** — Bybit activity API sync is implemented; MEXC connector code is
   ready for Docker integration and live data reconciliation. Optional SSE and
   dimensional partitioning remain deferred.
+- **Phase 5 — Public UI:** Dark Aurora đã chốt; Task 40 triển khai độc lập với
+  payout Task 39. #23–24 đã chốt theo plan; 40.1–40.4 đã có code và checks Docker đạt.
+  40.5 còn chờ visual QA; đổi tên (#22) không chặn UI.
 
 ### Current status (2026-09-30)
 
@@ -133,6 +136,9 @@ flowchart TD
   T32 --> T33[33 Raw landing layer]
   T16 --> T20
   T16 --> T21[21 Optional SSE - deferred]
+  T5 --> T40[40 Dark Aurora public UI - planned]
+  T23 --> T40
+  T25 --> T40
 ```
 
 ```json
@@ -156,6 +162,14 @@ flowchart TD
     { "wave": 16, "tasks": ["32"] },
     { "wave": 17, "tasks": ["33"] },
     { "wave": 18, "tasks": ["21"], "deferred": true }
+  ],
+  "workstreams": [
+    {
+      "name": "Dark Aurora public UI",
+      "tasks": ["40"],
+      "dependsOn": ["5", "23", "25"],
+      "pendingDecisions": {}
+    }
   ]
 }
 ```
@@ -837,7 +851,101 @@ flowchart TD
   - Verify web build on Docker and page navigation behavior.
   - _Requirements: 18.11–18.12; Design: Admin shell — Report readability and navigation_
 
+- [x] 39. Auto payout skeleton: payout wallet config + readiness only (Req 21, draft)
+  - Add worker-only env vars `PAYOUT_*` to `.env`/`.env.example`; blank the payout keys
+    in the web container (`infra/docker-compose.yml`).
+  - `packages/core/src/payout/config.ts`: network registry ETHEREUM/BSC/SOLANA, key/RPC/
+    daily-limit validation, secret-free `payoutReadiness()`; mainnet blocked outside
+    production; `enabled` is always false until a sender exists.
+  - `packages/core/src/payout/sender.ts`: `PayoutSender` port (prepare/broadcast/lookup), no implementation.
+  - Worker logs `payout_readiness` at start. Unit tests use synthetic keys only.
+  - Not included: DB model/migration, SDK, signing, sending, withdrawal route changes, test transactions.
+  - _Requirements: 21.10, 21.12 (draft); Design: Job queue — Lịch thanh toán và cơ chế ký_
+
+### Phase 5 — Dark Aurora public UI (Req 19–20)
+
+- [ ] 40. Triển khai giao diện public Dark Aurora đã chốt
+  - Tham chiếu: `design.md` → Components/apps/web — Giao diện và tên website;
+    `docs/dark-aurora-ui-plan.md`; mockup local `mockups/dark-aurora.html`.
+  - Dependency: Tasks 5, 23, 25 hiện có. Không phụ thuộc Task 39/payout hoặc
+    Optional SSE Task 21. #23–24 đã chốt khi triển khai plan; QA calculator trong 40.5 chạy sau 40.3.
+  - Giữ tên Cashback Hub và English-only; đổi tên ở #22 không chặn UI.
+  - [x] 40.0 Đồng bộ spec và kế hoạch với hướng giao diện đã chọn.
+    - Ghi nhận #25 đã chốt, Req 20.7, sửa Styling và thứ tự section trong design;
+      ban đầu giữ #22–24 mở; khi triển khai plan chốt #23–24 / Req 19.8, giữ #22 mở.
+      Hoàn thành tài liệu 2026-10-14,
+      không có nghĩa UI ứng dụng đã triển khai.
+    - _Requirements: 20.1, 20.7; Design: Styling; Giao diện và tên website_
+  - [x] 40.1 Public shell, theme, navigation và hero.
+    - Dependency: 40.0. Scope theme Dark Aurora cho public routes, giữ admin tokens/shell;
+      dùng Tailwind/component primitives hiện có. Header/footer/metadata giữ Cashback Hub.
+    - Menu mobile có control dùng được bằng bàn phím; Wallet dẫn `/withdraw` thay
+      link `/me/wallet` chưa có route; giữ URL public hiện có và LocaleProvider.
+    - Giữ hero/hình ví cũ và hai thẻ nổi, nhãn minh họa; calculator sẽ nằm bên dưới
+      toàn bộ hình ví, không thay hero bằng calculator.
+    - _Requirements: 4.1, 20.1–20.7; Design: Giao diện và tên website_
+  - [x] 40.2 Logo, published offers và các section nội dung.
+    - Dependency: 40.1. Dải logo local, deduplicate theo exchange ID; dữ liệu seed
+      hiện có Bybit/Binance/MEXC. Cards rộng ba cột desktop, một cột mobile.
+    - Giữ SSR và `listPublishedOfferCards()`, `logoUrl`, conditions, offerId/linkId;
+      tỷ lệ từ published data, không hard-code 30/40/35 hoặc ép luôn chỉ ba offers.
+    - Đồng bộ exchanges/detail/guides; How it works, FAQ/footer dẫn route/anchor
+      tồn tại. Giữ `/go/{linkId}` và quy tắc ghép referral ở core.
+    - Giữ ledger generator/badge Req 17 sau How it works; bỏ stats người dùng/quốc gia
+      chưa có nguồn. Thiếu data thì empty/unavailable, không lấy mockup làm fallback.
+    - _Requirements: 1.1–1.2, 7.3, 17.1–17.7, 20.1–20.3, 20.6; Design: Exchange logo assets; Online Rebate Ledger; Giao diện và tên website_
+  - [x] 40.3 Opportunity Check — mô hình #23–24 đã chốt theo plan.
+    - Dependency: 40.0, 40.2 và mô hình đầu vào/nguồn tỷ lệ/kỳ đã được chốt trong
+      requirements/design: phí/tháng USDT, commission assumption, published offer share,
+      kết quả tháng/12 tháng, fixed-point decimal và rounding theo Req 19.8.
+    - Tách hàm tính/validation khỏi client component; dùng thập phân, chỉ làm tròn
+      lúc hiển thị. Share đọc published offer, chọn đúng offer khi một sàn có nhiều offers.
+    - Calculator nhận props server, không gọi/lưu input lên server, không nhập core/DB
+      vào client, không ghi ví hoặc làm offer SSR chờ JS.
+    - Kết quả lớn, viền/glow cam, copy tiếng Anh nhấn mạnh giá trị tiềm năng;
+      giữ giả định, công thức, điều kiện và không nhận lại phí quá khứ. Input lỗi
+      phải xóa kết quả cũ; ước tính không trở thành available balance.
+    - _Requirements: 19.1–19.7, 20.1–20.3, 20.6–20.7; Design: Bảng tính tiền hoàn phí bị bỏ lỡ; Giao diện và tên website_
+  - [x] 40.4 Restyle lookup và nối Wallet hiện có.
+    - Dependency: 40.1; làm độc lập với 40.3. Giữ `POST /api/lookup`, response schema,
+      pending/available theo asset, transactions đã attribution và timestamps.
+    - Kiểm tra loading/no data/error/429, UID giữ số 0 đầu; thay sàn/UID xóa kết quả
+      cũ và chỉ hiển thị kết quả của lựa chọn đã submit.
+    - CTA `/withdraw?exchangeId=...&uid=...` giữ context; không đổi OTP/session,
+      holding period, xét duyệt lần rút đầu hoặc logic payout.
+    - _Requirements: 14.1–14.7, 15, 16, 20.1–20.4, 20.6; Design: lookupService; Giao diện và tên website_
+  - [ ] 40.5 QA và bàn giao UI ứng dụng — automated checks đạt, visual QA còn mở.
+    - Bằng chứng cập nhật 2026-10-14: Docker rebuild source mới, web unit/DOM/HTTP
+      integration 26/26, core lookup-version 4/4. Web/Postgres healthy, local port 3000
+      giữ chạy theo yêu cầu. Synthetic UID/wallet/commission fixtures đã dọn.
+    - DOM tests mới (`apps/web/test/aurora-components.test.mjs`) kiểm chứng đổi sàn/
+      nhiều offer/props refresh, invalid/zero inputs, ID references, lookup loading/
+      no-data/network/JSON/schema/429, late response/unmount, Wallet context và
+      menu Escape/focus. Đã sửa selection stale, ID reference thiếu và lỗi kỹ thuật
+      hiện ra UI. HTTP rate-limit probe dùng IP IPv6 documentation ngẫu nhiên riêng
+      mỗi run để không trùng budget của người dùng hoặc run trước.
+    - CUA không có browser khả dụng. Chưa kiểm chứng ảnh 360–1440px, thao tác browser/
+      keyboard hoặc contrast bằng browser audit; không đánh dấu mục này hoàn thành
+      trước visual QA/người dùng kiểm tra local.
+    - Dependency: 40.1, 40.2, 40.4; QA calculator/chốt toàn bộ Task 40 cần 40.3.
+    - Kiểm tra tại 360/390/768/1024/1440px, không cuộn ngang; hero giữ hình cũ,
+      calculator ở bên dưới, logo/amount không bị cắt; chụp ảnh đối chiếu mockup.
+    - Kiểm tra menu/keyboard/focus, labels, contrast WCAG 2.1 AA, reduced motion,
+      ledger badge và admin giữ theme; English copy/brand nhất quán.
+    - Test calculator theo mô hình được chốt: công thức, đơn vị, 0, decimals,
+      input rỗng/âm/không hữu hạn, tỷ lệ ngoài 0–100, đổi offer, xóa stale result.
+    - Test lookup/no data/nhiều asset/lỗi/429, UID `001234`, đúng context `/withdraw`;
+      offers render trước hydrate, không fallback sang demo khi DB lỗi, referral URL đúng.
+    - Chạy typecheck/lint/build theo workflow repo; check có DB/web integration dùng
+      stack Docker theo steering. Ghi kết quả và ảnh; không đánh dấu hoàn thành
+      dựa trên việc chỉ sửa mockup/tài liệu, không tự deploy.
+    - _Requirements: 1.1, 14, 15, 16, 17, 19.1–19.7, 20.1–20.7; Design: Testing Strategy — Kiểm chứng Req 19–21_
+
 ## Notes
+
+- Phương án các nhóm còn mở sau UI: `docs/remaining-work-plan.md` (2026-10-14).
+  Đề xuất Task 18 Docker end-to-end trước mở rộng connector/payout; chưa đánh dấu
+  các task đó hoàn thành hoặc biến các quyết định mở thành hành vi đã duyệt.
 
 - **[PENDING] commission dedup key** (Open decision #11): finalize
   `CommissionRecord.dedupKey` per adapter in Task 11.1 once a nonzero UID-level
@@ -885,6 +993,11 @@ flowchart TD
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | tasks.md | QA tiếp Task 40: 11 DOM state tests, sửa calculator/lookup/ARIA, rebuild local; web 26 và core lookup 4 tests đạt; lập phương án các nhóm còn mở | Người dùng yêu cầu hoàn tất kiểm tra UI rồi rà phương án triển khai phần khác | updated |
+| 2026-10-14 | tasks.md | Review Task 40: hiển thị % share chính xác (`sharePercent`, bỏ lỗi float như 0.57 → 56.99999999999999%), brand lấy từ `site.name`, logo trang chi tiết không đọc trùng tên, xóa stats placeholder và message `home.*` không còn dùng; web typecheck/lint/build và 5 unit test đạt | Clean code sau khi triển khai UI | updated |
+| 2026-10-14 | tasks.md | Triển khai 40.1–40.4, chốt calculator #23–24; Docker build/typecheck/lint và 18 tests đạt, giữ localhost để kiểm tra; 40.5 visual QA còn mở | Người dùng yêu cầu triển khai plan và kiểm tra Docker local trước khi tắt | updated |
+| 2026-10-14 | tasks.md | Thêm Task 40 Dark Aurora với shell/hero, logo/offer, calculator, lookup và QA; 40.0 tài liệu hoàn thành, code còn unchecked; dependency tách payout, chỉ 40.3 chờ #23–24 | Triển khai theo giao diện đã chốt và không nhầm mockup với UI tích hợp | added |
+| 2026-10-13 | tasks.md | Task 39: khung cấu hình ví chi trả và readiness (không gửi giao dịch) | Người dùng yêu cầu dựng khung trước, test giao dịch để sau | added |
 | 2026-10-11 | tasks.md | Implement Binance GET-only connector, worker readiness and admin fetched counts; verify on Docker | Operator requested the admin/worker GET flow | added |
 | 2026-09-30 | tasks.md | Thêm Task 20.6 connector MEXC Affiliate referral activity | Mở rộng API sync theo kiến trúc hiện có | added |
 | 2026-09-15 | tasks.md | Tạo kế hoạch Phase 0–4 (Overview, DAG, Notes); hoàn thành Phase 0: scaffold + boundary lint, Prisma versioned commission/wallet, contracts, test Postgres, seed, public SSR, redirect + click, interim auth, admin content, job queue có lease fencing | Hoàn tất spec và nền tảng | added |

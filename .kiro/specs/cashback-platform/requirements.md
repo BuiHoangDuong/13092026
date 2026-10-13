@@ -3,7 +3,7 @@
 **Cashback Affiliate Platform**
 
 - **Status:** Draft v0.9 (UID-first; common adapter base, drift policy, change-only API writes)
-- **Last updated:** 2026-09-26
+- **Last updated:** 2026-10-14
 - **Access model:** **UID-first, no customer accounts.** A visitor enters exchange + UID and
   immediately sees that UID's cashback amounts. Ownership is asserted only at withdrawal:
   the first withdrawal binds an email to that (exchange, UID) via a 6-digit OTP, and a
@@ -23,6 +23,8 @@
 > runbook (how to click through the live product) lives in `happy-path-scenarios.md`.
 
 ---
+
+**Cách rà soát specs (2026-10-14):** Người dùng tự đọc và báo nội dung cần sửa; không hỏi xác nhận ở từng bước. Dark Aurora và calculator theo plan (#23–25, Req 19–20) đã triển khai Docker local; đổi tên (#22) và Req 21 còn đang rà soát. Hoàn thiện requirements → design → tasks trước code; trạng thái kiểm tra ở Task 40.
 
 ## Introduction
 
@@ -479,6 +481,8 @@ status, so that I know what is earned, what is available, and what has been with
 **User Story:** As a UID claimant, I want to withdraw the UID's available cashback to a
 crypto address, so that I receive the earnings with minimal delay.
 
+> **Đề xuất liên quan đang rà soát:** Req 21 bổ sung coin/mạng, ngưỡng USD và gửi tự động. Khi triển khai, cập nhật đồng bộ tiêu chí 9.3, 9.5, 9.6 và 9.10 để phân biệt duyệt yêu cầu, gửi giao dịch, xác nhận và hủy; giữ first review. Mâu thuẫn cần xử lý khi chốt: 9.5 dùng "at or below" ngưỡng theo số lượng tài sản, còn 21.3 dùng "nhỏ hơn 20 USD"; 9.10 cho hủy mọi trạng thái trước `PAID`, nhưng sau broadcast không thể hủy giao dịch on-chain. Luồng hiện hành dưới đây chưa được thay bằng luồng tự động.
+
 #### Acceptance Criteria
 1. WHILE no valid UID session exists for the target UID account, THE SYSTEM SHALL reject
    every withdrawal request, cancel, and history read for it (Requirement 15).
@@ -555,6 +559,8 @@ withdrawals, so that I can operate the platform.
 ### Requirement 12: Background worker & job processing
 **User Story:** As the operator, I want long-running work handled by a worker, so that
 web requests stay fast and imports/attribution run reliably.
+
+> **Đề xuất liên quan đang rà soát:** Req 21 cần tác vụ thanh toán và đối soát. Cách chạy theo ngày, giờ/múi giờ và xử lý ngày bỏ lỡ nằm ở Open decisions; chưa thêm lịch mặc định.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL run the worker as a long-running Node.js process that polls for
@@ -853,6 +859,55 @@ tab) to do several jobs without losing my place.
     reset pagination to page one; a failed page request SHALL leave the current
     page and navigation history intact.
 
+### Requirement 19: Bảng tính tiền hoàn phí bị bỏ lỡ
+
+**User Story:** Là khách truy cập, tôi muốn ước tính khoản hoàn phí có thể đã bỏ lỡ để hiểu giá trị của ưu đãi referral đủ điều kiện.
+
+#### Acceptance Criteria
+1. WHEN khách nhập các giả định tính hoàn phí, THE SYSTEM SHALL hiển thị kết quả ước tính cùng đầu vào, đơn vị tiền và công thức để người dùng kiểm tra được cách tính.
+2. IF bảng tính dùng phí giao dịch làm đầu vào, THE SYSTEM SHALL phân biệt tỷ lệ hoa hồng affiliate trên phí và tỷ lệ hoàn cho khách trên hoa hồng; công thức là `phí giao dịch × tỷ lệ hoa hồng affiliate × tỷ lệ hoàn cho khách`, với tỷ lệ quy về số thập phân.
+3. WHEN người dùng chọn một kỳ ước tính được hỗ trợ, THE SYSTEM SHALL hiển thị bảng phí giao dịch và khoản hoàn phí ước tính cho kỳ đó.
+4. IF đầu vào bắt buộc bị trống, không phải số hữu hạn, âm hoặc có tỷ lệ ngoài khoảng 0–100%, THE SYSTEM SHALL báo lỗi liên quan và không hiển thị kết quả tiền hợp lệ.
+5. THE SYSTEM SHALL phân biệt ước tính với số dư ví thực tế; bảng tính không tạo tiền ghi có hoặc cam kết được thanh toán.
+6. IF dùng số liệu mẫu hoặc giả định phí/tỷ lệ không đổi theo thời gian, THE SYSTEM SHALL ghi rõ giả định và điều kiện referral áp dụng.
+7. THE SYSTEM SHALL tính toán trên trình duyệt, không gửi hay lưu đầu vào bảng tính lên server, và không làm chậm nội dung ưu đãi render server-side theo Requirement 1.1.
+8. THE SYSTEM SHALL dùng phí giao dịch hàng tháng bằng USDT (0–1,000,000, tối đa 8 chữ số thập phân), giả định tỷ lệ affiliate commission có thể chỉnh (0–100%, mặc định minh họa 50%), và cashback share của offer đã công bố được chọn; hiển thị ước tính tháng và 12 tháng với giả định không đổi, làm tròn half-up đến 2 chữ số thập phân chỉ khi hiển thị. WHEN một sàn có nhiều offers, THE SYSTEM SHALL cho chọn offer cụ thể; IF không có published offer hợp lệ, THE SYSTEM SHALL không hiển thị kết quả tiền hợp lệ.
+
+### Requirement 20: Giao diện Dark Aurora và tên website tiếng Anh (hướng giao diện đã chốt)
+
+**User Story:** Là khách truy cập, tôi muốn giao diện rõ ràng và tên website nhất quán để dễ tìm ưu đãi, tính hoàn phí và truy cập ví.
+
+#### Acceptance Criteria
+1. THE SYSTEM SHALL tổ chức trang chủ để khách dễ tìm phần giới thiệu, tra cứu exchange + UID, bảng tính và các ưu đãi đã công bố.
+2. THE SYSTEM SHALL cung cấp bố cục dùng được từ chiều rộng 360px đến 1440px không cuộn ngang, có điều hướng mobile, thẻ ưu đãi dễ đọc và khoảng cách hiển thị nhất quán.
+3. THE SYSTEM SHALL gắn nhãn trường nhập, hiển thị focus bàn phím, đạt độ tương phản chữ WCAG 2.1 AA và tôn trọng `prefers-reduced-motion`.
+4. WHEN khách chọn Wallet, THE SYSTEM SHALL mở luồng ví/rút tiền hiện có, giữ kiểm soát OTP và UID session.
+5. THE SYSTEM SHALL dùng tên tiếng Anh đã được duyệt nhất quán ở header, footer và metadata.
+6. THE SYSTEM SHALL giữ giao diện sản phẩm bằng tiếng Anh theo Requirement 4; specs tiếng Việt không thay đổi locale website.
+7. THE SYSTEM SHALL dùng hướng Dark Aurora cho giao diện public, giữ hero và hình ví minh họa của mockup đã chọn, đặt khung `THE CASHBACK OPPORTUNITY CHECK` nổi bật ngay bên dưới hình ví, rồi tới dải logo sàn, tra cứu exchange + UID và ưu đãi đã công bố; hình ví và kết quả ước tính SHALL có nhãn phân biệt với số dư tài khoản thật.
+
+### Requirement 21: Thanh toán ETH/BNB/SOL và kiểm thử theo ngày (đề xuất)
+
+**User Story:** Là người vận hành, tôi muốn khoản rút đủ điều kiện dưới 20 USD được thanh toán tự động, có kiểm thử theo ngày, để giảm xử lý thủ công khoản nhỏ.
+
+#### Acceptance Criteria
+1. THE SYSTEM SHALL hỗ trợ coin gốc theo đúng cặp `ETH/Ethereum mainnet`, `BNB/BSC mainnet`, `SOL/Solana mainnet`; không tự thay bằng USDT hoặc token được bọc.
+2. WHEN người nhận cung cấp địa chỉ, THE SYSTEM SHALL kiểm tra định dạng theo mạng được chọn, phân biệt địa chỉ EVM với địa chỉ Solana và từ chối địa chỉ EVM có chữ hoa/thường lẫn lộn nhưng sai checksum EIP-55.
+3. WHEN xét thanh toán tự động, THE SYSTEM SHALL xác định giá trị USD bằng tỷ giá hợp lệ theo chính sách đã duyệt; chỉ giá trị **nhỏ hơn 20 USD** đủ điều kiện. Đúng 20 USD hoặc cao hơn xử lý thủ công.
+4. IF thiếu tỷ giá hợp lệ hoặc tỷ giá quá hạn theo chính sách, THE SYSTEM SHALL không tự động gửi tiền.
+5. THE SYSTEM SHALL giữ kiểm soát hiện hành: chỉ rút `available`, giữ tiền trong `reserved`, yêu cầu UID session, chặn rút khi còn `receivable`, và duyệt thủ công lần rút đầu theo Req 9.5.
+6. WHEN thực hiện thanh toán tự động, THE SYSTEM SHALL chỉ xử lý yêu cầu rút đủ điều kiện; không gửi yêu cầu đã hủy, bị từ chối hoặc đã trả tiền.
+7. THE SYSTEM SHALL không gửi trùng cùng khoản rút khi retry, chạy đồng thời hoặc khôi phục sự cố; kết quả gửi chưa rõ phải đối soát trước khi thử giao dịch mới.
+8. WHEN giao dịch đang thực hiện hoặc chưa rõ kết quả, THE SYSTEM SHALL ngăn việc vừa giải phóng khoản tiền giữ chỗ vừa thanh toán khoản đó.
+9. WHEN giao dịch đạt điều kiện xác nhận của mạng theo chính sách đã duyệt, THE SYSTEM SHALL ghi `PAID`, chuyển `reserved → withdrawn` đúng một lần và lưu tham chiếu giao dịch. Broadcast chưa đủ để ghi nhận đã trả.
+10. THE SYSTEM SHALL lưu lịch sử quyết định thanh toán, tỷ giá/thời điểm định giá, số lượng coin, mạng, địa chỉ và kết quả giao dịch; không lộ thông tin ký bí mật qua UI, API hoặc log.
+11. THE SYSTEM SHALL giữ số dư theo tài sản. Nếu hoàn phí ghi nhận bằng USDT, việc trả ETH/BNB/SOL phải có chính sách chuyển đổi và hạch toán được duyệt; không tự chuyển số dư.
+12. WHILE thiếu cấu hình bắt buộc theo design đã duyệt, THE SYSTEM SHALL tắt gửi tự động và báo phần thiết lập còn thiếu cho người vận hành.
+13. THE SYSTEM SHALL có kiểm thử nhiều ngày cho ba mạng: dưới/bằng/trên 20 USD, first review, tỷ giá hết hạn, chạy trùng, trạng thái chưa xác nhận và sự cố giữa các bước. Kiểm thử local chạy Docker theo steering, không gửi mainnet; trước mainnet phải chạy đạt trên testnet (Ethereum Sepolia, BSC testnet, Solana devnet) bằng ví và secret riêng của testnet.
+14. THE SYSTEM SHALL áp hạn mức chi tự động theo mạng cho mỗi ngày thanh toán; IF khoản rút làm vượt hạn mức hoặc ví chi trả không đủ coin + phí mạng, THEN THE SYSTEM SHALL không gửi tự động, giữ `reserved` và chuyển xử lý thủ công. Giá trị hạn mức theo Open decision #31.
+15. THE SYSTEM SHALL cho admin tạm dừng/bật lại gửi tự động theo từng mạng; WHILE tạm dừng, THE SYSTEM SHALL không broadcast giao dịch mới nhưng vẫn đối soát giao dịch đã gửi.
+16. IF số coin cần gửi nhỏ hơn mức tối thiểu của mạng theo design đã duyệt (gồm mức rent-exempt khi gửi SOL tới tài khoản Solana chưa tồn tại), THEN THE SYSTEM SHALL không gửi tự động và báo lý do cho admin.
+
 ---
 
 ## Non-functional requirements
@@ -1000,9 +1055,9 @@ tab) to do several jobs without losing my place.
 | 13 | Admin auth solution | Pending | Covers **admin** auth only (end users have no accounts). Interim email+password + `Session` stays until a provider is chosen. |
 | 20 | Outbound email transport | **Resolved (2026-09-16): Resend** | Remaining prerequisites are operational, not design: verify an operator-owned domain with SPF/DKIM (the shared testing domain only delivers to the Resend account owner), set API key + from-address env vars, and confirm the send quota fits expected withdrawal volume (Req 16). |
 | 21 | Ownership dispute handling | **Accepted as-is (2026-09-16)** | First claimant wins; there is no ownership proof and no recourse for a displaced true owner. Revisit if losses occur or an exchange-side proof becomes available. |
-| 19 | Compliance (KYC/AML, retention, GDPR) | Unclear | Confirm payout KYC and data-retention obligations. |
+| 19 | Compliance (KYC/AML, retention, GDPR) | Unclear | Confirm payout KYC and data-retention obligations. **Chặn Req 21 trên mainnet:** gửi coin tự động không qua người duyệt làm tăng rủi ro AML; cần chốt nghĩa vụ KYC/sàng lọc địa chỉ trước khi bật. |
 | — | Cashback rate & holding period values | Rule decided (offer-rate → exchange-default, snapshot at attribution); values pending | Confirm default % and holding-period length. |
-| — | Withdrawal auto-approval threshold & assets/networks | Proposed | Confirm threshold, supported assets (USDT?) and networks. |
+| — | Ngưỡng tự động và tài sản/mạng | Luồng hiện hành giữ nguyên; đề xuất mới ở Req 21 | Người dùng chọn ETH/Ethereum, BNB/BSC, SOL/Solana mainnet và ngưỡng dưới 20 USD; cách định giá, áp ngưỡng và chuyển đổi xem Open decisions #26–30. |
 | — | Lookup rate limit values | Rule decided (per-IP) | Confirm requests-per-window; proposed 5/min, 30/hour per IP. |
 | — | OTP tuning values | Rule decided (hashed, single-use, attempt- and send-limited) | Confirm TTL (proposed 5 min), max wrong attempts (proposed 5), resend cooldown, per-UID daily send cap. |
 | — | MEXC Referral Data semantics | XLSX sample received 2026-09-25: 46 unique UIDs, sheet period 2026-09-18 through 2026-09-25, all volume/earnings zero | Confirm source timezone and whether `Trading volume`/`Your Earnings` are period values with a nonzero export before treating them as financial evidence. |
@@ -1011,6 +1066,17 @@ tab) to do several jobs without losing my place.
 | — | Bybit `registerTime` / `isKyc` | Available per UID in `aff-user-list`; excluded by Req 6.20 | Store `registerTime` only if attribution needs sign-up date vs click; `isKyc` needs a stated purpose. |
 | — | Bybit key IP binding | Current key: read-only, Affiliate only, IP `*`, expires 2026-12-26 | Provide stable Railway egress IP and rebind before production sync (Req 13.12). |
 | — | Enabling a second locale | English-only decided; Vietnamese excluded | If a market is ever requested, confirm the locale plus who supplies translated UI copy and content. |
+| 22 | Tên tiếng Anh (Req 20) | Đang mở | Đề xuất `RebateFlow`; chưa được người dùng duyệt. Trước khi chốt: kiểm tra tên miền và trùng thương hiệu/nhãn hiệu |
+| 23 | Đầu vào bảng tính (Req 19) | Đã chốt theo plan triển khai Dark Aurora | Phí/tháng bằng USDT; affiliate commission là giả định có thể chỉnh, mặc định minh họa 50%; cashback share lấy từ published offer đã chọn. Không suy ra tỷ lệ commission đã xác minh, không thêm chế độ volume trong đợt này. Giới hạn và rounding theo Req 19.8. |
+| 24 | Kỳ ước tính (Req 19) | Đã chốt theo plan triển khai Dark Aurora | Kết quả tháng và 12 tháng tương tự (×12), giả định phí và tỷ lệ không đổi; không quy đổi USD/USDT hoặc gán thành số dư ví. |
+| 25 | Hướng giao diện (Req 20) | Đã chốt: Dark Aurora | Giữ hero/hình ví cũ; Opportunity Check nổi bật ngay bên dưới; logo Bybit, Binance, MEXC; UI tiếng Anh. Đã triển khai Docker local; mô hình tính theo #23–24 đã chốt, tên mới vẫn thuộc #22. |
+| 26 | Chạy theo ngày (Req 21) | Đang mở | Chốt đợt trả/ngày hay chỉ kiểm thử theo kỳ ngày; giờ, múi giờ, xử lý ngày bỏ lỡ |
+| 27 | Ngưỡng 20 USD (Req 21) | Đang mở | Theo từng khoản hay tổng UID/ngày; có tính phí mạng vào ngưỡng không |
+| 28 | Tỷ giá (Req 21) | Đang mở | Nhà cung cấp, tuổi báo giá, thời điểm khóa giá |
+| 29 | Tài sản sổ ví (Req 21) | Đang mở | Coin gốc hay chuyển từ USDT; nếu chuyển cần chốt phí, tỷ giá, hạch toán |
+| 30 | Vai trò MetaMask (Req 21) | Đang mở | Ví nguồn chi trả hay ví nhận test; cách cấp quyền ký cho worker. Khuyến nghị: không dùng MetaMask/seed cá nhân làm ví chi trả; tạo ví chi trả riêng cho từng môi trường (testnet ≠ mainnet), chỉ giữ số dư nhỏ đủ hạn mức ngày, nạp thêm thủ công từ ví lạnh |
+| 31 | Phí và xác nhận (Req 21) | Đang mở | Ai chịu phí, ngân sách gas, điều kiện xác nhận, hạn mức chi/ngày, mức tối thiểu mỗi mạng (Req 21.14–16). Đề xuất để duyệt: Ethereum/BSC dùng block tag `finalized`, Solana dùng commitment `finalized`. Phí gas Ethereum mainnet có thể chiếm tỷ lệ đáng kể của khoản < 20 USD |
+| 32 | Test mainnet (Req 21) | Đang mở | Địa chỉ công khai, số tiền test và kế hoạch chạy sau khi local và testnet (Req 21.13) đạt |
 
 ---
 
@@ -1031,6 +1097,7 @@ tab) to do several jobs without losing my place.
   with per-exchange admin intervals; MEXC day totals await live reconciliation.
   Add other official connectors after permissions and data semantics are verified.
   SSE remains optional.
+- **Phase 5 — Dark Aurora/Calculator triển khai local, payout còn rà soát:** Req 19–20 / Task 40 đã có code và kiểm tra tự động Docker, chờ visual QA; giữ Cashback Hub hiện tại, đổi tên chờ #22. Thanh toán tự động ETH/BNB/SOL (Req 21) chỉ bắt đầu sau khi chốt Open decisions #19 và #26–32, chạy đạt local → testnet rồi mới mainnet.
 
 ---
 
@@ -1038,7 +1105,7 @@ tab) to do several jobs without losing my place.
 - Any non-English locale, including Vietnamese (Requirement 4). Only the i18n seams ship.
 - Real-time exchange event streaming and market-data WebSockets.
 - Bot filtering / unique-click analytics (answer 18).
-- Automated on-chain payout execution (manual in MVP).
+- Automated on-chain payout execution (manual in MVP). Req 21 là đề xuất sau MVP (Phase 5), không thay đổi phạm vi MVP.
 - Multi-tier admin roles (single role — answer 14A).
 - End-user accounts (registration, username, password, password reset); end users are
   identified by UID + email OTP.
@@ -1070,6 +1137,10 @@ tab) to do several jobs without losing my place.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | requirements.md | Chốt #23–24 và Req 19.8 theo plan: phí/tháng USDT, commission assumption, published offer share, tháng/12 tháng, giới hạn/rounding | Người dùng yêu cầu triển khai plan và kiểm tra Docker local | updated |
+| 2026-10-14 | requirements.md | Ghi nhận #25 Dark Aurora đã chốt, thêm Req 20.7 về hero/hình ví và Opportunity Check bên dưới; giữ #22–24 mở và tách UI khỏi payout | Đồng bộ hướng giao diện người dùng đã chọn | updated |
+| 2026-10-13 | requirements.md | Review Req 19–21: thêm 19.7; làm đo được 20.2–20.3; thêm EIP-55 (21.2), testnet (21.13), hạn mức/tạm dừng/mức tối thiểu (21.14–16); Phase 5 và out-of-scope; gắn Open decisions #22–32 đúng Req; #19 chặn mainnet; nêu mâu thuẫn 9.5/9.10 | Bổ sung kiểm soát an toàn chi trả và tiêu chí kiểm chứng được | added/updated |
+| 2026-10-13 | requirements.md | Đưa Req 19–21 vào sau Req 18; gộp quyết định mở vào bảng hiện có; liên kết tác động Req 9/12 và làm rõ cách tự rà soát | Giữ cấu trúc specs theo thứ tự, không dùng phụ lục đề xuất riêng | added/updated |
 | 2026-10-11 | requirements.md | Req 13.2 allows Binance GET-only sync with empty responses and raw reconciliation data | Operator narrowed scope to API GET flow before switching affiliate account | updated |
 | 2026-10-07 | requirements.md | Req 13.8: exchange selector, per-exchange manual/scheduled settings and disabled preferences for unsupported connectors | Configure different frequencies without implying an OKX API integration exists | updated |
 | 2026-10-07 | requirements.md | Req 13.15: preserve MEXC reported zero, isolate web credentials and gate scheduled rollout on period reconciliation | Complete activity connector without losing zero UIDs or assuming daily semantics | updated |

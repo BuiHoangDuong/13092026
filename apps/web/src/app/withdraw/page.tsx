@@ -9,5 +9,5 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ e
   if (principal && ((query.exchangeId && query.exchangeId !== principal.exchangeId) || (query.uid && query.uid !== principal.uid))) principal = null;
   let exchanges: Array<{ id: string; name: string }> = []; let routes = {};
   try { exchanges = (await listPublishedExchanges()).map(x => ({ id: x.id, name: x.name })); routes = payoutRoutes(); } catch { /* Unavailable state is shown by the form. */ }
-  return <main className="mx-auto max-w-5xl px-6 py-12"><WithdrawalFlow exchanges={exchanges} routes={routes} initial={principal} exchangeId={query.exchangeId ?? ""} uid={query.uid ?? ""}/></main>;
+  return <main id="main-content" className="mx-auto max-w-5xl px-6 py-12"><WithdrawalFlow exchanges={exchanges} routes={routes} initial={principal} exchangeId={query.exchangeId ?? ""} uid={query.uid ?? ""}/></main>;
 }

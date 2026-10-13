@@ -74,6 +74,9 @@ services:
       MEXC_API_SECRET: ""
       BINANCE_AFFILIATE_API_KEY: ""
       BINANCE_AFFILIATE_API_SECRET: ""
+      # Payout wallet keys are worker-only (Req 21).
+      PAYOUT_EVM_PRIVATE_KEY: ""
+      PAYOUT_SOLANA_SECRET_KEY: ""
     ports: ["${WEB_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
