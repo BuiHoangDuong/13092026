@@ -133,6 +133,7 @@ enum SyncRunState {
 }
 
 enum SyncAuditAction {
+  PAUSE
   UPDATE_CONFIG
   RUN_NOW
   RESUME
@@ -405,6 +406,7 @@ model ExchangeSyncConfig {
   exchange             Exchange @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
   rootAccount          String
   enabled              Boolean  @default(false)
+  adminPaused          Boolean  @default(false)
   intervalMinutes      Int      @default(30)
   backfillDays         Int      @default(365)
   nextRunAt            DateTime?

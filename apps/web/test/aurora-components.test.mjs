@@ -22,7 +22,7 @@ const cache = path.join(appRoot, ".next", "component-tests");
 await mkdir(cache, { recursive: true });
 const bundlePath = path.join(cache, `aurora-${process.pid}.mjs`);
 const bundled = await build({
-  stdin: { contents: 'export { OpportunityCheck } from "./src/components/public/opportunity-check"; export { CashbackLookup } from "./src/components/cashback-lookup"; export { PublicShell } from "./src/components/public/public-shell";', resolveDir: appRoot, loader: "tsx" },
+  stdin: { contents: 'export { OpportunityCheck } from "./src/components/public/opportunity-check"; export { CashbackLookup } from "./src/components/cashback-lookup"; export { PublicShell } from "./src/components/public/public-shell"; export { SyncControls } from "./src/app/admin/sync-controls"; export { ConnectorSettings } from "./src/app/admin/connector-settings";', resolveDir: appRoot, loader: "tsx" },
   tsconfig: path.join(appRoot, "tsconfig.json"), bundle: true, write: false, platform: "node", format: "esm", jsx: "automatic",
   external: ["react", "react/*", "react-dom", "react-dom/*", "@cashback/contracts", "lucide-react"],
   plugins: [{ name: "next-route-test-boundary", setup(builder) {
@@ -33,7 +33,7 @@ const bundled = await build({
   } }]
 });
 await writeFile(bundlePath, bundled.outputFiles[0].contents);
-const { OpportunityCheck, CashbackLookup, PublicShell } = await import(pathToFileURL(bundlePath).href);
+const { OpportunityCheck, CashbackLookup, PublicShell, SyncControls, ConnectorSettings } = await import(pathToFileURL(bundlePath).href);
 const originalFetch = globalThis.fetch;
 const roots = new Set();
 after(async () => { for (const root of roots) await act(async () => root.unmount()); globalThis.fetch = originalFetch; window.close(); await unlink(bundlePath); });
@@ -168,4 +168,49 @@ test("mobile menu supports Escape/focus and does not apply Aurora to admin", asy
     globalThis.__auroraTestPath = "/admin/login"; await view.update(props);
     assert.equal(view.container.querySelector(".public-aurora"), null); assert.match(view.container.textContent, /Legacy admin/);
   } finally { globalThis.__auroraTestPath = "/"; await view.dispose(); }
+});
+
+const syncView = (patch = {}) => ({ configured: true, enabled: true, adminPaused: false, intervalMinutes: 60, nextRunAt: null, readiness: { ready: false, reason: "READINESS_STALE", checkedAt: null, expiresAt: null, ipWarning: false }, lastAttemptAt: null, lastSuccessAt: null, pausedReason: null, consecutiveFailures: 0, note: "Activity only", coverage: { from: null, to: null, days: 0 }, runs: [], ...patch });
+const syncProps = { exchangeId: "bybit", exchangeSlug: "bybit", exchangeName: "Bybit", apiSupported: true };
+const buttonNamed = (view, name) => { const button = [...view.container.querySelectorAll("button")].find(button => button.textContent === name); assert.ok(button, `Missing button ${name}`); return button; };
+test("pause/resume works with stale readiness, preserves drafts and disables duplicate actions", async () => {
+  const pending = deferred(); let paused = false; const posts = [];
+  globalThis.fetch = async (url, options) => { if (!options?.method) return response(syncView({ adminPaused: paused })); posts.push(url); if (url.endsWith("/pause")) return pending.promise; paused = false; return response(syncView()); };
+  const view = await render(SyncControls, syncProps);
+  try {
+    assert.equal(buttonNamed(view, "Pause sync").disabled, false);
+    const intervalSelect = view.q('option[value="720"]').parentElement;
+    await change(intervalSelect, "720");
+    await act(async () => buttonNamed(view, "Pause sync").click());
+    assert.equal(buttonNamed(view, "Pausing...").disabled, true); assert.equal(view.q("select").disabled, true);
+    paused = true; await act(async () => pending.resolve(response(syncView({ adminPaused: true }))));
+    assert.match(view.container.textContent, /Paused by admin/); assert.equal(buttonNamed(view, "Sync now").disabled, true);
+    assert.equal(intervalSelect.value, "720", "unsaved interval survives Pause");
+    assert.equal(buttonNamed(view, "Resume sync").disabled, false);
+    await act(async () => buttonNamed(view, "Resume sync").click());
+    assert.equal(intervalSelect.value, "720"); assert.deepEqual(posts, ["/api/admin/ingest/connectors/bybit/pause", "/api/admin/ingest/connectors/bybit/resume"]);
+  } finally { await view.dispose(); globalThis.fetch = originalFetch; }
+});
+test("failed Pause remains actionable and error pauses still require readiness", async () => {
+  globalThis.fetch = async (_url, options) => options?.method ? response({ error: { message: "Pause failed" } }, { status: 500 }) : response(syncView({ pausedReason: "SCHEMA_DRIFT" }));
+  const view = await render(SyncControls, syncProps);
+  try {
+    assert.equal(buttonNamed(view, "Resume after fix").disabled, true);
+    await act(async () => buttonNamed(view, "Pause sync").click());
+    assert.match(view.q('[role="alert"]').textContent, /Pause failed/); assert.equal(buttonNamed(view, "Pause sync").disabled, false);
+  } finally { await view.dispose(); globalThis.fetch = originalFetch; }
+});
+test("exchange selector isolates Pause and Resume state by exchange ID", async () => {
+  const paused = new Set(); const calls = [];
+  globalThis.fetch = async (url, options) => {
+    const id = url.split("/")[5];
+    if (options?.method) { calls.push(url); if (url.endsWith("/pause")) paused.add(id); else paused.delete(id); }
+    return response(syncView({ adminPaused: paused.has(id), intervalMinutes: id === "mexc" ? 30 : 60 }));
+  };
+  const view = await render(ConnectorSettings, { exchanges: [{ id: "bybit", slug: "bybit", name: "Bybit", apiSupported: true }, { id: "mexc", slug: "mexc", name: "MEXC", apiSupported: true }] });
+  try {
+    await act(async () => buttonNamed(view, "Pause sync").click());
+    await change(view.q("select"), "mexc"); assert.match(view.container.textContent, /MEXC sync settings/); assert.equal(buttonNamed(view, "Pause sync").disabled, false);
+    await change(view.q("select"), "bybit"); assert.equal(buttonNamed(view, "Resume sync").disabled, false); assert.deepEqual(calls, ["/api/admin/ingest/connectors/bybit/pause"]);
+  } finally { await view.dispose(); globalThis.fetch = originalFetch; }
 });

@@ -631,6 +631,14 @@ without a usable API.
    An interval change SHALL reset the next scheduled run for that exchange only.
    Manual mode SHALL prevent queued scheduled, backfill and reconciliation jobs
    from starting further automatic requests; an already running request may finish.
+   WHEN an admin selects an integrated exchange, THE SYSTEM SHALL provide `Pause sync`
+   and `Resume sync` for that exchange only. An admin pause SHALL persist separately
+   from error pauses, retain saved mode/interval, and block new scheduled/manual/resync
+   runs plus queued jobs; an already fetching day slice may finish, then the running
+   job SHALL stop before its next day. Readiness updates, key rotation and saving
+   settings SHALL NOT clear an admin pause. Resuming an admin pause SHALL NOT need
+   fresh readiness or clear an unresolved error pause; actual runs still require
+   readiness. Pause/resume SHALL record the actor atomically with the state change.
 9. THE SYSTEM SHALL keep API keys on the worker as server-side secrets, minimize
    stored client fields, and never expose credentials, full source responses, or
    other customers' private data through public APIs or logs.
@@ -1000,7 +1008,8 @@ tab) to do several jobs without losing my place.
 | `GET /api/admin/sync-status` | Per-exchange schedule/readiness, last attempt/success, fetched period, source as-of if known, safe error. | Admin |
 | `GET/PATCH /api/admin/ingest/connectors/:exchangeId` | Read/update enabled state and one of four allowed intervals. | Admin |
 | `POST /api/admin/ingest/connectors/:exchangeId/run` | Queue one immediate run or re-sync range when the connector is available. | Admin |
-| `POST /api/admin/ingest/connectors/:exchangeId/resume` | Clear a pause after the cause is fixed. | Admin |
+| `POST /api/admin/ingest/connectors/:exchangeId/resume` | Clear admin pause without readiness; otherwise clear an error pause after readiness passes. | Admin |
+| `POST /api/admin/ingest/connectors/:exchangeId/pause` | Pause this exchange's API ingestion, retaining mode/interval; no readiness prerequisite. | Admin |
 | `POST /api/admin/withdrawals/:id/decision` | Approve/reject/mark-paid. | Admin |
 
 ---
@@ -1137,6 +1146,7 @@ tab) to do several jobs without losing my place.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | requirements.md | Req 13.8: chủ động Pause/Resume từng sàn, giữ mode/interval, admin pause độc lập với lỗi, chặn queued/new runs và dừng giữa các ngày; endpoint pause + audit | Người dùng yêu cầu nút pause riêng trong API ingest | updated |
 | 2026-10-14 | requirements.md | Chốt #23–24 và Req 19.8 theo plan: phí/tháng USDT, commission assumption, published offer share, tháng/12 tháng, giới hạn/rounding | Người dùng yêu cầu triển khai plan và kiểm tra Docker local | updated |
 | 2026-10-14 | requirements.md | Ghi nhận #25 Dark Aurora đã chốt, thêm Req 20.7 về hero/hình ví và Opportunity Check bên dưới; giữ #22–24 mở và tách UI khỏi payout | Đồng bộ hướng giao diện người dùng đã chọn | updated |
 | 2026-10-13 | requirements.md | Review Req 19–21: thêm 19.7; làm đo được 20.2–20.3; thêm EIP-55 (21.2), testnet (21.13), hạn mức/tạm dừng/mức tối thiểu (21.14–16); Phase 5 và out-of-scope; gắn Open decisions #22–32 đúng Req; #19 chặn mainnet; nêu mâu thuẫn 9.5/9.10 | Bổ sung kiểm soát an toàn chi trả và tiêu chí kiểm chứng được | added/updated |

@@ -203,6 +203,8 @@ async function hasPendingSync(exchangeId: string) {
 }
 
 async function enqueue(exchangeId: string, rootAccount: string, trigger: SyncTrigger, dates: string[], runAfter = new Date()) {
+  const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId }, select: { adminPaused: true } });
+  if (config?.adminPaused) return false;
   const active = await db.syncRun.count({ where: { exchangeId, rootAccount, state: { in: ["QUEUED", "RUNNING"] }, NOT: { trigger: "BACKFILL" } } });
   if (active || await hasPendingSync(exchangeId)) return false;
   await db.job.create({ data: { type: "SYNC", runAfter, payload: { exchangeId, trigger, dates } } });
@@ -210,17 +212,17 @@ async function enqueue(exchangeId: string, rootAccount: string, trigger: SyncTri
 }
 
 export async function scheduleDueSyncs(now = new Date()) {
-  const due = await db.exchangeSyncConfig.findMany({ where: { enabled: true, pausedReason: null, nextRunAt: { lte: now } } });
+  const due = await db.exchangeSyncConfig.findMany({ where: { enabled: true, adminPaused: false, pausedReason: null, nextRunAt: { lte: now } } });
   for (const config of due) {
     // Claim the slot first: only the replica whose conditional update wins may enqueue.
     // A slot skipped because a run is still active is not replayed (no burst after downtime).
     const claimed = await db.exchangeSyncConfig.updateMany({
-      where: { exchangeId: config.exchangeId, nextRunAt: config.nextRunAt },
+      where: { exchangeId: config.exchangeId, enabled: true, adminPaused: false, pausedReason: null, nextRunAt: config.nextRunAt },
       data: { nextRunAt: nextSlot(config.nextRunAt ?? now, config.intervalMinutes, now), lastAttemptAt: now }
     });
     if (claimed.count) await enqueue(config.exchangeId, config.rootAccount, "SCHEDULED", openWindow(dayStamp(now)));
   }
-  const ready = await db.exchangeSyncConfig.findMany({ where: { enabled: true, pausedReason: null } });
+  const ready = await db.exchangeSyncConfig.findMany({ where: { enabled: true, adminPaused: false, pausedReason: null } });
   const today = dayStamp(now);
   for (const config of ready) {
     const exchange = await db.exchange.findUnique({ where: { id: config.exchangeId }, select: { slug: true } });
@@ -265,6 +267,7 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   ]);
   const slug = exchange?.slug;
   if (slug !== "bybit" && slug !== "mexc" && slug !== "binance") throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no API connector");
+  if (config?.adminPaused) return withJobLease(lease, async () => {});
   if (slug === "binance") validateBinanceDates(dates);
   const credentials = credentialsFor(slug);
   const contract = contractFor(slug);
@@ -298,6 +301,10 @@ export async function runSyncJob(lease: JobLease, payload: { exchangeId?: string
   try {
     const roster = await db.activityRoster.count({ where: { exchangeId, rootAccount: config.rootAccount, state: "ACTIVE" } });
     for (const day of dates) {
+      const current = await db.exchangeSyncConfig.findUnique({ where: { exchangeId }, select: { adminPaused: true } });
+      if (current?.adminPaused) return withJobLease(lease, async tx => {
+        await tx.syncRun.update({ where: { id: run.id }, data: { state: "PAUSED", safeErrorCode: "ADMIN_PAUSED", finishedAt: new Date() } });
+      });
       await heartbeat(lease, Number(process.env.JOB_LEASE_SECONDS ?? 120));
       const fetched = slug === "binance"
         ? await fetchBinanceDay({ day, apiKey: credentials.apiKey, apiSecret: credentials.apiSecret, fetchImpl, reserve: reserveBinanceSlot, onThrottle: deferBinanceSlot })
@@ -439,6 +446,7 @@ export async function getSyncConfig(exchangeId: string) {
     },
     rootAccount: config?.rootAccount ?? null,
     enabled: config?.enabled ?? false,
+    adminPaused: config?.adminPaused ?? false,
     intervalMinutes: config?.intervalMinutes ?? 30,
     nextRunAt: config?.nextRunAt?.toISOString() ?? null,
     lastAttemptAt: config?.lastAttemptAt?.toISOString() ?? null,
@@ -475,7 +483,7 @@ export async function updateSyncConfig(adminId: string, exchangeId: string, patc
     nextRunAt: !enabled ? null : enabling || !current?.nextRunAt || intervalMinutes !== current.intervalMinutes
       ? new Date(Date.now() + intervalMinutes * 60_000)
       : current.nextRunAt,
-    pausedReason: enabling ? null : current?.pausedReason,
+    pausedReason: enabling && !current?.adminPaused ? null : current?.pausedReason,
     updatedBy: adminId
   };
   const saved = await db.exchangeSyncConfig.upsert({
@@ -484,7 +492,7 @@ export async function updateSyncConfig(adminId: string, exchangeId: string, patc
     update: data
   });
   await db.syncConfigAudit.create({ data: { exchangeId, adminId, action: "UPDATE_CONFIG", before: current ?? undefined, after: saved } });
-  if (enabling) {
+  if (enabling && !saved.adminPaused) {
     const today = dayStamp(new Date());
     await enqueue(exchangeId, saved.rootAccount, "MANUAL", openWindow(today));
     for (let offset = 1; offset <= saved.backfillDays; offset += 1) {
@@ -501,6 +509,7 @@ export async function updateSyncConfig(adminId: string, exchangeId: string, patc
 
 export async function requestSync(adminId: string, exchangeId: string, trigger: SyncTrigger, dates: string[]) {
   const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
+  if (config?.adminPaused) throw new SyncError("ADMIN_PAUSED", "PAUSE", "Sync is paused by an admin. Resume this exchange first.");
   requireRecentReadiness(config);
   if (config.pausedReason && trigger !== "RESYNC") throw new SyncError(config.pausedReason, "PAUSE", "Connector is paused");
   if (!dates.length || dates.length > 366) throw new SyncError("RANGE", "QUARANTINE", "Choose between 1 and 366 days");
@@ -511,11 +520,31 @@ export async function requestSync(adminId: string, exchangeId: string, trigger: 
   return { accepted: true };
 }
 
+export async function pauseSync(adminId: string, exchangeId: string) {
+  const exchange = await db.exchange.findUnique({ where: { id: exchangeId }, select: { slug: true } });
+  if (!exchange || !ACTIVITY_API_EXCHANGES.includes(exchange.slug)) throw new SyncError("UNSUPPORTED", "QUARANTINE", "Exchange has no API connector");
+  await db.$transaction(async tx => {
+    const before = await tx.exchangeSyncConfig.findUnique({ where: { exchangeId } });
+    const after = await tx.exchangeSyncConfig.upsert({
+      where: { exchangeId },
+      create: { exchangeId, rootAccount: "unconfigured", adminPaused: true, backfillDays: exchange.slug === "binance" ? 0 : exchange.slug === "mexc" ? 30 : 365, updatedBy: adminId },
+      update: { adminPaused: true, updatedBy: adminId }
+    });
+    await tx.syncConfigAudit.create({ data: { exchangeId, adminId, action: "PAUSE", before: { adminPaused: before?.adminPaused ?? false }, after: { adminPaused: after.adminPaused, enabled: after.enabled, intervalMinutes: after.intervalMinutes } } });
+  });
+  return getSyncConfig(exchangeId);
+}
+
 export async function resumeSync(adminId: string, exchangeId: string) {
-  const config = await db.exchangeSyncConfig.findUnique({ where: { exchangeId } });
-  requireRecentReadiness(config);
-  await db.exchangeSyncConfig.update({ where: { exchangeId }, data: { pausedReason: null, consecutiveFailures: 0, updatedBy: adminId } });
-  await db.syncConfigAudit.create({ data: { exchangeId, adminId, action: "RESUME" } });
+  await db.$transaction(async tx => {
+    const config = await tx.exchangeSyncConfig.findUnique({ where: { exchangeId } });
+    if (!config) throw new SyncError("NOT_CONFIGURED", "PAUSE", "Connector is not configured");
+    if (!config.adminPaused) requireRecentReadiness(config);
+    const after = await tx.exchangeSyncConfig.update({ where: { exchangeId }, data: config.adminPaused
+      ? { adminPaused: false, updatedBy: adminId }
+      : { pausedReason: null, consecutiveFailures: 0, updatedBy: adminId } });
+    await tx.syncConfigAudit.create({ data: { exchangeId, adminId, action: "RESUME", before: { adminPaused: config.adminPaused, pausedReason: config.pausedReason }, after: { adminPaused: after.adminPaused, pausedReason: after.pausedReason } } });
+  });
   return getSyncConfig(exchangeId);
 }
 

@@ -139,6 +139,8 @@ flowchart TD
   T5 --> T40[40 Dark Aurora public UI - planned]
   T23 --> T40
   T25 --> T40
+  T20 --> TAdminPause[41 Per-exchange admin pause]
+  T32 --> TAdminPause
 ```
 
 ```json
@@ -168,6 +170,12 @@ flowchart TD
       "name": "Dark Aurora public UI",
       "tasks": ["40"],
       "dependsOn": ["5", "23", "25"],
+      "pendingDecisions": {}
+    },
+    {
+      "name": "Per-exchange admin pause",
+      "tasks": ["41"],
+      "dependsOn": ["20", "32"],
       "pendingDecisions": {}
     }
   ]
@@ -941,6 +949,22 @@ flowchart TD
       dựa trên việc chỉ sửa mockup/tài liệu, không tự deploy.
     - _Requirements: 1.1, 14, 15, 16, 17, 19.1–19.7, 20.1–20.7; Design: Testing Strategy — Kiểm chứng Req 19–21_
 
+- [x] 41. Pause/Resume API ingestion theo từng sàn (Req 13.8).
+  - [x] 41.0 Đồng bộ requirements/design: admin pause độc lập lỗi, giữ settings,
+    stop queued/new runs và dừng trước ngày tiếp theo; không hủy slice đang fetch.
+  - [x] 41.1 Migration adminPaused, core pause/resume atomic audit, scheduler/worker guards.
+  - [x] 41.2 Endpoint/legacy alias với admin + same-origin; nút Pause/Resume và status,
+    busy/poll revision, giữ draft mode/interval trên exchange đang chọn.
+  - [x] 41.3 DOM + Docker integration auth/CSRF/audit, isolation/readiness/save,
+    queued/manual/resync guards và pause giữa ngày; build/typecheck/lint; giữ localhost.
+    - Evidence (2026-10-14): Docker web + worker build đạt; web/worker typecheck,
+      web/core lint đạt; web 29/29 tests (gồm 3 DOM cases Pause/Resume mới) đạt;
+      `scripts/test-connector-pause.mjs` đạt 6 nhóm integration và dọn schema riêng;
+      `scripts/test-bybit-sync.mjs` regression Bybit/MEXC đạt. Migration đã áp dụng
+      trên Docker, web healthy tại `http://localhost:3000`; giữ local để user kiểm tra.
+      DOM/HTTP tests không thay thế kiểm tra hình ảnh trên browser của Task 40.5.
+  - _Requirements: 13.8–13.9, 18.8; Design: Admin pause; Schedule and operation_
+
 ## Notes
 
 - Phương án các nhóm còn mở sau UI: `docs/remaining-work-plan.md` (2026-10-14).
@@ -993,6 +1017,7 @@ flowchart TD
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | tasks.md | Hoàn thành Task 41 theo từng bước: spec, migration/core gates, API/UI; Docker build, 29 web tests, pause integration và sync regression đạt; giữ localhost | Người dùng yêu cầu Pause sync từng sàn | added |
 | 2026-10-14 | tasks.md | QA tiếp Task 40: 11 DOM state tests, sửa calculator/lookup/ARIA, rebuild local; web 26 và core lookup 4 tests đạt; lập phương án các nhóm còn mở | Người dùng yêu cầu hoàn tất kiểm tra UI rồi rà phương án triển khai phần khác | updated |
 | 2026-10-14 | tasks.md | Review Task 40: hiển thị % share chính xác (`sharePercent`, bỏ lỗi float như 0.57 → 56.99999999999999%), brand lấy từ `site.name`, logo trang chi tiết không đọc trùng tên, xóa stats placeholder và message `home.*` không còn dùng; web typecheck/lint/build và 5 unit test đạt | Clean code sau khi triển khai UI | updated |
 | 2026-10-14 | tasks.md | Triển khai 40.1–40.4, chốt calculator #23–24; Docker build/typecheck/lint và 18 tests đạt, giữ localhost để kiểm tra; 40.5 visual QA còn mở | Người dùng yêu cầu triển khai plan và kiểm tra Docker local trước khi tắt | updated |

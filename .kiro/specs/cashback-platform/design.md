@@ -572,7 +572,8 @@ then persists `credentialsConfigured`, `readinessReady`, `readinessReason`,
 `readinessCheckedAt`, `readinessExpiresAt`, and `readinessIpWarning` on
 `ExchangeSyncConfig` (Req 13.14). A transient probe failure records a safe
 `CHECK_UNAVAILABLE` status. The web reads this snapshot only; Enable, Sync now,
-and Resume require a successful probe no older than five minutes. It reports
+and error-pause Resume require a successful probe no older than five minutes. An
+admin pause can be cleared without readiness; it does not clear error pauses. It reports
 `NOT_CHECKED` or `READINESS_STALE` when the worker has not provided a recent
 result. The worker remains the only holder of API credentials and rechecks
 readiness on every run. If its configured master UID differs from an established
@@ -1467,17 +1468,43 @@ decimal string with an `asset`. Errors use a consistent envelope
 | `/api/admin/sync-status` | GET | admin | per-exchange readiness, enabled/interval, next run, last attempt/success, fetched period, source as-of if known, safe error; no secrets |
 | `/api/admin/ingest/connectors/:exchangeId` | GET/PATCH | admin | read/change enabled and interval (30/60/720/1440 minutes); audit actor |
 | `/api/admin/ingest/connectors/:exchangeId/run` | POST | admin | enqueue immediate run or `from`/`to` re-sync if ready and no active run; 202 |
-| `/api/admin/ingest/connectors/:exchangeId/resume` | POST | admin | clear a pause after readiness passes; audit actor |
+| `/api/admin/ingest/connectors/:exchangeId/resume` | POST | admin | clear admin pause independently; error recovery still needs readiness; atomic audit |
+| `/api/admin/ingest/connectors/:exchangeId/pause` | POST | admin | set adminPaused without readiness, retain saved mode/interval; atomic audit |
 
 The connector page lists registered exchanges in one selector, including API
 availability. Selection remounts the controls so readiness, draft values and run
 history cannot leak across exchanges. Manual maps to `enabled=false`; Scheduled
-maps to `enabled=true`. Existing GET/PATCH contracts remain unchanged. Unsupported
+maps to `enabled=true`. GET adds read-only `adminPaused`; PATCH still accepts enabled
+and interval only. Unsupported
 exchanges may save a disabled interval preference but cannot enable or run an API.
 Only ready supported connectors can enable Scheduled. Changing a saved interval
 resets `nextRunAt` from now if enabled; manual configs have no next run. Worker
 skips queued SCHEDULED/BACKFILL/RECONCILE jobs while disabled or paused. Selection
 polling preserves unsaved mode/interval edits.
+
+**Admin pause (Req 13.8).** Add `ExchangeSyncConfig.adminPaused Boolean @default(false)`
+via migration and add `PAUSE` to SyncAuditAction; keep `pausedReason` for system failures. `pauseSync` sets only the selected
+exchange's flag and audits `PAUSE` in the same transaction. Pause works in Manual or
+Scheduled mode even when worker readiness is stale/missing. `resumeSync` clears an
+admin pause only, preserving any error pause; otherwise it clears the error pause
+after readiness succeeds. Both mutations enforce admin session and same-origin CSRF,
+including legacy `/api/admin/sync-config/:exchangeId/pause` alias.
+
+Scheduler filtering and conditional slot claim include `adminPaused=false`; enqueue,
+manual/RESYNC requests and queued job start also check it. A running day slice may finish
+and transform its fetched raw data; check the flag before each subsequent day and mark
+the interrupted run PAUSED/ADMIN_PAUSED without incrementing failures or disabling its
+schedule. Saving settings and readiness/key rotation never write the flag; enabling
+while paused must not enqueue immediate/backfill work or clear the existing error pause.
+No wallet or commission mutations.
+
+UI shows `Pause sync` / `Resume sync` and explicit admin/error pause status. Pause is
+not gated by readiness. Disable actions while saving/running a control mutation; reject
+stale polling responses by revision and keep unsaved mode/interval drafts across actions.
+Resume from admin pause does not imply readiness or clear an error reason; show that
+reason separately. Tests: per-exchange isolation, persistence/readiness/save, queued and
+manual/resync guards, stop between days, retained interval/mode, audit + auth/CSRF, DOM
+busy/error/status states. Docker only; no live exchange request required.
 
 Retired aliases (Req 18.8): `/api/admin/imports*` →
 `/api/admin/ingest/batches*`, `/api/admin/sync-config/*` →
@@ -2552,6 +2579,7 @@ required for a later activity publishing implementation.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-14 | design.md | Thiết kế adminPaused độc lập, pause endpoint/alias, scheduler/worker gates và UI busy/polling; pause/resume audit cùng transaction | Pause chủ động theo từng sàn trong API ingest | added |
 | 2026-10-14 | design.md | Bổ sung DOM component tests trong Docker cho calculator/lookup/menu và tách khỏi visual QA | Hoàn thiện kiểm tra tương tác trước khi rà phương án các task còn lại | added |
 | 2026-10-14 | design.md | Ghi trạng thái UI/calculator triển khai Docker local, dùng route-aware public shell giữ SSR children và legacy admin chrome; automated checks đạt, visual QA còn mở | Bàn giao localhost theo plan đã triển khai | updated |
 | 2026-10-14 | design.md | Chốt calculator tháng USDT/published offer, fixed-point decimal và round half-up theo Req 19.8 | Triển khai plan Dark Aurora trên Docker local | updated |
