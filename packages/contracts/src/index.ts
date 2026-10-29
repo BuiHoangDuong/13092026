@@ -6,7 +6,7 @@ export const assetSchema = z.string().trim().min(1).max(16).transform((value) =>
 export const decimalStringSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/, "Must be a decimal string");
 export const rateSchema = z.string()
   .regex(/^(?:0(?:\.\d{1,4})?|1(?:\.0{1,4})?)$/, "Rate must be between 0 and 1 with at most 4 decimal places");
-export const estimatedVolumeRateSchema = z.string().regex(/^(?:0(?:\.\d{1,10})?|1(?:\.0{1,10})?)$/, "Rate must be between 0 and 1 with at most 10 decimal places");
+export const commissionVolumeRateSchema = z.string().regex(/^(?:0(?:\.\d{1,10})?|1(?:\.0{1,10})?)$/, "Rate must be between 0 and 1 with at most 10 decimal places");
 export const moneySchema = z.object({ amount: decimalStringSchema, asset: assetSchema });
 export type Money = z.infer<typeof moneySchema>;
 
@@ -32,12 +32,12 @@ export const localizedTextSchema = z.record(localeKeySchema, z.string().trim().m
 
 export const adminExchangeCreateSchema = z.object({
   slug: slugSchema, name: z.string().trim().min(1).max(120), status: publishStatusSchema.default("DRAFT"),
-  defaultCashbackRate: rateSchema.nullable().default(null), i18n: localizedExchangeSchema
+  defaultCashbackRate: rateSchema.nullable().default(null), commissionVolumeRate: commissionVolumeRateSchema.default("0.01"), i18n: localizedExchangeSchema
 });
-export const adminExchangeUpdateSchema = adminExchangeCreateSchema.partial().extend({ id: z.string().min(1) });
+export const adminExchangeUpdateSchema = adminExchangeCreateSchema.partial().extend({ id: z.string().min(1), commissionVolumeRate: commissionVolumeRateSchema.optional() });
 export const adminOfferCreateSchema = z.object({
   exchangeId: z.string().min(1), status: publishStatusSchema.default("DRAFT"), cashbackRate: rateSchema,
-  estimatedVolumeRate: estimatedVolumeRateSchema.nullable().optional(), conditions: localizedTextSchema, verifiedAt: z.iso.datetime().nullable().optional()
+  conditions: localizedTextSchema, verifiedAt: z.iso.datetime().nullable().optional()
 });
 export const adminOfferUpdateSchema = adminOfferCreateSchema.partial().extend({ id: z.string().min(1) });
 export const adminLinkCreateSchema = z.object({
@@ -64,8 +64,8 @@ export type AdminGuideUpdate = z.infer<typeof adminGuideUpdateSchema>;
 export const exchangeSchema = z.object({
   id: z.string(), slug: z.string(), name: z.string(), status: publishStatusSchema,
   logoUrl: z.string().regex(/^\/exchange-logos\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/).nullable(),
-  defaultCashbackRate: decimalStringSchema.nullable(), locale: localeSchema,
-  offers: z.array(z.object({ id: z.string(), cashbackRate: decimalStringSchema, estimatedVolumeRate: decimalStringSchema.nullable(), conditions: z.unknown().nullable() }))
+  defaultCashbackRate: decimalStringSchema.nullable(), commissionVolumeRate: commissionVolumeRateSchema, locale: localeSchema,
+  offers: z.array(z.object({ id: z.string(), cashbackRate: decimalStringSchema, conditions: z.unknown().nullable() }))
 });
 export const exchangesResponseSchema = z.object({ exchanges: z.array(exchangeSchema) });
 

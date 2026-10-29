@@ -54,9 +54,9 @@ async function change(element, value) {
 }
 async function submit(view) { await act(async () => view.q("form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }))); }
 const offers = [
-  { id: "bybit-30", exchangeId: "bybit", exchangeName: "Bybit", slug: "bybit", estimatedVolumeRate: "0.00015" },
-  { id: "binance-40", exchangeId: "binance", exchangeName: "Binance", slug: "binance", estimatedVolumeRate: "0.0002" },
-  { id: "mexc-35", exchangeId: "mexc", exchangeName: "MEXC", slug: "mexc", estimatedVolumeRate: "0.000175" }
+  { id: "bybit-30", exchangeId: "bybit", exchangeName: "Bybit", slug: "bybit", commissionVolumeRate: "0.01", cashbackRate: "0.30" },
+  { id: "binance-40", exchangeId: "binance", exchangeName: "Binance", slug: "binance", commissionVolumeRate: "0.01", cashbackRate: "0.40" },
+  { id: "mexc-35", exchangeId: "mexc", exchangeName: "MEXC", slug: "mexc", commissionVolumeRate: "0.01", cashbackRate: "0.35" }
 ];
 const exchanges = offers.map(offer => ({ id: offer.exchangeId, name: offer.exchangeName }));
 const emptyResult = { hasData: false, hasMore: false, balances: [], transactions: [], lastImportAt: null, sourceAsOf: null, summaryPeriods: { reportDay: "2026-10-20", end: "2026-10-21T00:00:00Z", rollingStart: "2026-09-21T00:00:00Z" } };
@@ -69,15 +69,19 @@ test("calculator switches all three exchanges and never sends inputs to a server
   const view = await render(OpportunityCheck, { offers, locale: "en" });
   try {
     assert.equal(view.q("#monthly-volume").value, "1,000,000");
+    assert.match(view.q("#opportunity-model").textContent, /0\.3%/);
+    assert.doesNotMatch(view.q("#opportunity-model").textContent, /(?:^|\s)1%/);
+    await change(view.q("#monthly-volume"), "2000000"); assert.equal(view.q("#opportunity-monthly").textContent, "6,000.00");
+    await change(view.q("#monthly-volume"), "1,000,000");
     assert.equal(view.container.querySelector("#trading-fee-percent, #commission-percent, details"), null);
-    assert.equal(view.q("#opportunity-monthly").textContent, "150.00");
-    for (const [id, amount] of [["binance", "200.00"], ["mexc", "175.00"], ["bybit", "150.00"]]) {
+    assert.equal(view.q("#opportunity-monthly").textContent, "3,000.00");
+    for (const [id, amount] of [["binance", "4,000.00"], ["mexc", "3,500.00"], ["bybit", "3,000.00"]]) {
       await change(view.q("#opportunity-exchange"), id); assert.equal(view.q("#opportunity-monthly").textContent, amount);
       assert.equal(view.q(".aurora-opportunity-link").getAttribute("href"), `/exchanges/${id}`);
     }
     await act(async () => view.q('[aria-label="Example monthly trading volumes"] button:last-child').click());
     assert.equal(view.q("#monthly-volume").value, "5,000,000");
-    assert.equal(view.q("#opportunity-monthly").textContent, "750.00"); assert.equal(calls, 0);
+    assert.equal(view.q("#opportunity-monthly").textContent, "15,000.00"); assert.equal(calls, 0);
   } finally { await view.dispose(); globalThis.fetch = originalFetch; }
 });
 test("calculator invalid inputs clear results and zero recovers normally", async () => {
@@ -89,30 +93,38 @@ test("calculator invalid inputs clear results and zero recovers normally", async
   } finally { await view.dispose(); }
 });
 test("calculator selects a specific offer and survives refreshed published props", async () => {
-  const multiple = [...offers, { ...offers[0], id: "bybit-07", estimatedVolumeRate: "0.000035" }];
+  const multiple = [...offers, { ...offers[0], id: "bybit-07", cashbackRate: "0.07" }];
   const view = await render(OpportunityCheck, { offers: multiple, locale: "en" });
   try {
-    await change(view.q("#opportunity-offer"), "bybit-07"); assert.equal(view.q("#opportunity-monthly").textContent, "35.00");
+    await change(view.q("#opportunity-offer"), "bybit-07"); assert.equal(view.q("#opportunity-monthly").textContent, "700.00");
     await view.update({ offers: offers.filter(offer => offer.slug !== "bybit"), locale: "en" });
-    assert.equal(view.q("#opportunity-exchange").value, "binance"); assert.equal(view.q("#opportunity-monthly").textContent, "200.00");
+    assert.equal(view.q("#opportunity-exchange").value, "binance"); assert.equal(view.q("#opportunity-monthly").textContent, "4,000.00");
     await view.update({ offers: multiple, locale: "en" });
     assert.equal(view.q("#opportunity-exchange").value, "binance");
   } finally { await view.dispose(); }
 });
 test("calculator has no fake fallback and becomes usable when offers arrive", async () => {
-  const view = await render(OpportunityCheck, { offers: [{ ...offers[0], estimatedVolumeRate: null }], locale: "en" });
+  const view = await render(OpportunityCheck, { offers: [], locale: "en" });
   try {
     assert.equal(view.q("#monthly-volume").disabled, true); assert.equal(view.q("#opportunity-monthly").textContent, "—");
-    await view.update({ offers, locale: "en" }); assert.equal(view.q("#monthly-volume").disabled, false); assert.equal(view.q("#opportunity-monthly").textContent, "150.00");
+    await view.update({ offers, locale: "en" }); assert.equal(view.q("#monthly-volume").disabled, false); assert.equal(view.q("#opportunity-monthly").textContent, "3,000.00");
   } finally { await view.dispose(); }
 });
-test("calculator excludes missing rates and keeps zero-rate offers eligible", async () => {
-  const view = await render(OpportunityCheck, { offers: [...offers, { ...offers[0], id: "missing", estimatedVolumeRate: null }, { ...offers[0], id: "zero", estimatedVolumeRate: "0" }], locale: "en" });
+test("calculator keeps every offer enabled including invalid and zero factors", async () => {
+  const view = await render(OpportunityCheck, { offers: [...offers, { ...offers[0], id: "missing", commissionVolumeRate: "invalid" }, { ...offers[0], id: "zero", commissionVolumeRate: "0" }], locale: "en" });
   try {
-    assert.deepEqual([...view.q("#opportunity-offer").options].map(option => option.value), ["bybit-30", "zero"]);
+    assert.deepEqual([...view.q("#opportunity-offer").options].map(option => option.value), ["bybit-30", "missing", "zero"]);
+    await change(view.q("#opportunity-offer"), "missing");
+    assert.equal(view.q("#opportunity-exchange").disabled, false); assert.equal(view.q("#monthly-volume").disabled, false);
+    assert.equal(view.q("#opportunity-monthly").textContent, "\u2014");
     await change(view.q("#opportunity-offer"), "zero"); assert.equal(view.q("#opportunity-monthly").textContent, "0.00");
-    await view.update({ offers: [...offers, { ...offers[0], id: "zero", estimatedVolumeRate: "0" }], locale: "en" });
+    await view.update({ offers: [...offers, { ...offers[0], id: "zero", commissionVolumeRate: "0" }], locale: "en" });
     assert.equal(view.q("#opportunity-offer").value, "zero");
+    for (const rates of [{ commissionVolumeRate: "0", cashbackRate: "1" }, { commissionVolumeRate: "1", cashbackRate: "0" }, { commissionVolumeRate: "0.1234567891", cashbackRate: "1" }, { commissionVolumeRate: "invalid", cashbackRate: "0.3" }]) {
+      await view.update({ offers: [{ ...offers[0], ...rates }], locale: "en" });
+      assert.equal(view.q("#opportunity-exchange").disabled, false); assert.equal(view.q("#monthly-volume").disabled, false);
+      assert.doesNotMatch(view.q("form").textContent, /No published offers/);
+    }
   } finally { await view.dispose(); }
 });
 test("lookup hides report dates when no covered day exists", async () => {

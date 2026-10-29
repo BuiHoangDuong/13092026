@@ -1,4 +1,5 @@
 export const en = {
+  adminContent: { commissionVolumeRate: "Commission (fraction of volume, 0 to 1)" },
   aurora: {
     skip: "Skip to content", navigation: "Main navigation", mobileNavigation: "Mobile navigation", footerNavigation: "Footer navigation",
     navOpportunity: "Opportunity check", navOffers: "Exchange offers", navHow: "How it works", navGuides: "Guides", wallet: "Wallet", check: "Check cashback", faq: "FAQ",

@@ -1393,11 +1393,11 @@ produced P1001 "Can't reach database server" although the database was healthy. 
 
 Quyết định 30/10/2026 thay công thức Task 43: client island chỉ có volume/tháng USDT (tối đa 16 chữ số nguyên, 8 chữ số thập phân), giá trị mặc định và nhóm nghìn en-US. Volume mặc định chốt **1,000,000 USDT** (giá trị số 1000000) theo ví dụ cuộc họp 20/10; có thể chỉnh mặc định sau trong code, không cần hỏi lại trước triển khai. Không có control phí/affiliate và không hiển thị cơ cấu hoa hồng nền tảng. Nhãn/lỗi dùng catalog tiếng Anh; input text/inputMode decimal giữ định dạng nhóm nghìn hiện có.
 
-`Offer.estimatedVolumeRate Decimal(12,10)?` là phần volume (0–1), nullable; admin form `/admin/offers` có trường nhập hệ số, blank → null, validate server/client tối đa 10 chữ số thập phân, không âm/không lớn hơn 1; không âm thầm round input quá precision. `cashbackRate` vẫn phục vụ attribution thực, không dùng thay hệ số estimate.
+`Exchange.commissionVolumeRate Decimal(12,10) NOT NULL DEFAULT 0.01` là hoa hồng sàn trả tính theo phần volume (0–1); admin form sàn (`/admin/exchanges`) có trường nhập, validate server/client tối đa 10 chữ số thập phân, không âm/không lớn hơn 1; không âm thầm round input quá precision. Tỷ lệ hoàn ước tính của offer = `commissionVolumeRate × Offer.cashbackRate` (hiện 0.01 × 0.30 = 0.003 với Bybit). `cashbackRate` vẫn là tỷ lệ chia thật dùng cho attribution; calculator chỉ đọc lại, không thay đổi.
 
-Migration dự kiến `202610300001_offer_volume_estimate`: thêm cột nullable, CHECK null hoặc trong [0,1], không backfill tỷ lệ suy đoán. Public offer card/DTO (`GET /api/exchanges` và props SSR) mang `estimatedVolumeRate` dạng decimal string hoặc null; đây là hệ số ước lượng chung của offer, không phải commission/rate của UID trong lookup. Calculator lọc published offers có hệ số khác null, chấp nhận 0, có selector khi nhiều offer; offer thiếu hệ số vẫn có thể xuất hiện ở discovery, không xuất hiện trong calculator.
+Migration `202610300001_exchange_commission_volume_rate`: thêm cột NOT NULL DEFAULT 0.01 (mọi sàn hiện có nhận 1% theo quyết định người dùng 30/10), CHECK trong [0,1]. Public DTO (`GET /api/exchanges` và props SSR) mang `commissionVolumeRate` dạng decimal string (serialize bằng `toFixed()`, không dạng mũ). Calculator nhận mọi published offer; select sàn và ô volume luôn dùng được khi có ít nhất một offer, không disable toàn form vì dữ liệu hệ số. Footnote chỉ hiện tỷ lệ hoàn ước tính trên volume (vd 0.3%), không hiện riêng 1% hoa hồng sàn.
 
-Tính chính xác `tháng = volume × estimatedVolumeRate`, `năm = tháng × 12`; dùng Decimal hoặc fixed-point BigInt riêng scale volume 10^8, hệ số 10^10, tích scale 10^18. Không ép hệ số 10 chữ số về scale 10^8, không JS float; chỉ round half-up cents ở format cuối từng kết quả, không nhân năm từ tháng đã round. Không API lưu input, không WalletEntry. Props thay đổi: giữ offer nếu còn hợp lệ, nếu không chọn offer hợp lệ theo thứ tự hiện có; không offer hợp lệ thì trạng thái không có ước tính.
+Tính chính xác `tháng = volume × commissionVolumeRate × cashbackRate`, `năm = tháng × 12`; dùng fixed-point BigInt: volume scale 10^8, commissionVolumeRate 10^10, cashbackRate 10^4, tích scale 10^22. Không ép hệ số 10 chữ số về scale 10^8, không JS float; chỉ round half-up cents ở format cuối từng kết quả, không nhân năm từ tháng đã round. Không API lưu input, không WalletEntry. Props thay đổi: giữ offer nếu còn hợp lệ, nếu không chọn offer hợp lệ theo thứ tự hiện có; không offer hợp lệ thì trạng thái không có ước tính.
 
 #### Giao diện và tên website (Req 20, Dark Aurora đã chốt)
 
@@ -1464,7 +1464,7 @@ decimal string with an `asset`. Errors use a consistent envelope
 
 | Endpoint | Method | Auth | Notes |
 |----------|--------|------|-------|
-| `/api/exchanges` | GET | public | published exchanges + offers, estimatedVolumeRate decimal string hoặc null |
+| `/api/exchanges` | GET | public | published exchanges + offers; exchange có commissionVolumeRate decimal string |
 | `/go/:linkId` | GET | public | 302 redirect; records click (best-effort) |
 | `/api/lookup` | POST | public | `{ exchangeId, uid }` → previousDay theo D/rolling30Days, totalPaid, summaryPeriods { reportDay, rollingStart, end }, freshness và bảng kỳ/tài sản/UID/cashback; IP limit, 429 + Retry-After |
 | `/api/uid/withdrawals` | POST retired | unavailable | 410 CUSTOMER_WITHDRAWALS_RETIRED trước auth/DB; không reserve/job |
@@ -1587,7 +1587,7 @@ payloads are never returned by sync-status or public lookup.
 
 ### Migration dự kiến cho Task 44 (chưa tạo/chạy)
 
-- `202610300001_offer_volume_estimate`: cột Offer.estimatedVolumeRate nullable Decimal(12,10), CHECK [0,1]; giữ null cho offer cũ, admin tự cấu hình.
+- `202610300001_exchange_commission_volume_rate`: cột Exchange.commissionVolumeRate Decimal(12,10) NOT NULL DEFAULT 0.01, CHECK [0,1]; index ImportBatch(exchangeId, datasetKind, status, periodEnd) cho Req 14. Thay bản nháp `202610300001_offer_volume_estimate` (chưa deploy); không còn cột Offer.estimatedVolumeRate.
 - Index lookup dự kiến trên `ImportBatch(exchangeId, datasetKind, status, periodEnd)` trong migration triển khai Task 44.2; schema minh họa và API phải theo coverage Req 14.
 - `202610300002_drop_customer_otp`: sau gỡ route/service/contract/UI khách và phụ thuộc, drop `EmailOtp`, `UidSession`, cột `UidAccount.boundEmail`/`emailBoundAt`, relation/index phụ thuộc. Dừng producer cũ trước deploy schema; không có email/session fallback. Giữ `Withdrawal.email` và `WithdrawalEvent.email` để bảo toàn lịch sử; giữ AdminAccount/Session, UidAccount, Wallet, RateLimitCounter lookup, admin withdrawal queue và toàn bộ payables/receipts/audit. Không reset gate, không settle/release lại tiền. Đây là migration dự kiến, chưa thực thi.
 
@@ -1630,7 +1630,6 @@ model Offer {
   exchange     Exchange @relation(fields: [exchangeId], references: [id])
   status       PublishStatus @default(DRAFT)
   cashbackRate Decimal  @db.Decimal(6,4) // e.g. 0.4000 = 40% of commission
-  estimatedVolumeRate Decimal? @db.Decimal(12,10) // null hoặc [0,1]; ước tính theo volume (Req 19)
   conditions   Json?
   verifiedAt   DateTime?
   i18n         Json?
@@ -2390,7 +2389,7 @@ most critical money/concurrency invariants, not an exhaustive suite.
 Giữ smoke gọn và kiểm tra có trọng tâm cho invariant tiền/concurrency. Quote/RPC/signer giả lập; integration trên Docker Postgres đúng steering với schema/dữ liệu biệt lập. Giả lập nhiều ngày bằng thời gian test.
 
 - Bảng tính: công thức, đơn vị, input sai, ước tính khác số dư thực.
-- UI state tests chạy Docker bằng React act/createRoot và jsdom: đổi sàn/offer/props, volume mặc định 1,000,000 USDT/nhóm nghìn/chỉnh sửa/rỗng/sai; estimatedVolumeRate 0/null/1/10 chữ số, offer bị gỡ, loading/no-data/lỗi/429 và stale response/unmount; không có link Wallet/rút, menu Escape/focus. HTTP kiểm tra redirect và POST rút retired, privacy/tổng vượt 100/biên UTC. jsdom không thay thế screenshot/contrast/responsive browser QA.
+- UI state tests chạy Docker bằng React act/createRoot và jsdom: đổi sàn/offer/props, volume mặc định 1,000,000 USDT/nhóm nghìn/chỉnh sửa/rỗng/sai; commissionVolumeRate 0/1/10 chữ số × cashbackRate, form không bị khoá khi có offer, offer bị gỡ, loading/no-data/lỗi/429 và stale response/unmount; không có link Wallet/rút, menu Escape/focus. HTTP kiểm tra redirect và POST rút retired, privacy/tổng vượt 100/biên UTC. jsdom không thay thế screenshot/contrast/responsive browser QA.
 - Khi published props thay đổi, calculator giữ offer đang chọn nếu còn hợp lệ; nếu không, chọn offer Bybit hợp lệ hoặc offer hợp lệ đầu tiên, không giữ một ID đã bị gỡ. Chỉ tham chiếu control đang có trong output/ARIA và gắn lỗi đúng field. Lookup hiển thị thông báo lỗi tiếng Anh trong catalog cho response/network/JSON/schema lỗi, giữ thông báo 429 với Retry-After; không đưa lỗi transport/schema ra UI (Req 14, 19.4, 20.3).
 - UI Dark Aurora (Task 40/43): hero trước calculator volume, published offers/logo/link và nhãn minh họa; không Wallet/form rút, /withdraw redirect; 360/390/768/1024/1440px, keyboard/menu/focus/contrast/reduced motion; admin không bị đổi theme.
 - Payout: ba cặp coin/mạng, precision, dưới/bằng/trên 20 USD, stale quote, lần đầu áp cùng ngưỡng.
@@ -2483,7 +2482,7 @@ UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, chec
 
 ### Quyết định thiết kế cho Req 19–21 đang rà soát
 
-- **Tên mới (Open decision #22):** vẫn mở, giữ Cashback Hub. **#23–24 chốt 2026-10-30:** chỉ volume/tháng × estimatedVolumeRate do admin nhập theo offer; tháng/năm. Volume mặc định 1,000,000 USDT, có thể chỉnh sau trong code. Task 44 chưa triển khai. Hướng Dark Aurora giữ nguyên.
+- **Tên mới (Open decision #22):** vẫn mở, giữ Cashback Hub. **#23–24 chốt 2026-10-30:** chỉ volume/tháng × commissionVolumeRate theo sàn (mặc định 1%) × cashbackRate của offer; tháng/năm. Volume mặc định 1,000,000 USDT, có thể chỉnh sau trong code. Task 44 chưa triển khai. Hướng Dark Aurora giữ nguyên.
 - **Lịch chạy/ngưỡng USD (Open decisions #26–28):** USDT nội bộ đã chọn một đợt/ngày 23:00 UTC, gộp theo sàn/UID; bỏ lỡ đợt chờ đợt kế theo câu 6; cutoff 23:00 UTC theo câu 8; retry lỗi chắc chắn chưa chuyển chờ đợt ngày sau theo câu 9. Lịch on-chain còn mở. Ngưỡng <=20 USD trên tổng principal execution đã thống nhất; câu 15 không daily cap riêng USDT nội bộ, theo nguồn đủ principal+phí; câu 16 skip nhóm thiếu nguồn/tiếp tục nhóm sau; thứ tự ưu tiên ban đầu còn mở. Nhà cung cấp/tuổi báo giá/khóa giá tài sản khác còn riêng.
 - **Sổ ví/chuyển đổi (Open decision #29):** coin gốc hay USDT, precision, chuyển đơn vị nhỏ nhất, phí và bút toán khi đổi tài sản.
 - **Ví nguồn/ký (Open decision #30):** vai trò MetaMask, signer worker, SDK và vị trí lưu secret.
@@ -2586,3 +2585,4 @@ required for a later activity publishing implementation.
 | 2026-10-21 | design.md | Thiết kế calculator volume/hai giả định, lookup tổng theo kỳ UTC và totalPaid, contract public tối giản; bỏ Wallet/CTA rút và retire POST rút trước DB | Cuộc họp 20/10 và 5 lựa chọn đã chốt; giữ backend tiền/gate/adapter hiện tại | updated |
 | 2026-10-27 | design.md | Bổ sung độ dài cửa sổ vào namespace consumeBudget, không đổi schema/threshold; ghi ảnh hưởng reset counter một lần khi rollout | Sửa collision unique key đầu phút/giờ bằng regression test trong Docker | updated |
 | 2026-10-30 | design.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |
+| 2026-10-30 | design.md | Req 19: Exchange.commissionVolumeRate NOT NULL DEFAULT 0.01, công thức volume × commissionVolumeRate × cashbackRate, migration 202610300001_exchange_commission_volume_rate thay bản nháp offer_volume_estimate | Quyết định người dùng 30/10; sửa lỗi calculator bị khoá | updated |

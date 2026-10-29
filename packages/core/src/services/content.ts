@@ -6,17 +6,17 @@ import type {
 
 type Localized = Record<string, { name?: string; description?: string; title?: string; content?: string }>;
 
-export type PublicOffer = { id: string; cashbackRate: string; estimatedVolumeRate: string | null; conditions: unknown; verifiedAt: Date | null };
+export type PublicOffer = { id: string; cashbackRate: string; conditions: unknown; verifiedAt: Date | null };
 export type PublicLink = { id: string; destination: string; offerId: string | null };
 export type PublicExchange = {
-  id: string; slug: string; name: string; description: string; defaultCashbackRate: string | null;
+  id: string; slug: string; name: string; description: string; defaultCashbackRate: string | null; commissionVolumeRate: string;
   logoUrl: string | null;
   offers: PublicOffer[]; links: PublicLink[];
 };
 export type PublicOfferCard = {
   offerId: string;
-  exchange: { id: string; slug: string; name: string; description: string; logoUrl: string | null };
-  cashbackRate: string; estimatedVolumeRate: string | null;
+  exchange: { id: string; slug: string; name: string; description: string; commissionVolumeRate: string; logoUrl: string | null };
+  cashbackRate: string;
   conditions: unknown;
   linkId: string | null;
 };
@@ -42,8 +42,9 @@ export async function listPublishedExchanges(locale = "en"): Promise<PublicExcha
     logoUrl: row.logoUrl ?? null,
     name: localized(row.i18n, locale).name ?? row.name,
     description: localized(row.i18n, locale).description ?? "",
+    commissionVolumeRate: row.commissionVolumeRate.toFixed(),
     defaultCashbackRate: row.defaultCashbackRate?.toString() ?? null,
-    offers: row.offers.map((offer) => ({ id: offer.id, cashbackRate: offer.cashbackRate.toString(), estimatedVolumeRate: offer.estimatedVolumeRate?.toFixed() ?? null, conditions: offer.conditions, verifiedAt: offer.verifiedAt })),
+    offers: row.offers.map((offer) => ({ id: offer.id, cashbackRate: offer.cashbackRate.toString(), conditions: offer.conditions, verifiedAt: offer.verifiedAt })),
     links: row.links.map((link) => ({ id: link.id, destination: link.destination, offerId: link.offerId }))
   }));
 }
@@ -66,9 +67,8 @@ function toOfferCard(exchange: PublicExchange, offer: PublicOffer): PublicOfferC
   const link = pickLinkForOffer(offer.id, exchange.links);
   return {
     offerId: offer.id,
-    exchange: { id: exchange.id, slug: exchange.slug, name: exchange.name, description: exchange.description, logoUrl: exchange.logoUrl },
+    exchange: { id: exchange.id, slug: exchange.slug, name: exchange.name, description: exchange.description, logoUrl: exchange.logoUrl, commissionVolumeRate: exchange.commissionVolumeRate },
     cashbackRate: offer.cashbackRate,
-    estimatedVolumeRate: offer.estimatedVolumeRate,
     conditions: offer.conditions,
     linkId: link?.id ?? null
   };
@@ -123,8 +123,9 @@ export async function getPublishedExchange(slug: string, locale = "en"): Promise
   return {
     id: exchange.id, slug: exchange.slug, name: text.name ?? exchange.name, description: text.description ?? "",
     logoUrl: exchange.logoUrl ?? null,
+    commissionVolumeRate: exchange.commissionVolumeRate.toFixed(),
     defaultCashbackRate: exchange.defaultCashbackRate?.toString() ?? null,
-    offers: exchange.offers.map((offer) => ({ id: offer.id, cashbackRate: offer.cashbackRate.toString(), estimatedVolumeRate: offer.estimatedVolumeRate?.toFixed() ?? null, conditions: offer.conditions, verifiedAt: offer.verifiedAt })),
+    offers: exchange.offers.map((offer) => ({ id: offer.id, cashbackRate: offer.cashbackRate.toString(), conditions: offer.conditions, verifiedAt: offer.verifiedAt })),
     links: exchange.links.map((link) => ({ id: link.id, destination: link.destination, offerId: link.offerId }))
   };
 }
@@ -177,8 +178,8 @@ async function assertOfferExchange(offerId: string | null | undefined, exchangeI
 }
 
 export type AdminContent = {
-  exchanges: Array<{ id: string; slug: string; name: string; status: "DRAFT" | "PUBLISHED"; defaultCashbackRate: string | null; i18n: unknown }>;
-  offers: Array<{ id: string; exchangeId: string; status: "DRAFT" | "PUBLISHED"; cashbackRate: string; estimatedVolumeRate: string | null; conditions: unknown; verifiedAt: string | null }>;
+  exchanges: Array<{ id: string; slug: string; name: string; status: "DRAFT" | "PUBLISHED"; defaultCashbackRate: string | null; commissionVolumeRate: string; i18n: unknown }>;
+  offers: Array<{ id: string; exchangeId: string; status: "DRAFT" | "PUBLISHED"; cashbackRate: string; conditions: unknown; verifiedAt: string | null }>;
   links: Array<{ id: string; exchangeId: string; offerId: string | null; destination: string; active: boolean }>;
   guides: Array<{ id: string; slug: string; exchangeId: string | null; status: "DRAFT" | "PUBLISHED"; i18n: unknown }>;
 };
@@ -199,21 +200,21 @@ function toPage<T extends { id: string }>(rows: T[], limit: number): AdminPage<T
 export async function listAdminExchanges(options: AdminListOptions = {}): Promise<AdminPage<AdminContent["exchanges"][number]>> {
   const limit = pageLimit(options.limit);
   const rows = await db.exchange.findMany({
-    select: { id: true, slug: true, name: true, status: true, defaultCashbackRate: true, i18n: true },
+    select: { id: true, slug: true, name: true, status: true, defaultCashbackRate: true, commissionVolumeRate: true, i18n: true },
     orderBy: { id: "asc" }, take: limit + 1,
     ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
   });
-  return toPage(rows.map(({ defaultCashbackRate, ...row }) => ({ ...row, defaultCashbackRate: defaultCashbackRate?.toString() ?? null })), limit);
+  return toPage(rows.map(({ defaultCashbackRate, commissionVolumeRate, ...row }) => ({ ...row, commissionVolumeRate: commissionVolumeRate.toFixed(), defaultCashbackRate: defaultCashbackRate?.toString() ?? null })), limit);
 }
 
 export async function listAdminOffers(options: AdminListOptions = {}): Promise<AdminPage<AdminContent["offers"][number]>> {
   const limit = pageLimit(options.limit);
   const rows = await db.offer.findMany({
-    select: { id: true, exchangeId: true, status: true, cashbackRate: true, estimatedVolumeRate: true, conditions: true, verifiedAt: true },
+    select: { id: true, exchangeId: true, status: true, cashbackRate: true, conditions: true, verifiedAt: true },
     orderBy: { id: "asc" }, take: limit + 1,
     ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
   });
-  return toPage(rows.map(({ cashbackRate, estimatedVolumeRate, verifiedAt, ...row }) => ({ ...row, cashbackRate: cashbackRate.toString(), estimatedVolumeRate: estimatedVolumeRate?.toFixed() ?? null, verifiedAt: verifiedAt?.toISOString() ?? null })), limit);
+  return toPage(rows.map(({ cashbackRate, verifiedAt, ...row }) => ({ ...row, cashbackRate: cashbackRate.toString(), verifiedAt: verifiedAt?.toISOString() ?? null })), limit);
 }
 
 export async function listAdminLinks(options: AdminListOptions = {}): Promise<AdminPage<AdminContent["links"][number]>> {

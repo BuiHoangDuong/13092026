@@ -151,6 +151,7 @@ model Exchange {
   name                String
   logoUrl             String? // Root-relative path to a repo asset in /exchange-logos/.
   status              PublishStatus       @default(DRAFT)
+  commissionVolumeRate Decimal             @default(0.01) @db.Decimal(12, 10)
   defaultCashbackRate Decimal?            @db.Decimal(6, 4)
   i18n                Json?
   uidAccounts         UidAccount[]
@@ -169,7 +170,6 @@ model Offer {
   exchange     Exchange       @relation(fields: [exchangeId], references: [id], onDelete: Cascade)
   status       PublishStatus  @default(DRAFT)
   cashbackRate Decimal        @db.Decimal(6, 4)
-  estimatedVolumeRate Decimal? @db.Decimal(12, 10)
   conditions   Json?
   verifiedAt   DateTime?
   i18n         Json?
