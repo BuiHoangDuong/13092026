@@ -3,22 +3,15 @@
 **Cashback Affiliate Platform**
 
 - **Status:** Draft v0.9 (UID-first; common adapter base, drift policy, change-only API writes)
-- **Last updated:** 2026-10-14
-- **Access model:** **UID-first, no customer accounts.** A visitor enters exchange + UID and
-  immediately sees that UID's cashback amounts. Ownership is asserted only at withdrawal:
-  the first withdrawal binds an email to that (exchange, UID) via a 6-digit OTP, and a
-  successful OTP opens a short-lived session scoped to that UID. Admin accounts still
-  authenticate normally.
-- **Accepted risk (decided 2026-09-16):** a UID is not secret and amounts are shown to
-  anyone who enters it, so the effective ownership rule is **first claimant wins**. The
-  operator accepts this to keep the flow frictionless. See "Accepted risk" below for the
-  exact exposure and the controls that remain.
+- **Last updated:** 2026-10-30
+- **Access model:** Khách chỉ tra cứu công khai theo sàn + UID và nhận chi trả tự động về UID sàn; không tài khoản, email binding, phiên UID, ví riêng hoặc tự rút tiền. Admin dùng xác thực admin.
+- **Accepted risk:** Người biết sàn + UID xem được số cashback công khai; không có claim UID.
 - **Product language:** English only — English is the single enabled locale; the
   architecture stays i18n-ready but no additional locale ships
 - **Architecture context source of truth:** `architecture.html` at repo root
 
 > This document uses EARS-style acceptance criteria so it can be consumed directly by
-> AI coding agents (Kiro / Claude / Codex) and by humans. Implementation status per
+> AI coding agents (Claude / Codex / agy) and by humans. Implementation status per
 > requirement lives in `tasks.md`, not here. Operator and tester **happy-path**
 > runbook (how to click through the live product) lives in `happy-path-scenarios.md`.
 
@@ -35,14 +28,14 @@ operator's referral links; the operator receives affiliate commission from the
 exchanges and shares a configurable portion back to the UID that generated it as cashback.
 
 The platform lets visitors discover exchanges/offers, obtain referral links, look up the
-cashback their exchange UID has earned **without creating an account**, and withdraw
-available balance after proving control of an email address. Admins manage content, import
-affiliate reports, review first withdrawals, and operate the cashback/withdrawal pipeline.
+cashback their exchange UID has earned **without creating an account**, and receive
+scheduled payments to the same exchange UID without requesting a withdrawal. Admins manage content, import
+affiliate reports, review payments requiring approval, and operate the cashback/withdrawal pipeline.
 
 ### Scope — MVP is the full loop (answer 1D)
 The MVP includes the full cashback loop: public discovery, click tracking, UID cashback
-lookup, affiliate report import, commission attribution, cashback wallet, and withdrawals
-gated by email-OTP binding. Real exchange API integration is deferred; the MVP launches
+lookup, affiliate report import, commission attribution, cashback wallet and scheduled payments;
+Khách chỉ tra cứu công khai và nhận chi trả tự động về UID sàn. Real exchange API integration is deferred; the MVP launches
 with a **smoke/seed phase** (answer 7A) using mock/seed data and manual report import
 before wiring real affiliate data.
 
@@ -51,42 +44,25 @@ before wiring real affiliate data.
   owned by a (exchange, UID) pair, not by a platform account.
 - **Lookup requires both exchange and UID.** A UID alone is never sufficient; the same UID
   string on a different exchange is a different subject (Requirement 14).
-- Lookup shows **actual amounts** (`pending`, `available`) for that UID. This is deliberate
+- Lookup shows **actual customer cashback and aggregate paid amounts** for that UID. This is deliberate
   and is the accepted risk recorded below.
-- **Withdrawal binds an email.** The first withdrawal for a UID sends a 6-digit OTP to the
-  email entered; a correct OTP binds that email to the (exchange, UID) and opens a
-  **30-minute session scoped to that single UID**. Later withdrawals accept only the bound
-  email (Requirement 15).
-- The **first withdrawal per UID always goes to admin review**, regardless of amount.
+- Khách không có truy cập riêng tư; Wallet là sổ nội bộ phục vụ attribution, đối soát và chi tự động.
+
+- From the first payment onward, totals <=20 USD may auto-pay when all controls pass; >20 USD requires admin approval (Req 9.5/22.32). Internal UID payouts follow the daily schedule.
 - Admin authentication is unchanged and still required for all admin routes.
 
-### Accepted risk — first claimant wins
-Recorded explicitly so it is a decision, not an oversight.
-
-- A UID is **not a secret**: it is visible in exchange dashboards, users paste it into
-  support chats and community groups, and on several exchanges UIDs are near-sequential.
-- Because amounts are shown to anyone who enters exchange + UID, an attacker can scan UID
-  ranges to find funded UIDs, then bind their own email to one and request a withdrawal.
-- Affiliate reports do not contain the referred user's email, so **the operator has no
-  ground truth to verify ownership**. Admin review of the first withdrawal is therefore a
-  sanity/velocity check, not proof of ownership.
-- **Controls that remain:** per-IP rate limiting on lookup (Req 14.4), mandatory admin
-  review of every first withdrawal (Req 15.9), OTP attempt/resend limits (Req 15.5–15.7),
-  a permanent audit trail per withdrawal (Req 9.8), and the holding period keeping recent
-  cashback non-withdrawable (Req 8.3).
-- **Consequence accepted by the operator:** cashback may be paid to someone who is not the
-  true UID owner, and the true owner then has no recourse. Revisit if losses appear or if an
-  exchange-side ownership proof becomes available.
+### Accepted risk — công khai cashback theo UID
+- UID không bí mật; ai nhập đúng sàn + UID đều xem số liệu cho phép theo Req 14.
+- Không claim/bind UID hoặc xác minh chủ UID qua email; tiền chỉ về UID nguồn theo Req 22.25/35.
+- Giữ rate-limit lookup, holding/release, receivable, source/recipient readiness, audit và duyệt theo số tiền. Bảo toàn lịch sử thanh toán và queue admin legacy.
 
 ### Business model summary (answers 2B, 3B, 5 — proposed)
 - Operator earns commission from exchanges as root affiliate.
 - Operator shares a configurable percentage of that commission with the UID that generated
   it.
 - Cashback accrues to a per-UID wallet with `pending → available → withdrawn`
-  states; withdrawals target crypto addresses (e.g., USDT).
-- "Fastest withdraw" applies only to **available** balance. Newly attributed
-  commission stays **pending** through a configurable holding period, because exchange
-  affiliate data is typically delayed (e.g., T+1) and subject to revision.
+  states trong sổ nội bộ; USDT tự trả về UID cùng sàn (Req 22).
+- Cashback mới attribution giữ pending qua holding period trước khi đủ điều kiện chi tự động.
 
 ---
 
@@ -100,9 +76,6 @@ Recorded explicitly so it is a decision, not an oversight.
 | Referral link | Operator affiliate link a visitor uses to sign up on an exchange. |
 | UID | The unique account identifier the exchange assigns to a referred user. Opaque string, not secret. |
 | UID account | Platform-side record for one (exchange, UID) pair. Owns the wallet and withdrawals. Has no password. |
-| Bound email | Email attached to a UID account after its first successful OTP. Every later withdrawal must use it. |
-| OTP | 6-digit single-use code emailed to prove control of an address; short TTL, limited attempts. |
-| UID session | Short-lived token issued after a correct OTP, scoped to exactly one UID account. |
 | Affiliate report | File exported from the operator's root affiliate account containing UID-level commission/volume data. |
 | Import batch | One uploaded report file plus its parsing/validation/publish lifecycle. |
 | Staging rows | Parsed-but-not-yet-published rows held for admin preview. |
@@ -118,7 +91,6 @@ Recorded explicitly so it is a decision, not an oversight.
 | Actor | Description | Auth |
 |-------|-------------|------|
 | Visitor | Anonymous public user browsing content and looking up a UID's cashback. | None |
-| UID claimant | Visitor withdrawing a UID's cashback. Proves email control by OTP; holds a 30-min UID-scoped session. No account. | Email OTP → UID session |
 | Admin | Operator staff managing content, imports, cashback, withdrawals. | Admin account (single role — answer 14A) |
 | System / Worker | Background process that parses reports, attributes commission, and runs scheduled jobs. | Internal |
 | Exchange (external) | Binance / MEXC / Bybit. Destination of referral links; source of affiliate reports. Out of app boundary. | N/A |
@@ -153,7 +125,7 @@ These are fixed decisions that requirements must respect.
 ### Monorepo structure
 ```
 apps/
-  web/            # Next.js 15 App Router (public + lookup/withdraw + admin UI)
+  web/            # Next.js 15 App Router (public + lookup công khai + admin UI)
   worker/         # long-running Node.js process (parse/publish/attribute jobs)
 packages/
   contracts/      # shared request/response + report schemas (no secrets)
@@ -161,7 +133,7 @@ packages/
   db/             # Prisma schema + migrations
 infra/            # Docker Compose (local), Railway config, reverse proxy
 architecture.html # handoff document
-.kiro/specs/      # this spec
+docs/specs/      # this spec
 ```
 
 ---
@@ -215,20 +187,16 @@ to the exchange while the platform records the click.
 account at all, so that operational access is controlled without adding friction for people
 claiming cashback.
 
-> This requirement covers admin authentication only; end-user identity is a UID account
-> proven by email OTP (Requirement 15).
+> Requirement này chỉ xác thực admin; sàn + UID là khóa tra cứu, không phải principal khách đăng nhập.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL authenticate admins with email + credential and SHALL maintain admin
    sessions as server-side records with a hashed token and an expiry.
-2. THE SYSTEM SHALL NOT provide any end-user registration, username, or password flow;
-   end-user access to money SHALL depend only on a UID session (Requirement 15).
+2. THE SYSTEM SHALL không cung cấp tài khoản, email binding, phiên UID hay ví riêng cho khách; chi theo lịch không phụ thuộc khách đăng nhập.
 3. THE SYSTEM SHALL verify authorization on the server for every non-public action; THE
    SYSTEM SHALL NOT trust an exchange id, UID, or UID-account id supplied by the browser as
    proof of entitlement.
-4. THE SYSTEM SHALL keep admin principals and UID sessions strictly separate: an admin
-   session SHALL NOT grant withdrawal rights over a UID, and a UID session SHALL NOT grant
-   any admin capability.
+4. THE SYSTEM SHALL giới hạn admin session cho thao tác admin được cấp quyền; khách không có quyền sửa dữ liệu hoặc ra lệnh chi.
 5. THE SYSTEM SHALL store credentials/secrets according to the chosen auth solution
    (**pending decision — answer 13**) and SHALL never expose secret values to clients.
 
@@ -252,12 +220,9 @@ half-translated pages and a future market can be added without a rewrite.
    THEN THE SYSTEM SHALL respond 404 and SHALL NOT render content in that language.
 
 ### Requirement 5: UID accounts (identity of a cashback owner)
-**User Story:** As the operator, I want each (exchange, UID) pair to be a first-class record
-that owns its wallet and withdrawals, so that cashback can accrue and be claimed without any
-platform account.
+**User Story:** Là operator, tôi muốn mỗi cặp sàn + UID có sổ cashback riêng trong hệ thống để tích lũy và chi tự động mà không có tài khoản khách.
 
-> Cashback accrues to the UID itself; ownership is asserted at withdrawal time
-> (Requirement 15). See "Accepted risk — first claimant wins".
+> Cashback thuộc cặp sàn + UID; không có bước claim hoặc xác thực khách trước chi tự động.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL treat a (exchange, UID) pair as the unit of cashback ownership and
@@ -269,10 +234,8 @@ platform account.
    THE SYSTEM SHALL create the UID account so cashback can accrue to it.
 4. THE SYSTEM SHALL NOT create or mutate a UID account as a side effect of a cashback
    lookup; lookups are read-only (Requirement 14.5).
-5. THE SYSTEM SHALL attribute cashback to a UID account regardless of whether an email is
-   bound; binding is required only to withdraw (Requirement 15).
-6. THE SYSTEM SHALL NOT expose a UID account's bound email, payout address, or withdrawal
-   history to an unauthenticated caller (Requirement 14.3).
+5. WHEN commission hợp lệ được attribution, THE SYSTEM SHALL ghi cashback cho UID mà không yêu cầu thao tác xác nhận từ khách.
+6. THE SYSTEM SHALL chỉ công khai các trường Req 14; định danh, đích chi và lịch sử từng lệnh SHALL chỉ dành cho admin được cấp quyền.
 
 ### Requirement 6: Affiliate data ingest pipeline
 **User Story:** As an admin, I want manual reports and approved API data normalized
@@ -293,7 +256,7 @@ commission data are published without corrupting the live dashboard or wallet.
    staging rows.
 4. THE SYSTEM SHALL NOT execute formulas or macros contained in spreadsheet files.
 5. WHILE a batch is not committed, THE SYSTEM SHALL keep its data in staging and SHALL
-   NOT expose it to any public lookup or UID-session read.
+   NOT expose it to any public lookup.
 6. WHEN an admin reviews a batch, THE SYSTEM SHALL show its dataset kind, source
    method, report period, source as-of time, new/duplicate/error/conflicting row
    counts, validation totals, and whether it can affect cashback.
@@ -450,8 +413,7 @@ credited correctly.
    reversal), preserving prior versions for audit.
 
 ### Requirement 8: Cashback wallet & balance states
-**User Story:** As a visitor holding a UID, I want to see that UID's cashback balance and its
-status, so that I know what is earned, what is available, and what has been withdrawn.
+**User Story:** Là operator, tôi muốn sổ ví nội bộ bảo toàn cashback theo UID/tài sản để attribution, release và đối soát chi tự động; khách xem tổng công khai theo Req 14.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL maintain, per UID account and asset, a wallet with balances split into
@@ -462,55 +424,31 @@ status, so that I know what is earned, what is available, and what has been with
    SHALL move it from `pending` to `available`.
 4. IF a source report is later corrected downward, THEN THE SYSTEM SHALL apply the
    reversal against `pending` first, then `available`; neither balance SHALL go negative.
-5. WHEN a lookup returns a UID's cashback, THE SYSTEM SHALL show `pending` and `available`
-   balances, the last import time, the source data "as-of" time, and the commission vs
-   cashback rows in Requirement 14.2; THE SYSTEM SHALL distinguish "no data" from a zero
-   value.
-6. WHILE a UID session is active, THE SYSTEM SHALL expose that UID's wallet-movement
-   history (credit, hold release, withdrawal reserve/release/settle, adjustment, reversal,
-   clawback). Unauthenticated lookup MAY show commission vs cashback split rows
-   (Requirement 14.2, 14.7) and SHALL NOT show those wallet-movement types
-   (Requirement 14.3).
+5. WHEN tra cứu cashback, THE SYSTEM SHALL hiển thị các tổng và bảng tối giản theo Requirement 14, kèm thời điểm publish/as-of và phân biệt thiếu dữ liệu với báo cáo 0; không gọi số chưa trả là tiền đã nhận.
+6. THE SYSTEM SHALL chỉ cung cấp lịch sử biến động ví nội bộ cho admin có quyền; lookup chỉ gồm số liệu Req 14, không có movement types.
 7. IF a downward correction exceeds the UID account's `pending + available` (because cashback
    was already withdrawn/settled), THEN THE SYSTEM SHALL record the uncovered remainder as
    a `receivable` (clawback). WHILE `receivable > 0`, THE SYSTEM SHALL block new
    withdrawals, and subsequent cashback credits SHALL first offset the `receivable` before
    increasing `pending`.
 
-### Requirement 9: Withdrawal flow (fast, with fraud guardrails)
-**User Story:** As a UID claimant, I want to withdraw the UID's available cashback to a
-crypto address, so that I receive the earnings with minimal delay.
+### Requirement 9: Scheduled payment execution and guardrails
+**User Story:** Là người vận hành, tôi muốn tự trả cashback theo lịch và xử lý approval trên sổ chung, để khách không cần yêu cầu rút tiền.
 
-> **Đề xuất liên quan đang rà soát:** Req 21 bổ sung coin/mạng, ngưỡng USD và gửi tự động. Khi triển khai, cập nhật đồng bộ tiêu chí 9.3, 9.5, 9.6 và 9.10 để phân biệt duyệt yêu cầu, gửi giao dịch, xác nhận và hủy; giữ first review. Mâu thuẫn cần xử lý khi chốt: 9.5 dùng "at or below" ngưỡng theo số lượng tài sản, còn 21.3 dùng "nhỏ hơn 20 USD"; 9.10 cho hủy mọi trạng thái trước `PAID`, nhưng sau broadcast không thể hủy giao dịch on-chain. Luồng hiện hành dưới đây chưa được thay bằng luồng tự động.
+> Câu 13: không có customer withdrawal/cancel/partial. Withdrawal nếu tiếp tục dùng chỉ là execution/legacy history. Runtime cũ phải cutover theo Req 22.24/35.
 
 #### Acceptance Criteria
-1. WHILE no valid UID session exists for the target UID account, THE SYSTEM SHALL reject
-   every withdrawal request, cancel, and history read for it (Requirement 15).
-2. WHEN a claimant requests a withdrawal, THE SYSTEM SHALL only allow an amount less than
-   or equal to that UID account's `available` balance for the selected asset.
-3. THE SYSTEM SHALL require a payout destination (e.g., network + address) and SHALL
-   validate its format for the selected asset/network before accepting the request.
-4. WHILE a withdrawal request is open, THE SYSTEM SHALL move the requested amount from
-   `available` into `reserved` so it cannot be requested twice (no double-spend of the
-   same balance).
-5. IF this is the **first** withdrawal for the UID account, THEN THE SYSTEM SHALL route it to
-   admin manual review regardless of amount and SHALL NOT auto-approve it. ELSE IF the
-   requested amount is at or below a configurable auto-approval threshold, THEN THE SYSTEM
-   SHALL auto-approve; ELSE THE SYSTEM SHALL route it to admin manual review.
-6. WHEN a withdrawal is approved and marked paid, THE SYSTEM SHALL move the amount from
-   `reserved` to `withdrawn`; payout execution is **manual by admin in MVP** (mark as
-   paid with a reference), automatable later.
-7. IF a withdrawal is rejected or cancelled, THEN THE SYSTEM SHALL release the reserved
-   amount from `reserved` back to `available`.
-8. THE SYSTEM SHALL NOT allow withdrawal of `pending` balance.
-9. THE SYSTEM SHALL persist an auditable event for every withdrawal state change, capturing
-   from-status, to-status, actor (claimant/admin/system), timestamp, the UID account, the
-   email used, and any note/payout reference.
-10. WHEN a claimant cancels a withdrawal that has not yet reached `PAID`, THE SYSTEM SHALL
-    move it to `CANCELLED` and release the reserved amount back to `available`; IF it is
-    already `PAID`, THEN THE SYSTEM SHALL reject the cancel.
-11. WHILE a UID account has an outstanding `receivable > 0`, THE SYSTEM SHALL reject new
-    withdrawal requests until the receivable is cleared.
+1. THE SYSTEM SHALL dùng system authority cho worker payouts và xác thực admin cho admin commands; khách chỉ tra cứu công khai, không có private wallet/history API.
+2. WHEN lên lệnh theo lịch, THE SYSTEM SHALL lấy toàn bộ phần tiền đủ điều kiện của nhóm sàn + UID + tài sản tại cutoff từ CustomerPayable; SHALL NOT nhận amount hoặc yêu cầu rút một phần từ khách, không chi quá nguồn khả dụng/chưa phân bổ.
+3. THE SYSTEM SHALL verify the destination snapshot; internal USDT SHALL go to the same exchange + UID owning the cashback. Customer requests SHALL NOT change payout UID/address/asset. Proposed on-chain channels remain separately gated.
+4. WHEN an authorised execution claims payables, THE SYSTEM SHALL reserve eligible funds once atomically under Req 22.21; payable sync alone SHALL NOT reserve money.
+5. IF a valid policy valuation of the complete payment execution (fixed 1:1 for internal USDT under Req 22.34, market quotes where required) is less than or equal to 20 USD and all other controls pass, THEN THE SYSTEM MAY auto-approve and proceed to payment from the first payment onward; ELSE THE SYSTEM SHALL require manual approval. THE SYSTEM SHALL NOT require admin review solely because this is the UID account's first payment. Exactly 20 USD is eligible for auto-approval; an amount greater than 20 USD or missing/stale valuation where a market quote is required SHALL NOT auto-approve. No other per-asset threshold SHALL replace this rule; internal USDT uses its fixed 20 USDT equivalent under Req 22.34. First-payment status and cancelled/rejected prior requests SHALL NOT impose a separate initial-review gate. Internal UID payments SHALL still follow schedule and recipient-readiness rules in Req 22.25–36.
+6. WHEN transfer success is verified under Req 22.9, THE SYSTEM SHALL settle reserved to withdrawn once; approval/acceptance alone SHALL NOT settle. Admin/manual and automatic executions use the same rule.
+7. IF admin rejects/cancels an execution proven not dispatched, THE SYSTEM SHALL release its allocations once after applying corrections; unpaid entitlement SHALL remain on the same payable.
+8. THE SYSTEM SHALL NOT pay pending cashback before release.
+9. THE SYSTEM SHALL audit every execution state change with from/to status, admin/system actor, time, UID/source account and reference; customer email/session SHALL NOT be required for scheduled payout audit.
+10. THE SYSTEM SHALL reject customer create/cancel-withdrawal actions kể cả request từ client cũ. Admin cancellation SHALL be pre-DISPATCHING with proof of no submission; DISPATCHING/SUBMITTED/UNKNOWN/PAID cannot be cancelled under Req 22.22.
+11. WHILE receivable > 0, THE SYSTEM SHALL block new payment execution; already-submitted transfers SHALL still be reconciled.
 
 ### Requirement 10: Admin content management
 **User Story:** As an admin, I want to manage exchanges, offers, referral links, and
@@ -560,7 +498,7 @@ withdrawals, so that I can operate the platform.
 **User Story:** As the operator, I want long-running work handled by a worker, so that
 web requests stay fast and imports/attribution run reliably.
 
-> **Đề xuất liên quan đang rà soát:** Req 21 cần tác vụ thanh toán và đối soát. Cách chạy theo ngày, giờ/múi giờ và xử lý ngày bỏ lỡ nằm ở Open decisions; chưa thêm lịch mặc định.
+> **Lịch đã chốt cho USDT nội bộ (Req 22.26/28):** một đợt mỗi ngày lúc 23:00 UTC (UTC+0); bỏ lỡ đợt thì chờ 23:00 UTC kế tiếp, không tự gửi bù ngay. Lịch cho đề xuất on-chain Req 21 chưa được quyết định bởi lựa chọn này.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL run the worker as a long-running Node.js process that polls for
@@ -576,8 +514,11 @@ web requests stay fast and imports/attribution run reliably.
 5. WHEN a job fails on a transient error, THE SYSTEM SHALL retry with backoff and jitter;
    IF the error is a configuration/permission error, THEN THE SYSTEM SHALL surface it and
    SHALL NOT retry indefinitely.
+   Retrying a job SHALL NOT authorize another money transfer: internal USDT payout retries
+   SHALL follow the next-slot rule in Req 22.31; uncertain outcomes SHALL be reconciled first.
 6. THE SYSTEM SHALL use a PostgreSQL-backed job queue for launch scale; Redis/BullMQ is
    only to be evaluated if throughput/backlog grows.
+7. WHEN triển khai sổ khoản phải trả Req 22, THE SYSTEM SHALL nối các thay đổi ingest/commission/cashback đã commit sang tác vụ đồng bộ `CustomerPayable` bền vững trong PostgreSQL; đồng bộ và command chi trả auto/manual SHALL chạy async theo Req 22.16–22.20, không dùng tác vụ chỉ lưu trong bộ nhớ hoặc fire-and-forget.
 
 ### Requirement 13: Scheduled affiliate API sync
 **User Story:** As the operator, I want supported exchanges to refresh their affiliate
@@ -682,96 +623,22 @@ without a usable API.
     The schedule SHALL remain disabled until nonzero daily values are reconciled
     against the affiliate portal/export; activity SHALL never become payable commission.
 
-### Requirement 14: Cashback lookup by exchange + UID
-**User Story:** As a visitor, I want to enter my exchange and UID and immediately see the
-cashback that UID has earned, so that I can decide to withdraw without creating an account.
+### Requirement 14: Tra cứu cashback công khai theo sàn + UID
+**User Story:** Là khách truy cập, tôi muốn xem cashback theo ngày báo cáo gần nhất của sàn và tổng đã trả cho UID, không tạo tài khoản hoặc yêu cầu rút tiền.
 
 #### Acceptance Criteria
-1. THE SYSTEM SHALL require **both** an exchange selection and a UID to perform a lookup;
-   IF either is missing, THEN THE SYSTEM SHALL reject the request and SHALL NOT return any
-   balance. A UID without an exchange SHALL NEVER be resolved.
-2. WHEN a visitor submits a valid exchange + UID that has attributed cashback, THE SYSTEM
-   SHALL return that UID account's `pending` and `available` amounts per asset (what they
-   receive), the last import time, the source "as-of" time, and a **transaction table** of
-   attributed commissions for that UID: period, asset, **exchange-paid commission**,
-   cashback rate, and **cashback shared with the UID**.
-3. THE SYSTEM SHALL NOT include in a lookup response: the bound email (in any form), payout
-   addresses, withdrawal records, wallet movement types (hold release, reserve, settle,
-   clawback), `reserved`/`withdrawn`/`receivable` buckets, or any other UID's data.
-4. WHILE serving lookups, THE SYSTEM SHALL rate-limit per client IP; IF the limit is
-   exceeded, THEN THE SYSTEM SHALL reject further lookups with a retry-after response
-   rather than answering.
-5. THE SYSTEM SHALL treat lookup as read-only: it SHALL NOT create or mutate a UID account,
-   wallet, email binding, OTP, or session.
-6. IF the (exchange, UID) has no attributed cashback, THEN THE SYSTEM SHALL return an
-   explicit "no cashback data for this UID under our referral links" result, using the same
-   response shape whether the UID is unknown or known-with-zero, and SHALL distinguish this
-   from a real zero balance per Requirement 8.5.
-7. WHEN the lookup returns attributed cashback, THE SYSTEM SHALL list each attributed
-   `CommissionRecord` for that (exchange, UID) so the visitor can see, per period, how
-   much the exchange paid versus how much was shared with them
-   (`creditedCashback` = that commission × the snapshotted rate). Newest period first,
-   cap 100 rows. Empty `transactions` when `hasData` is false.
-   WHILE a newer published version exists but ATTRIBUTE has not yet written a wallet
-   entry whose `sourceRef` is that version id, THE SYSTEM SHALL show the commission
-   amount of the latest applied version, not the in-flight `reconciledAmount`. IF no
-   applied entry exists, THE SYSTEM SHALL show commission 0. WHEN more than 100
-   attributed rows exist, THE SYSTEM SHALL set `hasMore` and return only the newest 100.
+1. WHEN khách tra cứu, THE SYSTEM SHALL yêu cầu cả sàn và UID; IF thiếu một trong hai, THE SYSTEM SHALL từ chối và không trả số liệu. UID SHALL giữ nguyên chuỗi, kể cả số 0 đầu.
+2. WHEN xác định ngày báo cáo D của sàn, THE SYSTEM SHALL chọn ngày UTC gần nhất không muộn hơn hôm qua UTC có `ImportBatch` với `datasetKind=COMMISSION`, `status=PUBLISHED`, phủ trọn `[D,D+1)` và có chi tiết ngày (`periodEnd − periodStart ≤ 1 ngày` hoặc `reportType=TRANSACTION`); batch SHALL không partial (`sourceAsOf IS NULL` hoặc `sourceAsOf >= periodEnd`). D SHALL dựa trên coverage của sàn, không phụ thuộc UID có commission hay không.
+3. WHEN trả kết quả, THE SYSTEM SHALL trả `summaryPeriods { reportDay, rollingStart, end }`, trong đó `reportDay=D`, `rollingStart=D−29`, `end=D+1` theo UTC; IF chưa có D, THE SYSTEM SHALL trả cả ba trường null. WHEN `hasData=true` theo AC6, THE SYSTEM SHALL trả và hiển thị cho mỗi tài sản `previousDay` (giữ tên metric, kỳ `[D,D+1)`) và `rolling30Days` (kỳ `[D−29,D+1)`), tính từ `creditedCashback` đã attribution theo kỳ nguồn; kèm freshness/publish/as-of và `totalPaid=Wallet.withdrawn`. Settle payables SHALL cộng vào Wallet.withdrawn, không cộng execution/payable lần hai.
+4. WHILE phục vụ lookup, THE SYSTEM SHALL áp rate-limit theo IP bằng counter độc lập cho từng độ dài cửa sổ; IF vượt hạn mức, THE SYSTEM SHALL trả 429 kèm Retry-After, không tính lookup.
+5. WHEN tra cứu, THE SYSTEM SHALL chỉ đọc dữ liệu nghiệp vụ, không tạo/sửa UID account, Wallet hoặc sổ tiền; counter rate-limit là ghi kỹ thuật được phép.
+6. IF cặp (sàn, UID) chưa có bất kỳ cashback đã attribution nào, dù UID không tồn tại hay đã biết nhưng chưa có cashback, THE SYSTEM SHALL trả `hasData=false` và thông điệp "no cashback data for this UID under our referral links", cùng response shape và dữ liệu rỗng cho cả hai trường hợp; SHALL không tiết lộ UID nào thuộc nền tảng. WHEN cặp (sàn, UID) đã có cashback được attribution, THE SYSTEM SHALL trả `hasData=true`, không phụ thuộc số dư hiện tại dương hay bằng 0. WHEN `hasData=true`, THE SYSTEM SHALL mới trả/hiển thị metric: IF D đã xác nhận coverage mà UID không có dòng commission trong kỳ tương ứng, THE SYSTEM SHALL trả `REPORTED` với amount 0; IF sàn chưa có D hợp lệ, THE SYSTEM SHALL trả `NO_DATA` với amount null. Coverage của sàn SHALL không tự biến UID chưa có cashback attribution thành `hasData=true`.
+7. WHEN `hasData=true`, THE SYSTEM SHALL trả bảng mới nhất trước, tối đa 100 dòng và `hasMore`, chỉ gồm id kỹ thuật, ngày/kỳ nguồn, tài sản, UID và `creditedCashback`; bảng UI chỉ có ngày/kỳ, tài sản, UID, tiền khách nhận. THE SYSTEM SHALL không công khai commission, rate, volume, email, địa chỉ nhận, lịch sử lệnh chi, movement types hoặc bucket `pending/available/reserved/withdrawn/receivable`; `totalPaid` là tổng được phép công khai.
+8. WHEN `hasData=true` và tính tổng ngày/30 ngày, THE SYSTEM SHALL dùng mọi bản ghi liên quan theo biên UTC `[start,end)`, không giới hạn theo 100 dòng của bảng; kỳ nằm trọn cửa sổ SHALL cộng nguyên khoản. IF có bản ghi nhiều ngày cắt biên mà không có chi tiết ngày, THE SYSTEM SHALL trả `INSUFFICIENT_DETAIL` với amount null cho metric bị ảnh hưởng, ưu tiên hơn zero khi đã xác định cửa sổ theo D; chưa có D vẫn NO_DATA và không dựng cửa sổ. Không chia đều theo ngày. Batch `sourceTz` khác UTC có thể không phủ trọn ngày UTC và SHALL không được coi là coverage chỉ vì mang nhãn ngày nguồn. Publish chưa ATTRIBUTE SHALL không thay khoản cashback đã ghi có.
 
-### Requirement 15: Email OTP binding & UID session
-**User Story:** As a UID claimant, I want to prove I control an email address before money
-moves, so that later withdrawals for that UID are restricted to me.
+### Requirement 15: (removed — Email OTP binding & private UID read access)
 
-#### Acceptance Criteria
-1. WHEN a claimant starts a withdrawal for a UID account with **no** bound email, THE SYSTEM
-   SHALL accept an email address, generate a 6-digit numeric OTP, store it hashed with an
-   expiry, and send it to that address.
-2. WHEN a claimant starts a withdrawal for a UID account that **already has** a bound email,
-   THE SYSTEM SHALL send the OTP only to the bound email. IF the submitted email does not
-   match the bound email, THEN THE SYSTEM SHALL reject the request with a message stating the
-   email does not match the one registered for this UID, and SHALL NOT send an OTP to the
-   submitted address, and SHALL NOT reveal the bound address.
-3. WHEN a submitted OTP is correct and unexpired, THE SYSTEM SHALL mark it consumed, bind the
-   email to the UID account if not already bound, and issue a session scoped to **exactly
-   that one UID account** with a 30-minute expiry.
-4. THE SYSTEM SHALL treat an OTP as single-use and SHALL expire it after a configurable TTL
-   (proposed 5 minutes); an expired or already-consumed OTP SHALL be rejected.
-5. THE SYSTEM SHALL limit incorrect OTP attempts per OTP (proposed 5); WHEN the limit is
-   reached, THE SYSTEM SHALL invalidate that OTP and require a new one.
-6. THE SYSTEM SHALL enforce a cooldown between OTP sends for the same UID account and a
-   per-UID daily send cap, so OTP sending cannot be used to exhaust the email quota or to
-   spam an address.
-7. THE SYSTEM SHALL rate-limit OTP sends per client IP independently of the per-UID limits.
-8. THE SYSTEM SHALL store only a hash of the OTP; THE SYSTEM SHALL NOT log or return the OTP
-   value, and SHALL NOT include it in any API response.
-9. THE SYSTEM SHALL route the first withdrawal of a UID account to admin review regardless of
-   amount (Requirement 9.5); binding an email SHALL NOT by itself authorise a payout.
-10. WHILE a UID session is valid, THE SYSTEM SHALL scope every action to its UID account only;
-    THE SYSTEM SHALL derive the UID account from the session, never from a client-supplied
-    identifier.
-11. WHEN a UID session expires or is used against a different UID account, THE SYSTEM SHALL
-    reject the request and require a fresh OTP.
-
-### Requirement 16: Outbound email delivery
-**User Story:** As the operator, I want OTP emails delivered reliably through Resend, so that
-claimants can complete withdrawals and delivery problems are visible.
-
-#### Acceptance Criteria
-1. THE SYSTEM SHALL send transactional email through **Resend**, configured entirely from
-   environment variables (API key, from-address), with no secret in the client bundle.
-2. THE SYSTEM SHALL send from an operator-owned verified domain. Resend's shared testing
-   domain only delivers to the Resend account owner's own address, so it SHALL NOT be used
-   for real claimant email.
-3. IF the email provider returns an error or times out, THEN THE SYSTEM SHALL NOT create a
-   withdrawal in a state that implies an OTP was delivered, and SHALL surface a retryable
-   error to the claimant.
-4. THE SYSTEM SHALL treat the provider's per-day and per-month send quota as a finite
-   resource: THE SYSTEM SHALL apply the limits in Requirement 15.6–15.7 before sending, and
-   SHALL surface remaining-quota problems to admins rather than failing silently.
-5. THE SYSTEM SHALL NOT include the OTP, wallet balances, payout addresses, or any other
-   UID's data in email content beyond what the recipient already controls.
-6. THE SYSTEM SHALL record, per OTP send, whether the provider accepted the request and any
-   provider message id, for support and audit purposes.
+### Requirement 16: (removed — Outbound email delivery chỉ phục vụ xác thực khách)
 
 ### Requirement 17: Public Online Rebate Ledger (social proof)
 **User Story:** As a visitor, I want to see a moving stream of large cashback credits
@@ -790,12 +657,12 @@ my own UID.
    in that interim. THE SYSTEM SHALL keep a visible badge that the rows are
    illustrative, not live data.
 4. THE SYSTEM SHALL mask every UID in the ledger (partial characters only) and
-   SHALL NOT include bound email, payout address, withdrawal records, movement
+   SHALL NOT include email, payout address, withdrawal records, movement
    history, or `reserved` / `withdrawn` / `receivable`.
 5. IF the visitor's client requests reduced motion, THEN THE SYSTEM SHALL show
    the same rows without continuous animation.
 6. THE SYSTEM SHALL NOT treat the ledger as a cashback lookup: a visitor still
-   uses Requirement 14 (exchange + UID) to see their own `pending` / `available`.
+   uses Requirement 14 (exchange + UID) to see their own published cashback and total paid.
 7. WHEN the operator later switches the ticker to live credits, THE SYSTEM SHALL
    drop the fake generator and the illustrative badge in the same change (future
    task — not this interim).
@@ -869,52 +736,116 @@ tab) to do several jobs without losing my place.
 
 ### Requirement 19: Bảng tính tiền hoàn phí bị bỏ lỡ
 
-**User Story:** Là khách truy cập, tôi muốn ước tính khoản hoàn phí có thể đã bỏ lỡ để hiểu giá trị của ưu đãi referral đủ điều kiện.
+**User Story:** Là khách truy cập, tôi muốn chỉ nhập volume giao dịch mỗi tháng để ước tính tiền hoàn theo offer.
 
 #### Acceptance Criteria
-1. WHEN khách nhập các giả định tính hoàn phí, THE SYSTEM SHALL hiển thị kết quả ước tính cùng đầu vào, đơn vị tiền và công thức để người dùng kiểm tra được cách tính.
-2. IF bảng tính dùng phí giao dịch làm đầu vào, THE SYSTEM SHALL phân biệt tỷ lệ hoa hồng affiliate trên phí và tỷ lệ hoàn cho khách trên hoa hồng; công thức là `phí giao dịch × tỷ lệ hoa hồng affiliate × tỷ lệ hoàn cho khách`, với tỷ lệ quy về số thập phân.
-3. WHEN người dùng chọn một kỳ ước tính được hỗ trợ, THE SYSTEM SHALL hiển thị bảng phí giao dịch và khoản hoàn phí ước tính cho kỳ đó.
-4. IF đầu vào bắt buộc bị trống, không phải số hữu hạn, âm hoặc có tỷ lệ ngoài khoảng 0–100%, THE SYSTEM SHALL báo lỗi liên quan và không hiển thị kết quả tiền hợp lệ.
-5. THE SYSTEM SHALL phân biệt ước tính với số dư ví thực tế; bảng tính không tạo tiền ghi có hoặc cam kết được thanh toán.
-6. IF dùng số liệu mẫu hoặc giả định phí/tỷ lệ không đổi theo thời gian, THE SYSTEM SHALL ghi rõ giả định và điều kiện referral áp dụng.
-7. THE SYSTEM SHALL tính toán trên trình duyệt, không gửi hay lưu đầu vào bảng tính lên server, và không làm chậm nội dung ưu đãi render server-side theo Requirement 1.1.
-8. THE SYSTEM SHALL dùng phí giao dịch hàng tháng bằng USDT (0–1,000,000, tối đa 8 chữ số thập phân), giả định tỷ lệ affiliate commission có thể chỉnh (0–100%, mặc định minh họa 50%), và cashback share của offer đã công bố được chọn; hiển thị ước tính tháng và 12 tháng với giả định không đổi, làm tròn half-up đến 2 chữ số thập phân chỉ khi hiển thị. WHEN một sàn có nhiều offers, THE SYSTEM SHALL cho chọn offer cụ thể; IF không có published offer hợp lệ, THE SYSTEM SHALL không hiển thị kết quả tiền hợp lệ.
+1. WHEN mở calculator, THE SYSTEM SHALL chỉ cung cấp một đầu vào số cho khách là volume giao dịch/tháng bằng USDT, có giá trị mặc định `1,000,000 USDT` (giá trị số 1000000, có thể chỉnh mặc định sau trong code) và dấu phân tách hàng nghìn; THE SYSTEM SHALL không cung cấp ô phần trăm phí giao dịch hoặc phần trăm hoa hồng affiliate.
+2. WHEN admin cấu hình offer, THE SYSTEM SHALL cho nhập `estimatedVolumeRate` nullable, là phần của volume trong khoảng 0–1, tối đa 10 chữ số thập phân; IF ngoài khoảng hoặc quá precision, THE SYSTEM SHALL từ chối lưu và nêu lỗi ở trường tương ứng.
+3. WHEN khách chọn offer hợp lệ, THE SYSTEM SHALL tính `tháng = volume × estimatedVolumeRate`, `năm = tháng × 12` chính xác, chỉ round half-up đến 2 chữ số thập phân ở hiển thị cuối; không làm tròn tháng rồi nhân năm.
+4. IF volume trống, không hợp lệ, âm, vượt 16 chữ số nguyên hoặc 8 chữ số thập phân, THE SYSTEM SHALL báo lỗi và không hiển thị kết quả tiền hợp lệ.
+5. WHEN tính ước lượng, THE SYSTEM SHALL chỉ dùng published offer có `estimatedVolumeRate` khác null; offer chưa có hệ số SHALL không xuất hiện trong calculator. Hệ số 0 SHALL hợp lệ. IF không có offer đủ điều kiện, THE SYSTEM SHALL hiển thị trạng thái không có ước tính.
+6. WHEN có nhiều offer đủ điều kiện, THE SYSTEM SHALL cho chọn offer và gắn kết quả/CTA với cùng offer; UI SHALL trình bày ước tính tháng/năm, đơn vị, giả định volume/hệ số không đổi và điều kiện referral; không hiển thị cơ cấu hoa hồng nền tảng.
+7. WHEN khách thay volume, THE SYSTEM SHALL tính trên trình duyệt, không gửi/lưu đầu vào lên server, không tạo tiền ghi có và không làm chậm nội dung offer SSR.
+8. WHEN hiển thị ước tính, THE SYSTEM SHALL phân biệt với cashback thực tế và không cam kết được thanh toán.
 
 ### Requirement 20: Giao diện Dark Aurora và tên website tiếng Anh (hướng giao diện đã chốt)
 
-**User Story:** Là khách truy cập, tôi muốn giao diện rõ ràng và tên website nhất quán để dễ tìm ưu đãi, tính hoàn phí và truy cập ví.
+**User Story:** Là khách truy cập, tôi muốn giao diện rõ ràng và tên website nhất quán để dễ tìm ưu đãi, tính và tra cứu hoàn phí tự động về UID sàn.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL tổ chức trang chủ để khách dễ tìm phần giới thiệu, tra cứu exchange + UID, bảng tính và các ưu đãi đã công bố.
 2. THE SYSTEM SHALL cung cấp bố cục dùng được từ chiều rộng 360px đến 1440px không cuộn ngang, có điều hướng mobile, thẻ ưu đãi dễ đọc và khoảng cách hiển thị nhất quán.
 3. THE SYSTEM SHALL gắn nhãn trường nhập, hiển thị focus bàn phím, đạt độ tương phản chữ WCAG 2.1 AA và tôn trọng `prefers-reduced-motion`.
-4. WHEN khách chọn Wallet, THE SYSTEM SHALL mở luồng ví/rút tiền hiện có, giữ kiểm soát OTP và UID session.
+4. THE SYSTEM SHALL bỏ Wallet, xác thực email và thao tác yêu cầu/hủy rút khỏi luồng khách; `/withdraw` SHALL redirect `/#lookup` cho link cũ. POST tạo/hủy yêu cầu rút cũ SHALL trả 410 `CUSTOMER_WITHDRAWALS_RETIRED` mà không reserve/enqueue job, không phụ thuộc DB gate. THE SYSTEM SHALL gỡ API đọc ví/lịch sử riêng tư của khách; giữ queue admin legacy, sổ payables và dữ liệu lịch sử, không tự bật sender/gate.
 5. THE SYSTEM SHALL dùng tên tiếng Anh đã được duyệt nhất quán ở header, footer và metadata.
 6. THE SYSTEM SHALL giữ giao diện sản phẩm bằng tiếng Anh theo Requirement 4; specs tiếng Việt không thay đổi locale website.
 7. THE SYSTEM SHALL dùng hướng Dark Aurora cho giao diện public, giữ hero và hình ví minh họa của mockup đã chọn, đặt khung `THE CASHBACK OPPORTUNITY CHECK` nổi bật ngay bên dưới hình ví, rồi tới dải logo sàn, tra cứu exchange + UID và ưu đãi đã công bố; hình ví và kết quả ước tính SHALL có nhãn phân biệt với số dư tài khoản thật.
+8. THE SYSTEM SHALL mô tả hoàn tiền theo lịch về UID sàn, không yêu cầu khách xác minh email/bấm rút; hướng dẫn/FAQ SHALL không hứa nhận ngay hoặc bỏ qua holding, approval, nguồn chi và readiness của Req 22. Scope khách chỉ gồm lookup công khai và chi tự động về UID sàn; không dashboard email hoặc ví nhận riêng.
 
 ### Requirement 21: Thanh toán ETH/BNB/SOL và kiểm thử theo ngày (đề xuất)
 
-**User Story:** Là người vận hành, tôi muốn khoản rút đủ điều kiện dưới 20 USD được thanh toán tự động, có kiểm thử theo ngày, để giảm xử lý thủ công khoản nhỏ.
+> Kênh on-chain là đề xuất riêng chưa bật; không tạo customer withdrawal UI hoặc cho khách chọn ví nhận trong phạm vi auto-only Req 22.35.
+
+**User Story:** Là người vận hành, tôi muốn khoản rút đủ điều kiện không quá 20 USD được thanh toán tự động, có kiểm thử theo ngày, để giảm xử lý thủ công khoản nhỏ.
 
 #### Acceptance Criteria
 1. THE SYSTEM SHALL hỗ trợ coin gốc theo đúng cặp `ETH/Ethereum mainnet`, `BNB/BSC mainnet`, `SOL/Solana mainnet`; không tự thay bằng USDT hoặc token được bọc.
 2. WHEN người nhận cung cấp địa chỉ, THE SYSTEM SHALL kiểm tra định dạng theo mạng được chọn, phân biệt địa chỉ EVM với địa chỉ Solana và từ chối địa chỉ EVM có chữ hoa/thường lẫn lộn nhưng sai checksum EIP-55.
-3. WHEN xét thanh toán tự động, THE SYSTEM SHALL xác định giá trị USD bằng tỷ giá hợp lệ theo chính sách đã duyệt; chỉ giá trị **nhỏ hơn 20 USD** đủ điều kiện. Đúng 20 USD hoặc cao hơn xử lý thủ công.
+3. WHEN xét thanh toán tự động, THE SYSTEM SHALL định giá USD tổng principal của một execution (tổng tất cả allocations) bằng quote hợp lệ; **nhỏ hơn hoặc bằng 20 USD** được tự duyệt và trả khi mọi điều kiện khác đạt, lớn hơn 20 USD phải giữ UNPAID + AWAITING_APPROVAL. Ranh giới principal là thống nhất cho Req 9/21/22; internal USDT áp fixed 1:1 theo Req 22.34, coin khác/on-chain dùng quote hợp lệ; scheduler SHALL NOT chia execution tự động chỉ để né approval. Phí/hạn mức cộng dồn theo #27–31 và thiếu policy bắt buộc SHALL chặn auto-send.
 4. IF thiếu tỷ giá hợp lệ hoặc tỷ giá quá hạn theo chính sách, THE SYSTEM SHALL không tự động gửi tiền.
-5. THE SYSTEM SHALL giữ kiểm soát hiện hành: chỉ rút `available`, giữ tiền trong `reserved`, yêu cầu UID session, chặn rút khi còn `receivable`, và duyệt thủ công lần rút đầu theo Req 9.5.
-6. WHEN thực hiện thanh toán tự động, THE SYSTEM SHALL chỉ xử lý yêu cầu rút đủ điều kiện; không gửi yêu cầu đã hủy, bị từ chối hoặc đã trả tiền.
+5. THE SYSTEM SHALL giữ kiểm soát hiện hành: chỉ rút `available`, giữ tiền trong `reserved`, xác thực tác nhân admin/system chặn lệnh chi mới khi còn `receivable`, và ngưỡng duyệt theo Req 9.5/22.32 ngay từ lần đầu, không bắt duyệt chỉ vì lần đầu.
+6. WHEN thực hiện thanh toán tự động, THE SYSTEM SHALL chỉ chọn khoản `CustomerPayable` UNPAID còn hiệu lực, đã đồng bộ và đủ điều kiện theo Req 22; lệnh rút/sender SHALL tham chiếu khoản này, không gửi khoản đã hủy, bị từ chối hoặc đã trả tiền và không tự tính khoản chi từ raw/activity/Wallet.
 7. THE SYSTEM SHALL không gửi trùng cùng khoản rút khi retry, chạy đồng thời hoặc khôi phục sự cố; kết quả gửi chưa rõ phải đối soát trước khi thử giao dịch mới.
 8. WHEN giao dịch đang thực hiện hoặc chưa rõ kết quả, THE SYSTEM SHALL ngăn việc vừa giải phóng khoản tiền giữ chỗ vừa thanh toán khoản đó.
 9. WHEN giao dịch đạt điều kiện xác nhận của mạng theo chính sách đã duyệt, THE SYSTEM SHALL ghi `PAID`, chuyển `reserved → withdrawn` đúng một lần và lưu tham chiếu giao dịch. Broadcast chưa đủ để ghi nhận đã trả.
 10. THE SYSTEM SHALL lưu lịch sử quyết định thanh toán, tỷ giá/thời điểm định giá, số lượng coin, mạng, địa chỉ và kết quả giao dịch; không lộ thông tin ký bí mật qua UI, API hoặc log.
 11. THE SYSTEM SHALL giữ số dư theo tài sản. Nếu hoàn phí ghi nhận bằng USDT, việc trả ETH/BNB/SOL phải có chính sách chuyển đổi và hạch toán được duyệt; không tự chuyển số dư.
 12. WHILE thiếu cấu hình bắt buộc theo design đã duyệt, THE SYSTEM SHALL tắt gửi tự động và báo phần thiết lập còn thiếu cho người vận hành.
-13. THE SYSTEM SHALL có kiểm thử nhiều ngày cho ba mạng: dưới/bằng/trên 20 USD, first review, tỷ giá hết hạn, chạy trùng, trạng thái chưa xác nhận và sự cố giữa các bước. Kiểm thử local chạy Docker theo steering, không gửi mainnet; trước mainnet phải chạy đạt trên testnet (Ethereum Sepolia, BSC testnet, Solana devnet) bằng ví và secret riêng của testnet.
+13. THE SYSTEM SHALL có kiểm thử nhiều ngày cho ba mạng: dưới/bằng/trên 20 USD, lần đầu áp cùng ngưỡng, tỷ giá hết hạn, chạy trùng, trạng thái chưa xác nhận và sự cố giữa các bước. Kiểm thử local chạy Docker theo steering, không gửi mainnet; trước mainnet phải chạy đạt trên testnet (Ethereum Sepolia, BSC testnet, Solana devnet) bằng ví và secret riêng của testnet.
 14. THE SYSTEM SHALL áp hạn mức chi tự động theo mạng cho mỗi ngày thanh toán; IF khoản rút làm vượt hạn mức hoặc ví chi trả không đủ coin + phí mạng, THEN THE SYSTEM SHALL không gửi tự động, giữ `reserved` và chuyển xử lý thủ công. Giá trị hạn mức theo Open decision #31.
 15. THE SYSTEM SHALL cho admin tạm dừng/bật lại gửi tự động theo từng mạng; WHILE tạm dừng, THE SYSTEM SHALL không broadcast giao dịch mới nhưng vẫn đối soát giao dịch đã gửi.
 16. IF số coin cần gửi nhỏ hơn mức tối thiểu của mạng theo design đã duyệt (gồm mức rent-exempt khi gửi SOL tới tài khoản Solana chưa tồn tại), THEN THE SYSTEM SHALL không gửi tự động và báo lý do cho admin.
+
+---
+
+### Requirement 22: Sổ khoản phải trả và lịch sử thanh toán khách hàng
+
+**User Story:** Là người vận hành, tôi muốn một bảng nghiệp vụ tập trung cho biết cần trả cho khách nào, trên sàn nào, bao nhiêu và đã trả hay chưa, để theo dõi công nợ, duyệt khoản lớn và xử lý các khoản lỗi mà không thất lạc hoặc trả trùng.
+
+> Phạm vi: CustomerPayable là sổ khoản chi auto/manual, tự đồng bộ async (#33). Customer withdrawal/partial đã loại theo câu 13. **#34 (một payable cho mỗi release + allocations) và #35 (execution tách khỏi Withdrawal) được duyệt ngày 2026-10-17 và triển khai ở migration `202610170001_customer_payables`**; mô phỏng kiểm chứng ở `scripts/test-payables.mjs` (RTM: `payables-rtm.md`). Chưa có adapter MEXC/Bybit thật, chưa bật gửi tiền thật, chưa có backfill/cutover production. Lập sổ chưa tự cho phép gửi tiền hoặc biến activity thành cashback.
+
+#### Acceptance Criteria
+1. THE SYSTEM SHALL lưu mỗi khoản với định danh ổn định, sàn, UID, tài sản, số tiền/nguồn/kỳ và thời điểm; UID SHALL theo quy tắc opaque string đã có ở Req 5.2, giữ số 0 đầu và scope theo sàn. Không định nghĩa lại một policy chuẩn hóa UID khác tại Req 22. Đơn vị một khoản và khóa nguồn cụ thể chờ #34.
+2. THE SYSTEM SHALL tách bảng khoản phải trả khỏi `raw_<exchange>`, referral activity và hoa hồng báo cáo; chỉ cashback đã được ghi nhận qua luồng commission/wallet đủ điều kiện theo chính sách mới có thể làm nguồn lập khoản. Volume, `REPORTED_COMMISSION`, dữ liệu mẫu và `pending` chưa được giải phóng SHALL NOT tự trở thành số tiền sẵn sàng chi.
+3. THE SYSTEM SHALL dùng đúng hai trạng thái kết quả thanh toán `UNPAID` và `PAID`; khoản mới SHALL là `UNPAID`. Approval, số lần thử hoặc việc API nhận yêu cầu SHALL NOT tự chuyển khoản thành `PAID`.
+4. WHILE một khoản chưa trả, THE SYSTEM SHALL lưu lý do đang chặn và tiến trình xử lý riêng với trạng thái thanh toán, phân biệt tối thiểu: sẵn sàng xử lý, chờ approval khoản lớn, thiếu thiết lập/xác minh người nhận của sàn, thiếu thông tin/quyền nhận, lỗi kỹ thuật, thiếu số dư nguồn, đang xử lý và chưa rõ kết quả cần đối soát. Một khoản có thể có nhiều điều kiện chặn cùng lúc.
+5. IF khoản cần approval do số tiền hoặc thiếu định giá hợp lệ theo Req 9.5/21.3, THEN THE SYSTEM SHALL giữ `UNPAID` và chặn gửi cho tới khi được admin duyệt; quyết định SHALL lưu người duyệt, thời điểm, ghi chú và nội dung khoản đã duyệt. Thay đổi số tiền, tài sản hoặc nơi nhận SHALL làm mất hiệu lực approval cũ.
+6. WHEN xét auto-approval, THE SYSTEM SHALL dùng cùng định nghĩa tổng execution principal ở Req 9.5/21.3: `<= 20 USD` được tự duyệt và chi khi mọi điều kiện khác đạt; `> 20 USD` SHALL giữ UNPAID + AWAITING_APPROVAL tới khi admin duyệt đúng snapshot, không tự gửi hoặc chia nhỏ. Thiếu/stale quote SHALL không được tự duyệt ở nhánh cần market valuation; internal USDT áp fixed policy Req 22.34, không cần quote USDT/USD. Một execution gồm nhiều payable/allocations SHALL xét tổng, không từng dòng. Mọi khoản còn UNPAID cho tới khi trả hết; phí/hạn mức vẫn theo #27–31; internal USDT dùng quy ước 1:1 đã chốt ở Req 22.34, quote coin khác theo policy riêng. Chưa đủ policy bắt buộc thì chặn auto-send. Đây là ngưỡng đã chốt ở câu 4, thay quy tắc trước đó loại đúng 20 USD; câu 13 bỏ yêu cầu rút từ khách; câu 10/22.32 bỏ yêu cầu duyệt chỉ vì lần đầu.
+7. IF gặp lỗi kỹ thuật chắc chắn chưa chuyển tiền, THEN THE SYSTEM SHALL giữ cùng khoản `UNPAID`, lưu mã lỗi an toàn, thời điểm và lịch sử lần thử; xử lý lại SHALL NOT tạo thêm một khoản nợ cho cùng nguồn tiền.
+8. IF kết quả gửi chưa rõ, THEN THE SYSTEM SHALL giữ `UNPAID` với lý do cần đối soát, giữ phần tiền đã dành cho lệnh và chặn thử gửi mới/hủy/giải phóng phần tiền đó cho tới khi xác định được kết quả. Timeout SHALL NOT được coi là bằng chứng thất bại.
+9. WHEN có bằng chứng chuyển thành công, THE SYSTEM SHALL settle phần tiền thực trả đúng một lần, lưu tham chiếu/số tiền/tài sản/đích/thời điểm/tác nhân và chỉ đánh dấu PAID khi khoản đã được trả đầy đủ. Manual mark-paid SHALL yêu cầu bằng chứng khớp lệnh; cùng tham chiếu không settle hai lệnh khác nhau. Mapping nguồn/lệnh và receipt thiếu phải chốt ở #34–35 trước implementation; khách không yêu cầu rút một phần theo Req 22.35, không suy bảng nhị phân là được bỏ mất phần chưa trả.
+10. THE SYSTEM SHALL ngăn cùng một nguồn số dư được phân bổ hoặc giữ chỗ đồng thời cho nhiều khoản/lệnh chi; sổ phải trả và `Withdrawal` SHALL tham chiếu cùng phần tiền thay vì tạo hai nghĩa vụ độc lập. Số tiền lịch sử SHALL NOT được cộng thêm một lần nữa vào số dư `Wallet`.
+11. WHEN khoản đã PAID, THE SYSTEM SHALL giữ nguyên lịch sử, không gửi lại/sửa/đổi UNPAID; correction sau trả SHALL có bút toán liên kết. Cancel/reject lệnh chi SHALL không tự xóa quyền hưởng của khách. WHEN đóng khoản UNPAID, THE SYSTEM SHALL chứng minh quyền hưởng còn lại bằng 0 do correction xác thực hoặc đã được chuyển đầy đủ sang khoản kế thừa có liên kết trong cùng transaction, không có tiền đang gửi/chưa rõ kết quả; cách phân bổ/kế thừa chờ #34. Khoản bị lỗi hoặc chờ duyệt không được đóng để biến mất khỏi công nợ.
+12. THE SYSTEM SHALL cung cấp lịch sử và mặc định hiện mọi khoản UNPAID còn remainingAmount > 0, kể cả SYNC_PENDING/FAILED, lỗi, chờ duyệt và đang xử lý; trạng thái sync không phải bộ lọc loại khoản. THE SYSTEM SHALL hiện bộ đếm backlog/nguồn chưa có payable, failed/blocked/unknown, mốc đồng bộ và tổng chưa đồng bộ chưa xác định, cảnh báo khi có job FAILED, UNKNOWN hoặc vi phạm đối soát; cảnh báo tồn tại tới khi xử lý, không phụ thuộc lọc bảng. Tổng tiền SHALL tách theo asset; không báo tổng công nợ đầy đủ khi còn nguồn chưa sync. Khoản đóng dư 0/PAID vẫn có trong lịch sử.
+13. THE SYSTEM SHALL ghi audit cho việc lập khoản, thay đổi approval, từng lần xử lý/đối soát, đóng khoản và xác nhận PAID; log và bảng SHALL không chứa API secret/private key. Lịch sử chi trả SHALL chỉ dành cho admin có quyền, không đưa vào lookup công khai.
+14. THE SYSTEM SHALL có unique constraint DB cho: nguồn khoản (một payable cho mỗi WalletEntry HOLD_RELEASE), một allocation ACTIVE cho mỗi payable, một execution mở cho mỗi (UID account, asset), `commandKey`, `legacyWithdrawalId` và tham chiếu chuyển theo sàn/tài khoản nguồn/providerRef; retry/re-import SHALL không tạo ID nguồn mới để né dedup. Triển khai SHALL có kiểm chứng đối soát nguồn → khoản phải trả → phân bổ → settlement, gồm xử lý correction trước/sau thanh toán.
+15. THE SYSTEM SHALL dùng CustomerPayable làm nguồn khoản chi duy nhất cho mọi auto/manual-admin/approval/retry/reconcile/mark-paid; command SHALL tham chiếu payableId/version hoặc lệnh chi ánh xạ về khoản. Số tiền thực thi lấy từ phần quyền hưởng hợp lệ, không tự sửa nghĩa vụ từ payload client; mapping chờ #34–35; không có command rút từ khách theo Req 22.35. Đích nhận/tài sản/account lấy từ snapshot đã kiểm; Wallet chỉ là sổ số dư/giữ chỗ, không tạo đường chi khác.
+16. WHEN ingest đã publish dữ liệu hợp lệ hoặc có thay đổi commission/cashback/giải phóng holding/correction liên quan, THE SYSTEM SHALL tự lên lịch đồng bộ sổ phải trả async, không chờ khách yêu cầu rút. Bước ingest chỉ lưu nguồn và chuyển tiếp pipeline, SHALL NOT gọi sender hoặc tính/trả tiền trực tiếp trong request ingest; activity chưa qua cổng đối soát không tạo khoản tiền sẵn sàng chi. Cashback còn pending SHALL chờ sự kiện giải phóng trước khi trở thành khoản khả dụng để chi.
+17. WHEN commit thay đổi nguồn có ảnh hưởng công nợ, THE SYSTEM SHALL ghi yêu cầu xử lý tiếp bền vững trong cùng transaction; worker SHALL có retry/backoff, lease fencing, khóa chống trùng theo nguồn/phiên bản và cơ chế phục hồi backlog. Lỗi sau commit nguồn SHALL NOT làm mất yêu cầu đồng bộ hoặc nhân đôi khoản khi chạy lại.
+18. THE SYSTEM SHALL lưu mốc phiên bản nguồn đã đồng bộ và trạng thái đồng bộ theo phạm vi sàn/tài khoản/tài sản; WHILE có thay đổi tài chính mới chưa được áp vào sổ, THE SYSTEM SHALL chặn lệnh chi mới trên phần tiền bị ảnh hưởng và hiển thị đang đồng bộ/lỗi, không trình bày số cũ là danh sách phải trả đã đầy đủ. Worker SHALL bỏ qua kết quả phiên bản cũ và không ghi đè snapshot khoản đang gửi hoặc lịch sử PAID; vẫn được ghi nhận kết quả của lần chuyển đã thực hiện rồi xử lý chênh lệch bằng đối soát/điều chỉnh liên kết.
+19. WHEN admin/khách gửi command thuộc luồng khoản phải trả, THE SYSTEM SHALL kiểm tra quyền, lưu command/job bền vững với định danh chống gửi lặp và trả trạng thái tiếp nhận async; chỉ kết quả worker đã commit mới được hiển thị là duyệt xong hoặc PAID. Worker SHALL kiểm tra lại phiên bản, approval, blockers và số dư/giữ chỗ trước khi tạo lần chi mới. Manual và auto SHALL dùng cùng quy tắc, khóa khoản và audit, không được xử lý song song hai lần chi cho một khoản.
+20. WHEN đồng bộ lại sổ, THE SYSTEM SHALL cập nhật khoản còn sửa được theo nguồn hợp lệ, làm mất approval cũ nếu nội dung thay đổi, bảo toàn khoản PAID và snapshot của lần chi đang thực hiện; thiếu UID trong một response activity hoặc job đồng bộ lỗi SHALL NOT tự xóa công nợ. Mọi điều chỉnh số tiền/quyền hưởng SHALL có nguồn correction xác thực và lịch sử; retry command/lần chi không được lập khoản thay thế để né khóa hoặc approval.
+21. THE SYSTEM SHALL dùng mô hình đã duyệt ở #34–35: một payable cho mỗi release (`sourceReleaseEntryId`) với entitlement T, settled S, active R và T >= S + R >= 0; `PayableAllocation` nối payable với `PayoutExecution`; mọi writer lấy cùng một khóa ledger toàn cục (một thứ tự khóa); reserve/release/settle nguyên tử cùng Wallet bằng opKey `allocation:<id>:reserve|release|settle`; sync tạo khoản SHALL không tự reserve. Withdrawal legacy chỉ là lịch sử (ánh xạ qua `legacyWithdrawalId` khi backfill); writer chi của khách SHALL bị chặn theo Req 22.35 và DB gate `moneyFlowGate` (Req 22.24). Khi nguồn không đủ cho mọi nhóm, SHALL phục vụ khoản release cũ nhất trước.
+22. WHEN chuẩn bị gửi, THE SYSTEM SHALL chuyển PREPARED → DISPATCHING trong transaction dùng cùng lock scope với correction/cancel, kiểm lại source/payableVersion, approval và tất cả blockers. Correction commit trước ranh giới SHALL vô hiệu snapshot/approval, hủy bản chuẩn bị chắc chắn chưa gửi rồi sync lại; worker cũ không được gọi sender. Sau DISPATCHING, kể cả chưa rõ HTTP đã đi chưa, THE SYSTEM SHALL giữ snapshot/allocation, đối soát trước retry/cancel. Correction sau ranh giới SHALL ghi pendingCorrection và chặn chi mới; nếu xác nhận đã chi thừa SHALL ghi receivable/clawback liên kết theo Req 8.7, nếu xác nhận chưa gửi SHALL áp correction trước release. Ranh giới DB không bảo đảm nguồn ngoài không đổi; spec SHALL giữ đường thu hồi và không hứa tuyệt đối không chi thừa.
+23. WHILE có nhiều blockers, THE SYSTEM SHALL lưu toàn bộ và chỉ cho SEND khi tất cả đã được gỡ; primaryReason SHALL theo thứ tự: UNKNOWN/DISPATCHING, correction hoặc sync/invariant, ownership/destination/config/receivable, approval, WAITING_SCHEDULE, source funds/limits/minimum/fees, retryable error, READY. Thứ tự hiển thị SHALL không cho phép approval vượt blocker khác. RECONCILE được phép khi in-flight/UNKNOWN; APPROVE chỉ khi nội dung current và đúng quyền; RETRY/SEND lại phải kiểm toàn bộ; CANCEL chỉ trước DISPATCHING.
+24. WHEN chuyển từ luồng cũ sang sổ mới, THE SYSTEM SHALL khóa tất cả money mutations auto/manual/legacy bằng DB gate, drain hoặc đối soát các execution còn mở, backfill và chứng minh đầy đủ phân bổ/số dư mà không reserve/settle lại. Chỉ sau khi mọi writer/worker đã hỗ trợ gate + sổ mới, kiểm đối soát đạt và legacy route đã resolve sang command chung, THE SYSTEM SHALL mở gate ở mode PAYABLE_ONLY. Gate chưa xác định hoặc mapping thiếu SHALL fail closed; không chạy old/new writer cùng lúc, không fallback legacy khi lỗi và không rollback về writer cũ sau phát sinh execution mới.
+25. THE SYSTEM SHALL hỗ trợ phạm vi đã chọn: trả USDT nội bộ tới UID cùng sàn cho cả MEXC và Bybit, mỗi sàn có tài khoản nguồn/key chi trả riêng có thể khác tài khoản affiliate ingest; execution/receipt/recovery SHALL ràng buộc sourceAccountId và đúng UID đích. Binance SHALL theo cùng sổ/command khi có dữ liệu UID/commission hợp lệ và kênh Payout đã được cấp quyền/kiểm chứng, không tự bật chỉ vì fetch được dữ liệu. THE SYSTEM SHALL phân biệt xác minh thiết lập/người nhận lần đầu với xác minh từng lần chuyển; chỉ auto-send khi source/channel/recipient sẵn sàng và không cần thao tác người dùng cho lệnh đó. Câu 2 đã chốt: operator chấp nhận thêm/xác minh mỗi UID Bybit một lần; WHEN việc thiết lập được xác nhận hoàn tất, THE SYSTEM SHALL cho phép các lần chi sau tự động nếu mọi điều kiện khác đã đạt, không yêu cầu operator lặp lại thiết lập cho mỗi lần trả. Điều này không bảo đảm sàn sẽ không yêu cầu xác minh lại. IF cần OTP/2FA/risk review hoặc chưa có recipient trong danh sách bắt buộc, THEN THE SYSTEM SHALL giữ UNPAID với blocker rõ; nếu có thể đã gửi thì giữ UNKNOWN/đối soát. THE SYSTEM SHALL NOT tự lấy OTP/TOTP, dùng API web nội bộ hoặc tắt bảo vệ để lách xác minh. Tài khoản mới/khóa mới phải kiểm quyền thực tế trước bật; key affiliate đọc dữ liệu không được coi là quyền chi tiền.
+
+26. WHEN đến 23:00 UTC (UTC+0) mỗi ngày, THE SYSTEM SHALL lên một đợt thanh toán USDT nội bộ theo Req 22.25, gộp các khoản cashback đã đủ điều kiện của cùng sàn + UID + USDT thành một lệnh chuyển logic cho UID đó trong đợt; không gộp khác sàn/UID/tài sản, không tự chia nhỏ để né ngưỡng. Tổng principal sau gộp SHALL là đầu vào xét ngưỡng Req 9.5/21.3: nhỏ hơn hoặc bằng 20 USD có thể tự duyệt và trả, trên 20 USD giữ UNPAID chờ approval thủ công; mọi gate khác vẫn áp dụng. Scheduler/job chạy lặp hoặc nhiều replica SHALL nhận lại cùng đợt/lệnh và không gửi thêm cho cùng nhóm; phần tiền đã trả/đang phân bổ/UNKNOWN SHALL không được tính lại để chi. Đồng bộ payable SHALL tiếp tục async độc lập với lịch chi; đợt chi không tạo nghĩa vụ tiền thứ hai. Quyết định này SHALL không tự duyệt grain vật lý hoặc FIFO ở #34; câu 13/22.35 đã loại customer withdrawal/partial; đợt bỏ lỡ SHALL chờ đợt kế tiếp theo Req 22.28; cutoff danh sách là 23:00 UTC theo Req 22.30, retry lỗi chắc chắn chưa chuyển theo Req 22.31. 23:00 là giờ khởi chạy đợt, không cam kết mọi transfer hoàn tất cùng thời điểm.
+
+27. WHEN khoản USDT nội bộ lớn hơn 20 USD đang chờ duyệt được admin approve sau đợt 23:00 UTC, THE SYSTEM SHALL ghi approval trên đúng snapshot và thời điểm được phép chi sớm nhất là đợt 23:00 UTC kế tiếp. Approval SHALL NOT tự gọi sender hoặc tạo lệnh gửi ngay. WHILE chưa tới đợt được phép, THE SYSTEM SHALL giữ UNPAID, approval đã duyệt và lý do WAITING_SCHEDULE, cùng mọi blocker khác; duyệt không đồng nghĩa PAID. WHEN đến đợt kế tiếp, THE SYSTEM SHALL kiểm lại phiên bản, snapshot, approval và mọi gate trước claim/dispatch qua command chung, không tạo nghĩa vụ thứ hai hoặc chi lại lệnh đang gửi/UNKNOWN/PAID. Nguồn/snapshot thay đổi SHALL xử lý theo Req 22.5/20/22, không dùng approval cũ để trả tổng mới. Ví dụ approve lúc 23:05 UTC ngày D thì sớm nhất được xét chi lúc 23:00 UTC ngày D+1; còn blocker thì tiếp tục UNPAID. Quy tắc này không tự cho phép catch-up đợt bỏ lỡ hay retry ngoài giờ.
+
+28. WHEN hệ thống bỏ lỡ đợt thanh toán USDT nội bộ 23:00 UTC và khôi phục ngoài giờ chạy, THE SYSTEM SHALL chờ đợt 23:00 UTC kế tiếp thay vì tự dispatch bù ngay. Các khoản chưa gửi SHALL tiếp tục UNPAID, giữ nguồn/quyền hưởng và approval còn hợp lệ, hiển thị WAITING_SCHEDULE cùng mọi blocker khác; không xóa nợ hoặc nhân nghĩa vụ để chuyển ngày. WHEN đợt kế tiếp đến, THE SYSTEM SHALL gộp các phần tiền còn đủ điều kiện theo cùng sàn + UID + USDT và xét lại tổng/ngưỡng/snapshot/approval/freshness theo Req 22.5/6/26/27; tổng mới >20 USD cần approval hợp lệ cho tổng mới, không mặc định dùng approval cũ. Job của đợt bỏ lỡ hoặc replica phục hồi SHALL NOT dùng lịch quá hạn để gửi ngoài giờ hoặc tạo lệnh trùng đợt mới. WHILE giao dịch đã gửi/đang gửi hoặc UNKNOWN, THE SYSTEM SHALL tiếp tục đối soát độc lập với lịch, không coi số tiền đó là khoản chưa gửi được phép gộp lại; đồng bộ sổ/correction vẫn được phục hồi async. Ví dụ khôi phục 01:00 UTC ngày D+1 sau khi lỡ 23:00 UTC ngày D thì chờ tới 23:00 UTC ngày D+1. Cutoff dữ liệu theo Req 22.30; retry lỗi chắc chắn chưa chuyển theo Req 22.31, không suy ra quyền gửi ngoài giờ từ việc phục hồi job.
+
+29. WHEN cashback mới đủ điều kiện phát sinh cho cùng sàn + UID + USDT trước đợt chi kế tiếp và nhóm chi chưa qua DISPATCHING, THE SYSTEM SHALL gộp phần mới vào tổng chưa gửi, tăng phiên bản snapshot và làm mất hiệu lực approval của tổng cũ. IF tổng mới lớn hơn 20 USD, THEN THE SYSTEM SHALL giữ UNPAID + AWAITING_APPROVAL và yêu cầu admin duyệt đúng tổng/snapshot mới; SHALL NOT trả riêng tổng cũ để giữ approval hoặc tự chia phần tăng thêm sang đợt sau nhằm né duyệt lại. Ví dụ đã duyệt 25 USDT rồi có thêm 5 USDT đủ điều kiện trước đợt 23:00 kế tiếp thì tổng là 30 USDT, approval 25 USDT chỉ còn trong audit. WHEN admin duyệt lại, THE SYSTEM SHALL áp lịch Req 22.26/27 và kiểm mọi gate; không tự gửi ngay. Job sync/approve lặp hoặc race SHALL NOT nhân nguồn tiền, giữ approval stale hoặc gọi sender từ phiên bản cũ. WHILE execution đã DISPATCHING/SUBMITTED/UNKNOWN hoặc PAID, THE SYSTEM SHALL giữ snapshot/lịch sử và xử lý nguồn mới/correction theo Req 22.18/20/22, không gộp sửa execution đã có thể gửi. Cutoff theo Req 22.30; grain/khóa nguồn/mapping vật lý vẫn cần chốt riêng.
+
+30. WHEN đợt USDT nội bộ bắt đầu lúc 23:00 UTC, THE SYSTEM SHALL chốt danh sách nguồn cashback đã đủ điều kiện và snapshot tổng theo từng sàn + UID + USDT tại cutoff 23:00 UTC. Cashback mới đủ điều kiện sau cutoff SHALL để đợt kế tiếp, không thêm vào execution của đợt đang chạy, không tự làm mất approval của snapshot hiện tại chỉ vì phát sinh nguồn mới độc lập ngoài danh sách. Khoản trước cutoff SHALL theo quy tắc gộp/duyệt lại Req 22.29. Snapshot cutoff SHALL có định danh/phiên bản nguồn bền vững để job chạy lặp hoặc xử lý UID chậm vẫn dùng cùng danh sách; không dùng thời điểm từng worker gửi làm cutoff. Chốt danh sách SHALL NOT bỏ qua freshness, correction, ownership/receivable, source readiness hoặc gate khác ảnh hưởng phần tiền trong snapshot: correction tới trước DISPATCHING phải vô hiệu snapshot/approval theo Req 22.22, sau DISPATCHING phải giữ snapshot và đối soát; không tự chi số cũ khi đã biết nguồn sai. Đồng bộ khoản mới vẫn async và hiện UNPAID/chờ đợt kế tiếp; mỗi nguồn tiền chỉ được phân bổ/settle một lần qua các đợt. Ví dụ 5 USDT đủ điều kiện lúc 23:01 UTC không gộp vào lệnh 25 USDT đã chốt lúc 23:00 UTC; nếu 5 USDT đủ điều kiện trước cutoff thì gộp 30 và yêu cầu duyệt lại theo Req 22.29.
+
+31. WHEN sàn xác nhận chắc chắn một lần chi USDT nội bộ thất bại và tiền chưa được chuyển, THE SYSTEM SHALL giữ cùng nghĩa vụ UNPAID, lưu bằng chứng thất bại và lỗi an toàn, đặt lần xét chi tiếp theo vào đợt 23:00 UTC ngày sau; không tự gửi lại trong đợt lỗi hoặc ngay khi job/worker khôi phục. Đợt tiếp theo SHALL chốt lại theo cutoff, gộp các phần còn đủ điều kiện, kiểm nguồn/snapshot/approval/ngưỡng/readiness và mọi gate như một lần xét chi mới; approval cũ chỉ dùng khi còn hợp lệ, tổng thay đổi theo Req 22.29. Retry SHALL không tạo nợ mới, không tái dùng allocation terminal hoặc gửi trùng phần tiền; successor execution nếu cần phải liên kết execution lỗi và dùng chung nguồn theo thiết kế được duyệt ở #34–35. Command RETRY, job redelivery hoặc backoff SHALL NOT vượt thời điểm được phép gửi. IF chưa có bằng chứng chắc chắn chưa chuyển, THEN THE SYSTEM SHALL giữ UNKNOWN/reservation và đối soát theo Req 22.8/22, không đưa phần tiền vào đợt retry chỉ vì sang ngày mới hoặc gặp lỗi HTTP. Đồng bộ/ghi nhận kết quả/đối soát vẫn được chạy ngoài lịch; quy tắc trì hoãn chỉ áp dụng gửi tiền lại.
+
+32. WHEN xét khoản thanh toán đầu tiên của một UID, THE SYSTEM SHALL áp cùng ngưỡng tổng sau gộp như các lần sau: <=20 USD được tự duyệt/chi khi mọi gate khác đạt, >20 USD giữ UNPAID + AWAITING_APPROVAL. THE SYSTEM SHALL NOT tạo FIRST_REVIEW_REQUIRED hoặc yêu cầu admin duyệt chỉ vì UID chưa từng được trả/duyệt; lịch sử tạo/hủy/reject request không tạo điều kiện duyệt lần đầu. Với USDT nội bộ, tự trả lần đầu SHALL vẫn theo đợt 23:00 UTC, cutoff và policy retry, không gửi tức thì khi UID xuất hiện. THE SYSTEM SHALL giữ xác minh/người nhận bắt buộc của sàn theo Req 22.25, đặc biệt bước thêm/xác minh UID Bybit; bỏ duyệt khoản đầu không đồng nghĩa recipient đã sẵn sàng. Ownership/destination, cashback hợp lệ, holding/release, receivable, định giá theo policy Req 22.34/hạn mức, gate cutover và chống trùng vẫn phải đạt. Quyết định câu 10 thay chính sách duyệt thủ công lần đầu trước đây; code và tests legacy phải cập nhật tại Task 42 trước bật luồng mới, không coi thay spec là đã thay runtime.
+
+33. WHEN thanh toán USDT nội bộ phát sinh phí từ sàn, THE SYSTEM SHALL để operator/tài khoản nguồn chịu phí, khách nhận đủ số cashback principal đã chốt; SHALL NOT trừ phí khỏi CustomerPayable, số tiền nhận của khách hoặc ghi nợ/receivable khách vì phí chi trả. Ngưỡng <=20 USD SHALL xét principal sau gộp theo Req 22.6, không cộng phí operator vào principal để đổi nhánh approval. THE SYSTEM SHALL kiểm đủ số dư nguồn cho principal và phí theo từng asset, cùng giới hạn provider và fee readiness; không yêu cầu daily cap riêng cho internal USDT theo Req 22.37; thiếu tiền hoặc không xác định được phí/điều kiện bảo đảm khách nhận đủ SHALL giữ UNPAID với blocker rõ, không tự giảm khoản trả. Execution/receipt/audit SHALL tách principal phải trả, số khách thực nhận và phí operator thực chịu; adapter SHALL chỉ được bật khi đã kiểm chứng chế độ tính phí/API bảo đảm net nhận đúng principal. IF provider thực trả thiếu so với principal, THEN THE SYSTEM SHALL không đánh dấu toàn khoản PAID hoặc tự gửi bù; giữ phần thiếu và đối soát theo Req 22.9/22. Không giả định mọi sàn/asset có phí bằng 0. Quyết định này áp dụng kênh USDT nội bộ đã chọn; gas/chuyển đổi on-chain Req 21 vẫn là phạm vi riêng chưa chốt.
+
+34. WHEN xét ngưỡng approval cho USDT nội bộ theo Req 22.25, THE SYSTEM SHALL áp quy ước nghiệp vụ cố định 1 USDT = 1 USD: tổng principal <=20 USDT có thể tự trả khi mọi gate khác đạt, >20 USDT chờ approval. THE SYSTEM SHALL NOT gọi hoặc phụ thuộc market quote USDT/USD để quyết định ngưỡng này, không tạo blocker thiếu/stale quote USDT/USD, và không đổi ngưỡng theo giá thị trường. Snapshot/audit SHALL lưu valuation mode FIXED_USDT_USD, tỷ lệ 1:1 và phiên bản policy; đây là quy ước xét ngưỡng, không khẳng định giá thị trường hoặc thực hiện chuyển đổi tài sản. Phí operator theo Req 22.33 SHALL nằm ngoài principal xét ngưỡng. Quy tắc này SHALL không bỏ các gate về nguồn, approval snapshot, readiness, hạn mức, lịch/cutoff/retry và đối soát. Định giá coin khác, gas/conversion và on-chain Req 21 SHALL giữ chính sách quote riêng; không áp 1:1 cho tài sản khác chỉ vì hệ thống có USDT.
+
+35. THE SYSTEM SHALL tự trả USDT nội bộ theo lịch đã chốt, không cung cấp customer withdrawal/cancel/toàn bộ/một phần hoặc chọn amount/đích/asset. UI SHALL bỏ controls; server SHALL từ chối customer money mutations kể cả request từ client cũ, không reserve/enqueue request cũ. Khách SHALL chỉ tra cứu công khai theo Req 14; scheduler SHALL không phụ thuộc xác thực khách. Tiền SHALL trả về đúng UID có nguồn cashback, recipient readiness vẫn theo Req 22.25. Admin SHALL xử lý approval/retry/reconcile/mark-paid qua CustomerPayable/command chung, mọi guard/lịch vẫn áp dụng. Cutover SHALL inventory và vô hiệu customer money routes/jobs cũ, đối soát legacy reserved/in-flight/UNKNOWN trước mở PAYABLE_ONLY; không xóa lịch sử hoặc giải phóng tiền đang gửi. Khách rút một phần được loại khỏi phạm vi hiện tại; receipt thiếu, correction và lịch sử chi một phần vẫn phải bảo toàn/đối soát. Grain/khóa nguồn/mapping vật lý còn review trước 42.2.
+
+36. WHEN xét chi USDT nội bộ tại cutoff hằng ngày, THE SYSTEM SHALL chỉ cho phép gửi nếu tổng principal cashback sau gộp của cùng sàn + UID lớn hơn 0.5 USDT, theo quy ước 1:1 ở Req 22.34. WHILE còn quyền hưởng dương và tổng đúng 0.5 USDT hoặc thấp hơn, THE SYSTEM SHALL giữ UNPAID để tích lũy, hiện MINIMUM_NOT_MET/lý do chờ tích lũy; không gửi, không đóng/xóa nợ hoặc tạo khoản thay thế mỗi ngày. Tổng >0.5 và <=20 USDT SHALL có thể tự trả khi mọi gate đạt; >20 USDT cần approval. THE SYSTEM SHALL đồng thời đáp ứng minimum/precision thực tế của provider; mức sàn cao hơn SHALL tiếp tục chặn chi tới khi đủ, không hạ minimum của sàn hoặc làm tròn số để vượt ngưỡng >0.5. Phí operator SHALL không cộng vào principal để đạt mức tối thiểu và không trừ khỏi cashback khách. Đợt kế tiếp SHALL gộp các nguồn còn đủ điều kiện theo cutoff, không nhân số dư/nghĩa vụ và không gộp lại phần PAID/reserved/UNKNOWN; mọi approval/snapshot/schedule/retry guard vẫn áp dụng.
+
+37. THE SYSTEM SHALL không đặt trần tổng tự chi riêng theo sàn/ngày cho USDT nội bộ; giới hạn chi thực tế là số dư có thể sử dụng của đúng tài khoản nguồn sau khi tính principal, phí operator và các cam kết/in-flight chưa tất toán. Số 100 USDT là ví dụ nạp nguồn, SHALL NOT trở thành hạn mức cấu hình hoặc số tiền bị giữ cố định mỗi ngày; lựa chọn không có daily cap SHALL là policy hợp lệ, không bị coi là thiếu cấu hình. WHEN nguồn không đủ để trả đầy đủ một nhóm UID và phí, THE SYSTEM SHALL không gửi một phần/giảm cashback, giữ UNPAID + INSUFFICIENT_SOURCE_FUNDS và mốc xét chi lại vào đợt 23:00 UTC ngày sau; không tự gửi bù ngay khi nạp thêm hoặc job retry. Đợt ngày sau SHALL xét lại cutoff, tổng gộp, minimum, approval, nguồn/phí và mọi gate; không tạo lại nợ hoặc bỏ qua approval vì đã chờ một ngày. THE SYSTEM SHALL ngăn nhiều worker/command cùng dùng một phần số dư nguồn, không coi tiền đang gửi/UNKNOWN là số dư tự do; UNKNOWN vẫn đối soát riêng. Giới hạn/quyền của provider vẫn áp dụng; quy tắc này không tự bỏ chính sách fee readiness hoặc áp cho ngân sách/gas on-chain chưa chốt. Câu 16/Req 22.38 chốt tiếp tục nhóm sau nếu đủ nguồn; thứ tự ưu tiên ban đầu giữa các UID còn cần quyết định riêng.
+
+38. WHEN một nhóm UID trong đợt chi không đủ nguồn để trả toàn bộ principal và phí, THE SYSTEM SHALL giữ nhóm đó UNPAID + INSUFFICIENT_SOURCE_FUNDS, chờ đợt 23:00 UTC ngày sau theo Req 22.37, rồi tiếp tục xét các nhóm tiếp theo; SHALL NOT dừng toàn đợt chỉ vì nhóm đó không đủ nguồn. Mỗi nhóm tiếp theo SHALL kiểm số dư thực còn khả dụng và mọi gate trước claim/dispatch; chỉ gửi nếu đủ cả principal và phí, không cắt nhỏ khoản lớn hoặc giảm số khách nhận để dùng hết nguồn. Ví dụ nguồn còn3 USDT, nhóm trước cần5 thì giữ lại; nhóm sau cần2 có thể trả nếu nguồn đủ2 + phí và mọi điều kiện khác đạt. Nhóm bị bỏ qua SHALL không bị thử gửi lại trong cùng đợt hoặc tự được gửi khi có top-up, không mất nợ/approval audit hoặc được tạo payable thay thế. Nhiều worker SHALL phối hợp claim/nguồn nguyên tử theo Req 22.10/37; tiền đang gửi/UNKNOWN không được coi là số dư tự do để tài trợ nhóm sau. Quy tắc tiếp tục xét SHALL không tự quyết định thứ tự ưu tiên ban đầu giữa các UID; thứ tự đó còn phải chốt riêng, không mặc định sắp toàn đợt theo số tiền nhỏ nhất.
 
 ---
 
@@ -943,27 +874,10 @@ tab) to do several jobs without losing my place.
 - PostgreSQL SHALL accept connections only from backend/worker services.
 - Financial actions (attribution, wallet changes, withdrawals) SHALL be auditable.
 - The lookup endpoint SHALL be treated as a known enumeration surface: per-IP rate
-  limiting, read-only, and a response restricted to `pending`/`available` amounts and
+  limiting, read-only, and a response restricted to customer cashback periods, aggregate totalPaid and
   freshness timestamps (Req 14).
-- OTPs SHALL be stored hashed, single-use, short-TTL, attempt-limited, and never logged
-  (Req 15.4–15.8).
-- UID sessions SHALL be short-lived, stored server-side as hashed tokens, and scoped to a
-  single UID account (Req 15.3, 15.10).
-
-> **Network-exposed services note:** the public site, redirect, cashback lookup, OTP
-> endpoints, and admin APIs are internet-exposed. Admin APIs and every withdrawal/history
-> action **must** require authentication (admin session or UID session respectively). The
-> redirect, public content reads, and the amount-only cashback lookup are intentionally
-> anonymous. Do not ship any unauthenticated endpoint that exposes a bound email, payout
-> address, withdrawal record, movement history, or import data.
-
-> **Known exposure (accepted):** because lookup returns real amounts for any (exchange,
-> UID), the platform leaks per-UID cashback value to anyone who can guess a UID, and
-> ownership is effectively first-claimant-wins. This is a recorded business decision — see
-> "Accepted risk — first claimant wins". The compensating controls are per-IP rate limiting
-> (Req 14.4), mandatory admin review of first withdrawals (Req 9.5), OTP limits
-> (Req 15.5–15.7), and the holding period (Req 8.3). Do not weaken these further without
-> revisiting that decision.
+> **Bề mặt public:** nội dung, redirect và lookup được truy cập ẩn danh; API admin bắt buộc xác thực admin. Không cung cấp private wallet/history API cho khách.
+> **Rủi ro đã chấp nhận:** lookup công khai cashback theo sàn + UID; giữ rate-limit Req 14.4, holding Req 8.3, recipient readiness và duyệt theo số tiền Req 9/22. Không có claim UID hoặc khách đổi đích trả tiền.
 
 ### Data integrity
 - Money as decimal/numeric; API returns decimal strings with asset.
@@ -987,16 +901,12 @@ tab) to do several jobs without losing my place.
 
 | Endpoint | Responsibility | Access |
 |----------|----------------|--------|
-| `GET /api/exchanges` | Published exchanges + offers. | Public |
+| `GET /api/exchanges` | Published exchanges + offers, estimatedVolumeRate dạng decimal string hoặc null. | Public |
 | `GET /go/:linkId` | Resolve link, record click, redirect. | Public |
-| `POST /api/lookup` | Cashback lookup by exchange + UID. `pending`/`available`, freshness, and per-period commission vs cashback rows; IP rate-limited. | Public |
-| `POST /api/otp/request` | Send OTP for a UID withdrawal. Bound email enforced if one exists. | Public (rate-limited) |
-| `POST /api/otp/verify` | Verify OTP → bind email + issue 30-min UID session. | Public (rate-limited) |
+| `POST /api/lookup` | Theo sàn + UID: cashback ngày báo cáo D/30 ngày, summaryPeriods với reportDay nullable, tổng đã trả, freshness và bảng kỳ/tài sản/UID/cashback; không commission/rate/volume; IP rate-limited. | Public |
 | `POST /api/admin/auth/*` | Admin login/logout/session. | Public → admin session |
-| `GET /api/uid/wallet` | Balances + movement history for the session's UID. | UID session |
-| `POST /api/uid/withdrawals` | Request withdrawal of available balance. | UID session |
-| `POST /api/uid/withdrawals/:id/cancel` | Cancel a not-yet-paid withdrawal. | UID session |
-| `GET /api/uid/withdrawals` | Withdrawal history/status for the session's UID. | UID session |
+| `POST /api/uid/withdrawals` (retired) | Luôn trả 410 CUSTOMER_WITHDRAWALS_RETIRED; không reserve/job và không phụ thuộc gate. | Not available to customers |
+| `POST /api/uid/withdrawals/:id/cancel` (retired) | Luôn trả 410 CUSTOMER_WITHDRAWALS_RETIRED; admin commands remain separate. | Not available to customers |
 | `GET /api/admin/ingest/adapters` | Registered source adapters: exchange, dataset kind, source method, accepted file types, required metadata fields, cashback impact. No credentials. | Admin |
 | `POST /api/admin/ingest/batches` | Upload any supported file, create batch + parse job. | Admin (202) |
 | `GET /api/admin/ingest/batches` | List batches, filter by exchange, dataset kind, source method, status. | Admin |
@@ -1010,27 +920,25 @@ tab) to do several jobs without losing my place.
 | `POST /api/admin/ingest/connectors/:exchangeId/run` | Queue one immediate run or re-sync range when the connector is available. | Admin |
 | `POST /api/admin/ingest/connectors/:exchangeId/resume` | Clear admin pause without readiness; otherwise clear an error pause after readiness passes. | Admin |
 | `POST /api/admin/ingest/connectors/:exchangeId/pause` | Pause this exchange's API ingestion, retaining mode/interval; no readiness prerequisite. | Admin |
-| `POST /api/admin/withdrawals/:id/decision` | Approve/reject/mark-paid. | Admin |
+| `POST /api/admin/withdrawals/:id/decision` | Sau cutover là alias command chung trên execution/allocations đã map; FROZEN chặn ghi, mapping thiếu trả 409/503, không reserve/settle lần hai hoặc fallback legacy. | Admin |
+| `GET /api/admin/payables` (Req 22) | Lịch sử khoản phải trả: mặc định UNPAID còn remaining > 0 (kể cả chờ sync/duyệt/lỗi), lọc sàn/UID/asset/PAID; banner độc lập bộ lọc; tổng theo asset, `null` khi còn scope chưa sync. | Admin |
+| `GET /api/admin/payout-executions/:id` (Req 22) | Một lệnh chi: phân bổ, trạng thái, audit timeline. | Admin |
+| `GET/POST /api/admin/money-flow` (Req 22.24) | Đọc/đổi DB gate LEGACY → FROZEN → PAYABLE_ONLY; chặn khi còn legacy in-flight hoặc scope chưa đối soát. | Admin |
+| `POST /api/admin/payout-executions/:id/commands` (Req 22) | Tiếp nhận APPROVE / CANCEL / RECONCILE / MARK_PAID với commandKey (+ expectedVersion khi approve); trả 202 + commandId, không báo thành công trước worker. | Admin |
+| `GET /api/admin/payable-commands/:id` (Req 22) | Trạng thái command và kết quả đã commit. | Admin |
 
 ---
 
 ## Data model (conceptual groups, not final schema)
 
 - **Exchange** — name, slug, description, status, default cashback rate, i18n fields.
-- **Offer** — content, conditions, cashback_rate, status, verified-at, exchange ref.
+- **Offer** — content, conditions, cashback_rate, estimatedVolumeRate nullable (0–1, tối đa 10 chữ số thập phân), status, verified-at, exchange ref.
 - **ReferralLink** — id, exchange ref, optional offer ref, destination URL, active status.
 - **Guide** — title, slug, content, status, optional exchange ref, i18n fields.
 - **ClickEvent** — link ref, timestamp.
 - **AdminAccount** — id, email, interim credential (password hash) per chosen auth (single role).
-- **UidAccount** — id, exchange ref, UID (opaque string), bound email (nullable until first
-  OTP), email-bound-at, created-at. Unique per (exchange, UID). Owns wallets and withdrawals.
-  No password, no username.
-- **EmailOtp** — UID account ref, email the code was sent to, OTP hash, expiry, consumed-at,
-  failed-attempt count, provider message id + accepted flag (Requirement 16.6).
-- **UidSession** — UID account ref, hashed token, expiry (30 min). Scoped to exactly one UID
-  account; grants no admin capability.
-- **RateLimitCounter** — per-IP (and per-UID) counter windows backing lookup and OTP limits
-  (Req 14.4, 15.6–15.7). Stores a hashed IP and a window, not a lookup history.
+- **UidAccount** — id, exchange ref, UID opaque, created-at; unique theo (exchange, UID). Giữ sổ Wallet và lịch sử chi, không có thông tin đăng nhập khách.
+- **RateLimitCounter** — counter lookup theo IP đã hash và cửa sổ độc lập (Req 14.4), không phải lịch sử tra cứu.
 - **Session** — admin server session (subject id, hashed token, expiry); replaced if a managed auth provider is chosen.
 - **ImportBatch** — exchange/root, dataset kind, source method, report period,
   timezone, source as-of time, private payload ref, status, totals.
@@ -1041,6 +949,9 @@ tab) to do several jobs without losing my place.
 - **CommissionRecord** — stable identity (exchange, UID, dedup key, period, asset), current
   reconciled amount, attributed UID account (nullable), snapshot offer + cashback rate,
   cashback already credited.
+- **CustomerPayable** (Req 22) — một khoản cho mỗi cashback đã release (`sourceReleaseEntryId` UNIQUE): sàn, UID account, asset, entitlement T, settled S, active R (CHECK T >= S + R), PAID/UNPAID, version, releasedAt, closedAt/paidAt. Không sao chép raw activity và không cộng lại số dư Wallet.
+- **PayoutExecution / PayableAllocation** (Req 22) — lệnh chi USDT nội bộ tới một UID (một execution mở cho mỗi UID account + asset) và phân bổ nối execution với nhiều payable (một allocation ACTIVE cho mỗi payable); trạng thái AWAITING_APPROVAL, READY, DISPATCHING, SUBMITTED, UNKNOWN, CONFIRMED, FAILED_NOT_SENT, INVALIDATED, CANCELLED; `legacyWithdrawalId` UNIQUE để ánh xạ Withdrawal cũ.
+- **PayableSyncScope / PayoutSlot / PayableCommand / PayableEvent / MoneyFlowGate** (Req 22) — checkpoint đồng bộ theo (UID account, asset), đợt 23:00 UTC với manifest cutoff, command idempotent theo commandKey, audit append-only, DB gate cutover.
 - **CommissionVersion** — per-batch occurrence of a commission (amount, batch ref,
   imported-at, superseded flag); unique per (commission, batch) for idempotent commit;
   preserves import history for reconciliation/audit.
@@ -1060,15 +971,12 @@ tab) to do several jobs without losing my place.
 | # | Topic | Answer given | What's still needed |
 |---|-------|--------------|---------------------|
 | 11 | Commission dedup / reconciliation key | Decide later | Real nonzero UID-level commission report; the MEXC Referral Data sample is an activity snapshot, not payout evidence. |
-| 12 | Visitor visibility of UID-level detail | **Decided (2026-09-17)** | Anyone entering exchange + UID sees `pending`/`available` **and** per-period exchange-paid commission vs cashback share (Req 14.2, 14.7). Email, payout address, withdrawals, and wallet-movement types still need a UID session (Req 14.3). |
+| 12 | Tra cứu công khai | **Chốt 2026-10-30** | Req 14: D gần nhất có coverage COMMISSION PUBLISHED; 30 ngày tới D, totalPaid riêng; không có truy cập khách riêng tư. |
 | 13 | Admin auth solution | Pending | Covers **admin** auth only (end users have no accounts). Interim email+password + `Session` stays until a provider is chosen. |
-| 20 | Outbound email transport | **Resolved (2026-09-16): Resend** | Remaining prerequisites are operational, not design: verify an operator-owned domain with SPF/DKIM (the shared testing domain only delivers to the Resend account owner), set API key + from-address env vars, and confirm the send quota fits expected withdrawal volume (Req 16). |
-| 21 | Ownership dispute handling | **Accepted as-is (2026-09-16)** | First claimant wins; there is no ownership proof and no recourse for a displaced true owner. Revisit if losses occur or an exchange-side proof becomes available. |
 | 19 | Compliance (KYC/AML, retention, GDPR) | Unclear | Confirm payout KYC and data-retention obligations. **Chặn Req 21 trên mainnet:** gửi coin tự động không qua người duyệt làm tăng rủi ro AML; cần chốt nghĩa vụ KYC/sàng lọc địa chỉ trước khi bật. |
 | — | Cashback rate & holding period values | Rule decided (offer-rate → exchange-default, snapshot at attribution); values pending | Confirm default % and holding-period length. |
-| — | Ngưỡng tự động và tài sản/mạng | Luồng hiện hành giữ nguyên; đề xuất mới ở Req 21 | Người dùng chọn ETH/Ethereum, BNB/BSC, SOL/Solana mainnet và ngưỡng dưới 20 USD; cách định giá, áp ngưỡng và chuyển đổi xem Open decisions #26–30. |
+| — | Ngưỡng tự động và tài sản/mạng | Luồng hiện hành giữ nguyên; đề xuất mới ở Req 21 | Người dùng chọn ETH/Ethereum, BNB/BSC, SOL/Solana mainnet và ngưỡng không quá 20 USD theo câu 4 mới nhất; cách định giá, áp ngưỡng và chuyển đổi xem Open decisions #26–30. |
 | — | Lookup rate limit values | Rule decided (per-IP) | Confirm requests-per-window; proposed 5/min, 30/hour per IP. |
-| — | OTP tuning values | Rule decided (hashed, single-use, attempt- and send-limited) | Confirm TTL (proposed 5 min), max wrong attempts (proposed 5), resend cooldown, per-UID daily send cap. |
 | — | MEXC Referral Data semantics | XLSX sample received 2026-09-25: 46 unique UIDs, sheet period 2026-09-18 through 2026-09-25, all volume/earnings zero | Confirm source timezone and whether `Trading volume`/`Your Earnings` are period values with a nonzero export before treating them as financial evidence. |
 | — | Bybit API commission settlement | `commissionsVol` is available per UID/asset/period; the API does not expose the Affiliate Portal's pending/settled state | Reconcile a nonzero portal export and decide separately whether API amounts can ever drive automatic cashback. The scheduled connector in Req 13 publishes admin activity only. |
 | — | Bybit `volUpdateTime` timezone | Probe 2026-09-26 03:03 UTC: every UID in the roster (54 at the time) returned the same `volUpdateTime = 2026-09-26 00:00:00` with no zone, so it is a dataset-wide mark; the connector samples up to 3 UIDs per run regardless of roster size | Confirm UTC vs UTC+8 before using it as `sourceAsOf` (Req 6.19). |
@@ -1076,16 +984,19 @@ tab) to do several jobs without losing my place.
 | — | Bybit key IP binding | Current key: read-only, Affiliate only, IP `*`, expires 2026-12-26 | Provide stable Railway egress IP and rebind before production sync (Req 13.12). |
 | — | Enabling a second locale | English-only decided; Vietnamese excluded | If a market is ever requested, confirm the locale plus who supplies translated UI copy and content. |
 | 22 | Tên tiếng Anh (Req 20) | Đang mở | Đề xuất `RebateFlow`; chưa được người dùng duyệt. Trước khi chốt: kiểm tra tên miền và trùng thương hiệu/nhãn hiệu |
-| 23 | Đầu vào bảng tính (Req 19) | Đã chốt theo plan triển khai Dark Aurora | Phí/tháng bằng USDT; affiliate commission là giả định có thể chỉnh, mặc định minh họa 50%; cashback share lấy từ published offer đã chọn. Không suy ra tỷ lệ commission đã xác minh, không thêm chế độ volume trong đợt này. Giới hạn và rounding theo Req 19.8. |
-| 24 | Kỳ ước tính (Req 19) | Đã chốt theo plan triển khai Dark Aurora | Kết quả tháng và 12 tháng tương tự (×12), giả định phí và tỷ lệ không đổi; không quy đổi USD/USDT hoặc gán thành số dư ví. |
+| 23 | Đầu vào calculator (Req 19) | **Chốt 2026-10-30** | Chỉ volume/tháng có mặc định, nhóm nghìn; estimatedVolumeRate do admin nhập theo offer. Volume mặc định **1,000,000 USDT** theo ví dụ cuộc họp 20/10; có thể chỉnh mặc định sau trong code. |
+| 24 | Kỳ ước tính (Req 19) | **Chốt 2026-10-30** | Tháng = volume × estimatedVolumeRate; năm = tháng × 12; chỉ làm tròn hiển thị cuối. |
 | 25 | Hướng giao diện (Req 20) | Đã chốt: Dark Aurora | Giữ hero/hình ví cũ; Opportunity Check nổi bật ngay bên dưới; logo Bybit, Binance, MEXC; UI tiếng Anh. Đã triển khai Docker local; mô hình tính theo #23–24 đã chốt, tên mới vẫn thuộc #22. |
-| 26 | Chạy theo ngày (Req 21) | Đang mở | Chốt đợt trả/ngày hay chỉ kiểm thử theo kỳ ngày; giờ, múi giờ, xử lý ngày bỏ lỡ |
-| 27 | Ngưỡng 20 USD (Req 21) | Đang mở | Theo từng khoản hay tổng UID/ngày; có tính phí mạng vào ngưỡng không |
-| 28 | Tỷ giá (Req 21) | Đang mở | Nhà cung cấp, tuổi báo giá, thời điểm khóa giá |
+| 26 | Lịch chi (Req 22; Req 21 on-chain riêng) | **Lịch/cutoff/retry USDT nội bộ đã chốt; lịch on-chain riêng** | Câu 3 gộp theo sàn + UID + USDT; câu 5 approve sau đợt không gửi ngay; câu 6 bỏ lỡ đợt thì chờ 23:00 UTC kế tiếp, gộp các khoản còn đủ điều kiện, không chạy bù lúc khôi phục. UNPAID + WAITING_SCHEDULE, approval chỉ dùng khi snapshot còn hợp lệ; UNKNOWN vẫn đối soát. Câu 8 chốt cutoff 23:00 UTC, nguồn mới sau đó để đợt sau. Câu 9 lỗi chắc chắn chưa chuyển chờ đợt 23:00 UTC ngày sau; UNKNOWN chỉ đối soát. Lịch on-chain Req 21 riêng. |
+| 27 | Ngưỡng và hạn mức USD (Req 9/21/22) | **USDT nội bộ: >0.5 đến <=20 auto, >20 duyệt; không daily cap riêng, theo nguồn thực** | Xét tổng principal execution sau gộp; đúng 20 USD đủ điều kiện tự trả khi các gate khác đạt. Khoản >20 giữ UNPAID + AWAITING_APPROVAL, không dùng ngưỡng asset hay xét từng allocation/chia nhỏ để né duyệt. Câu 11 chốt operator chịu phí USDT nội bộ, khách nhận đủ principal; câu 12 chốt fixed 1:1/20 USDT không market quote; câu 14 chốt minimum strict >0.5 USDT sau gộp; câu 15 chốt không daily cap riêng, chi theo nguồn đủ principal+phí, thiếu funds chờ đợt ngày sau. Câu 16 chốt skip nhóm thiếu funds, tiếp tục nhóm sau; còn thứ tự ưu tiên ban đầu và kiểm chứng quyền/giới hạn/phí provider; quote tài sản khác riêng. Chưa đủ gate bắt buộc thì giữ blocked. Câu 13 đã loại customer withdrawal/partial; grain và mapping vật lý còn review ở #34. |
+| 28 | Định giá ngưỡng (Req 21/22) | **USDT nội bộ đã chốt cố định 1:1; quote tài sản khác còn mở** | Câu 12/22.34: ngưỡng là 20 USDT, không cần market quote USDT/USD; lưu fixed policy trong snapshot/audit. Nhà cung cấp, tuổi báo giá và thời điểm khóa cho coin khác/on-chain còn mở; không áp 1:1 cho ETH/BNB/SOL. |
 | 29 | Tài sản sổ ví (Req 21) | Đang mở | Coin gốc hay chuyển từ USDT; nếu chuyển cần chốt phí, tỷ giá, hạch toán |
 | 30 | Vai trò MetaMask (Req 21) | Đang mở | Ví nguồn chi trả hay ví nhận test; cách cấp quyền ký cho worker. Khuyến nghị: không dùng MetaMask/seed cá nhân làm ví chi trả; tạo ví chi trả riêng cho từng môi trường (testnet ≠ mainnet), chỉ giữ số dư nhỏ đủ hạn mức ngày, nạp thêm thủ công từ ví lạnh |
 | 31 | Phí và xác nhận (Req 21) | Đang mở | Ai chịu phí, ngân sách gas, điều kiện xác nhận, hạn mức chi/ngày, mức tối thiểu mỗi mạng (Req 21.14–16). Đề xuất để duyệt: Ethereum/BSC dùng block tag `finalized`, Solana dùng commitment `finalized`. Phí gas Ethereum mainnet có thể chiếm tỷ lệ đáng kể của khoản < 20 USD |
 | 32 | Test mainnet (Req 21) | Đang mở | Địa chỉ công khai, số tiền test và kế hoạch chạy sau khi local và testnet (Req 21.13) đạt |
+| 33 | Thời điểm lập khoản và nguồn chi chung (Req 22) | **Đã chốt (2026-10-17)** | Tự đồng bộ async sau ingest/publish qua commission/cashback hợp lệ và khi release hold/correction; không chờ yêu cầu rút. Tất cả auto/manual phải dùng CustomerPayable, không đi vòng raw/Wallet. Lập sổ chưa đồng nghĩa được phép gửi tiền; command async chung kiểm tra policy trước chi. |
+| 34 | Đơn vị khoản, rút một phần và correction (Req 22) | **Đã chốt (2026-10-17)** | Mỗi lần cashback release tạo một payable (`UNIQUE(sourceReleaseEntryId)`); lệnh chi gộp nhiều payable qua `PayableAllocation` (tối đa một ACTIVE cho mỗi payable); T/S/R; khách không rút/partial (câu 13). Correction trước DISPATCHING hủy execution rồi giảm entitlement; sau DISPATCHING ghi pendingCorrection và receivable (Req 8.7). Khi thiếu nguồn: release cũ nhất trước. Chưa làm: backfill legacy; không có thao tác đóng khoản nợ dương. |
+| 35 | Quan hệ khoản/lệnh và kích hoạt kênh trả (Req 22) | **Mapping đã chốt (2026-10-17); kênh thật còn chờ xác minh tài khoản** | `PayoutExecution` (bảng riêng, `legacyWithdrawalId` UNIQUE) là lệnh chi; Withdrawal cũ chỉ là lịch sử. Phạm vi MEXC + Bybit USDT nội bộ tới UID, source riêng, UID Bybit thiết lập một lần (câu 1–2). Còn mở: adapter thật, quyền API/IP, quy trình address book Bybit, MEXC thực tế, Binance Payout (docs/exchange-uid-payout-research.md). Không bật gửi tiền thật khi chưa có adapter và xác minh tài khoản. |
 
 ---
 
@@ -1097,9 +1008,7 @@ tab) to do several jobs without losing my place.
 - **Phase 1 — Import & attribution:** manual native/normalized report import,
   dataset-specific staging/preview/
   commit, UID accounts, commission attribution.
-- **Phase 2 — Lookup, cashback & withdrawals:** cashback lookup by exchange + UID, wallet
-  balances + holding period, email OTP + UID session, withdrawal request + admin approval +
-  manual payout.
+- **Phase 2 — Tra cứu và chi tự động:** lookup công khai; Wallet nội bộ, holding/release, queue admin legacy và payables. Task 44 cập nhật calculator/ngày báo cáo và gỡ truy cập riêng tư khách.
 - **Phase 3 — Hardening:** analytics depth, KYC/compliance controls,
   observability/backups. No locale rollout is planned (Requirement 4).
 - **Phase 4 — Automation:** scheduled Bybit and MEXC Affiliate API activity sync
@@ -1107,6 +1016,7 @@ tab) to do several jobs without losing my place.
   Add other official connectors after permissions and data semantics are verified.
   SSE remains optional.
 - **Phase 5 — Dark Aurora/Calculator triển khai local, payout còn rà soát:** Req 19–20 / Task 40 đã có code và kiểm tra tự động Docker, chờ visual QA; giữ Cashback Hub hiện tại, đổi tên chờ #22. Thanh toán tự động ETH/BNB/SOL (Req 21) chỉ bắt đầu sau khi chốt Open decisions #19 và #26–32, chạy đạt local → testnet rồi mới mainnet.
+- **Sổ khoản phải trả (Req 22 / Task 42):** #33–35 đã chốt; schema, đồng bộ async, đợt 23:00 UTC, approval, đối soát, gate cutover và API/UI admin đã triển khai và chạy mô phỏng trên Docker (xem `payables-rtm.md`). Còn lại: adapter MEXC/Bybit thật cùng xác minh tài khoản/quyền API, backfill legacy và cutover production, gỡ UI rút của khách, tỷ lệ cashback và holding.
 
 ---
 
@@ -1116,12 +1026,7 @@ tab) to do several jobs without losing my place.
 - Bot filtering / unique-click analytics (answer 18).
 - Automated on-chain payout execution (manual in MVP). Req 21 là đề xuất sau MVP (Phase 5), không thay đổi phạm vi MVP.
 - Multi-tier admin roles (single role — answer 14A).
-- End-user accounts (registration, username, password, password reset); end users are
-  identified by UID + email OTP.
-- Outbound email beyond the withdrawal OTP: payout notifications, marketing, and
-  balance alerts.
-- Changing a UID's bound email, and any recourse for a UID claimed by the wrong person
-  (Open decision #21).
+- Tài khoản khách, email binding, ví riêng, khách tự rút và email phục vụ khách. Khách chỉ tra cứu công khai và nhận chi tự động về UID sàn.
 
 ---
 
@@ -1130,11 +1035,7 @@ tab) to do several jobs without losing my place.
   (answer 7A), with mock/seed data used until real reports arrive.
 - Affiliate data is delayed and revisable; "available" balance reflects only cleared
   cashback.
-- Each (exchange, UID) is one UID account with one wallet per asset. The same email may be
-  bound to several UID accounts (a person may hold UIDs on several exchanges), but a UID
-  account has exactly one bound email once set.
-- A UID is not secret and the operator has no way to verify its true owner; see "Accepted
-  risk — first claimant wins".
+- Mỗi cặp sàn + UID có một UidAccount và một Wallet mỗi asset phục vụ sổ nội bộ. UID không bí mật; rủi ro công khai số cashback được chấp nhận theo mục Accepted risk.
 - Requirements marked "pending decision" will be resolved before their dependent code is
   built; agents should not silently invent values for them.
 
@@ -1144,8 +1045,37 @@ tab) to do several jobs without losing my place.
 
 
 
+
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-30 | requirements.md | Sửa Req 14.3/6/7/8: hasData theo cashback đã attribution, cùng no-data shape/thông điệp cho UID lạ và UID chưa có cashback; chỉ hasData=true mới có metric D/zero/NO_DATA | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | requirements.md | Chốt Req 19.1 và Open decision #23: volume mặc định 1,000,000 USDT, có thể chỉnh sau trong code | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | requirements.md | Req 19: volume-only, estimatedVolumeRate do admin nhập, tháng/năm và loại offer thiếu hệ số | Quyết định người dùng 30/10/2026; spec trước code | updated |
+| 2026-10-30 | requirements.md | Req 14/8/API: D theo coverage commission, reportDay nullable, REPORTED zero và giới hạn sourceTz | Quyết định người dùng 30/10/2026; spec trước code | updated |
+| 2026-10-30 | requirements.md | Req 15: giữ heading removed; xóa access model/glossary/actor/API/data model/security và phụ thuộc | Quyết định người dùng 30/10/2026; spec trước code | removed |
+| 2026-10-30 | requirements.md | Req 16: giữ heading removed; xóa gửi email và OTP tuning | Quyết định người dùng 30/10/2026; spec trước code | removed |
+| 2026-10-30 | requirements.md | Đồng bộ Req 3/5/9/20/22, roadmap và out-of-scope; giữ admin legacy và payables | Quyết định người dùng 30/10/2026; spec trước code | updated |
+| 2026-10-21 | requirements.md | Đồng bộ Req 8/14/19/20 với cuộc họp: calculator volume và hai giả định do khách nhập; lookup ngày UTC trước/30 ngày, tổng đã trả và bảng tối giản; bỏ Wallet/OTP-rút public và khóa POST rút cũ; cập nhật #12/#23/#24 | Người dùng yêu cầu thực hiện phần đã chốt và trả lời 5 câu multiple choice; không thay policy chi trả đã chốt | updated |
+| 2026-10-17 | requirements.md | Câu 16/22.38 bỏ qua nhóm thiếu funds, tiếp tục xét nhóm sau đủ principal+phí | Người dùng chọn giữ khoản5 chờ ngày sau, vẫn xét khoản2 khi nguồn còn3; thứ tự ban đầu chưa chốt | updated |
+| 2026-10-17 | requirements.md | Câu 15/22.37 không daily cap riêng cho USDT nội bộ; chi theo nguồn đủ principal+phí, thiếu nguồn đợi 23:00 UTC ngày sau | 100 USDT chỉ là ví dụ nạp, không phải trần; giữ UNPAID và ngăn dùng trùng nguồn | updated |
+| 2026-10-17 | requirements.md | Câu 14/22.36 minimum principal strict >0.5 USDT, đúng 0.5 giữ UNPAID tích lũy; vẫn theo provider minimum/precision | Người dùng chọn >0.5 USD theo fixed 1:1, không chọn >=0.5 hoặc trừ phí | updated |
+| 2026-10-17 | requirements.md | Câu 13/22.35 auto-only, bỏ customer withdrawal/cancel/partial, sửa Req 9/15/16/20/API và tách session khỏi scheduler | Người dùng không cần khách chủ động rút; giữ private reads/admin commands trên sổ chung | updated |
+| 2026-10-17 | requirements.md | Câu 12/22.34 chốt FIXED_USDT_USD 1:1, ngưỡng 20 USDT; bỏ market-quote prerequisite cho kênh USDT nội bộ | Người dùng chọn quy ước nghiệp vụ, không phải giá thị trường; coin khác/on-chain giữ policy riêng | updated |
+| 2026-10-17 | requirements.md | Câu 11/22.33 operator chịu phí USDT nội bộ, khách nhận đủ principal; tách phí khỏi ngưỡng và công nợ khách | Người dùng chọn chịu phí, không trừ cashback; ngân sách phí và điều kiện account còn phải chốt/kiểm chứng | updated |
+| 2026-10-17 | requirements.md | Câu 10/22.32 bỏ mandatory first review, đồng bộ Req 9.5/15.9/21 và accepted-risk controls | Người dùng chọn <=20 USD tự trả từ lần đầu khi đủ điều kiện; onboarding UID và lịch chi giữ nguyên | updated |
+| 2026-10-17 | requirements.md | Chốt câu 9/22.31: lỗi chắc chắn chưa chuyển chờ 23:00 UTC ngày sau, xét lại mọi điều kiện; Req 12.5 không cho job retry vượt lịch tiền | Người dùng chọn chờ đợt ngày sau, tách khỏi đối soát UNKNOWN | updated |
+| 2026-10-17 | requirements.md | Chốt câu 8/22.30: cutoff danh sách 23:00 UTC; cashback mới sau cutoff để đợt kế tiếp, correction vẫn theo dispatch guard | Người dùng chọn chốt danh sách khi đợt bắt đầu, không tiếp tục gộp tới thời điểm gửi từng UID | updated |
+| 2026-10-17 | requirements.md | Chốt câu 7/22.29: cashback mới trước đợt chi gộp vào tổng chưa gửi, vô hiệu approval cũ và duyệt lại tổng >20 USD | Người dùng chọn gộp 25+5 thành 30 và duyệt lại; giữ ranh giới DISPATCHING/reconcile | updated |
+| 2026-10-17 | requirements.md | Chốt câu 6/22.28: bỏ lỡ đợt chờ 23:00 UTC kế tiếp, gộp lại phần đủ điều kiện; phân biệt phục hồi sync/reconcile với dispatch bù | Người dùng chọn đợi đợt kế tiếp thay vì chạy bù ngay khi khôi phục | updated |
+| 2026-10-17 | requirements.md | Chốt câu 5/22.27: approve khoản >20 USD sau đợt phải chờ 23:00 UTC kế tiếp, UNPAID + WAITING_SCHEDULE và kiểm lại snapshot | Người dùng chọn chờ đợt tiếp thay vì chuyển ngay sau approve | updated |
+| 2026-10-17 | requirements.md | Câu 4 đổi ranh giới: <=20 USD có thể tự trả, >20 USD giữ UNPAID chờ approval; thống nhất Req 9/21/22 và #27 | Người dùng yêu cầu hold khi tổng >20 USD, còn lại trả trực tiếp; không suy quyết định rút một phần | updated |
+| 2026-10-17 | requirements.md | Duyệt #34 (payable theo release + allocations, release cũ nhất trước) và #35 (PayoutExecution riêng, legacyWithdrawalId); viết lại 22.14, 22.21 và header Req 22 theo mô hình đã triển khai; ghi `moneyFlowGate` | Người dùng duyệt phương án đề xuất và yêu cầu code theo plan | updated |
+| 2026-10-17 | requirements.md | Chốt câu 3/22.26: gộp một lệnh USDT nội bộ theo sàn/UID, một đợt mỗi ngày 23:00 UTC; #26/#34 phản ánh phần đã chốt và phần còn mở | Người dùng chọn gộp cashback và chỉ định giờ UTC+0; chưa chốt grain/partial hoặc cách phục hồi đợt bỏ lỡ | updated |
+| 2026-10-17 | requirements.md | Chốt câu 1 tại #35/22.25: MEXC và Bybit trả USDT nội bộ từ source accounts riêng; Binance có điều kiện data/quyền; phân biệt verification thiết lập và từng lần chi, không bypass | Người dùng chọn phạm vi và yêu cầu khảo sát API có thể chạy không cần xác minh mỗi transfer | updated |
+| 2026-10-17 | requirements.md | Chốt câu 2 tại #35/22.25: chấp nhận operator thiết lập/xác minh mỗi UID Bybit một lần, các lần chi sau tự động khi đủ điều kiện | Người dùng chọn phương án thiết lập người nhận một lần; account readiness thực tế vẫn chưa kiểm chứng | updated |
+| 2026-10-17 | requirements.md | Làm rõ ngưỡng/hủy, recovery theo 8.7, visibility/blocker/cutover và RTM; #34–35 vẫn là gate mở, allocation theo release là phương án review; giữ nguyên UID policy 5.2 | Đánh giá findings theo toàn bộ spec, không coi quyết định mở/đã ghi nhận là lỗi implementation hoặc tự chốt business | updated |
+| 2026-10-17 | requirements.md | Chốt #33: CustomerPayable là nguồn chi auto/manual; tự đồng bộ async sau pipeline ingest/cashback, command async chung, enqueue bền vững, phiên bản/freshness và chống ghi đè PAID; liên kết Req 9/12/21 | Người dùng yêu cầu mọi hoạt động dựa trên bảng và tự đồng bộ bất đồng bộ sau ingest | updated |
+| 2026-10-17 | requirements.md | Thêm Req 22 sổ khoản phải trả PAID/UNPAID, approval/lý do/đối soát, chống trả trùng và lịch sử; API/model khái niệm, Open decisions #33–35 và roadmap | Người dùng yêu cầu đi từ business spec trước khi tạo bảng lịch sử khoản phải trả | added |
 | 2026-10-14 | requirements.md | Req 13.8: chủ động Pause/Resume từng sàn, giữ mode/interval, admin pause độc lập với lỗi, chặn queued/new runs và dừng giữa các ngày; endpoint pause + audit | Người dùng yêu cầu nút pause riêng trong API ingest | updated |
 | 2026-10-14 | requirements.md | Chốt #23–24 và Req 19.8 theo plan: phí/tháng USDT, commission assumption, published offer share, tháng/12 tháng, giới hạn/rounding | Người dùng yêu cầu triển khai plan và kiểm tra Docker local | updated |
 | 2026-10-14 | requirements.md | Ghi nhận #25 Dark Aurora đã chốt, thêm Req 20.7 về hero/hình ví và Opportunity Check bên dưới; giữ #22–24 mở và tách UI khỏi payout | Đồng bộ hướng giao diện người dùng đã chọn | updated |
@@ -1174,3 +1104,5 @@ tab) to do several jobs without losing my place.
 | 2026-09-27 | requirements.md | Req 13.12/13.14: bỏ điều kiện bắt buộc IP allowlist; key `ips=["*"]` vẫn được sync nếu read-only Affiliate và chưa hết hạn, chỉ cảnh báo IP/expiry; giữ chặn khi Bybit thực sự từ chối IP | Người vận hành chọn dùng key không giới hạn IP để bật ingest tự động | updated |
 | 2026-09-27 | requirements.md | Req 18.10: hai ngày lọc báo cáo Referral activity mặc định là ngày hiện tại theo UTC; bỏ ô source timezone trong báo cáo và luôn diễn giải kỳ lọc theo UTC, giữ metadata timezone cho upload | Giảm thao tác nhập trên trang báo cáo và thống nhất ranh giới ngày với dữ liệu API | added |
 | 2026-09-27 | requirements.md | Req 18.11–18.12: làm rõ nhãn trạng thái báo cáo, tăng độ nổi bật của date picker và cho phép quay về trang trước/trang đầu khi phân trang | Người vận hành khó hiểu trạng thái, khó thấy lịch và bị kẹt ở trang cuối | added |
+| 2026-10-27 | requirements.md | Làm rõ Req 14.4: cửa sổ phút/giờ phải độc lập dù trùng thời điểm bắt đầu | Test thời gian cố định tái hiện lookup bị 429 sớm khi hai cửa sổ dùng chung counter; không đổi hạn mức | updated |
+| 2026-10-30 | requirements.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |

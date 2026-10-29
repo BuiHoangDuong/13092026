@@ -2,28 +2,30 @@ import { lookupRequestSchema, lookupResponseSchema, type LookupResponse } from "
 import { db, Prisma } from "@cashback/db";
 import { consumeBudget, positiveConfig } from "./rate-limit.js";
 
-const attributionTypes = ["CREDIT", "REVERSAL", "CLAWBACK", "ADJUSTMENT"] as const;
 const transactionCap = 100;
 
-type CreditedVersion = { id: string; commissionId: string; amount: Prisma.Decimal; importedAt: Date };
-type CreditedEntry = { sourceRef: string | null };
-
-/** Latest applied version per record. Match `WalletEntry.sourceRef` to the version id — do not parse `opKey`. */
-export function creditedCommissionByRecord(versions: CreditedVersion[], entries: CreditedEntry[]) {
-  const appliedIds = new Set(entries.flatMap(entry => entry.sourceRef ? [entry.sourceRef] : []));
-  const latest = new Map<string, CreditedVersion>();
-  for (const version of versions) {
-    if (!appliedIds.has(version.id)) continue;
-    const current = latest.get(version.commissionId);
-    const newer = !current || version.importedAt > current.importedAt || (version.importedAt.getTime() === current.importedAt.getTime() && version.id > current.id);
-    if (newer) latest.set(version.commissionId, version);
-  }
-  return new Map([...latest].map(([commissionId, version]) => [commissionId, version.amount]));
+export async function latestReportedDay(tx: Pick<Prisma.TransactionClient, "$queryRaw">, exchangeId: string, now: Date): Promise<Date | null> {
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const rows = await tx.$queryRaw<Array<{ day: Date }>>(Prisma.sql`
+    SELECT MAX(candidate.day) AS day FROM "ImportBatch" b
+    CROSS JOIN LATERAL (SELECT LEAST(${today}::timestamp, date_trunc('day', b."periodEnd" + INTERVAL '1 millisecond')) - INTERVAL '1 day' AS day) candidate
+    WHERE b."exchangeId" = ${exchangeId} AND b."datasetKind" = 'COMMISSION' AND b.status = 'PUBLISHED'
+      AND (b."sourceAsOf" IS NULL OR b."sourceAsOf" >= b."periodEnd")
+      AND (b."periodEnd" - b."periodStart" <= INTERVAL '1 day' OR b."reportType" = 'TRANSACTION')
+      AND b."periodStart" <= candidate.day AND b."periodEnd" + INTERVAL '1 millisecond' >= candidate.day + INTERVAL '1 day'
+  `);
+  return rows[0]?.day ?? null;
 }
 
-/** No applied wallet entry means commission 0. Never surface in-flight `reconciledAmount`. */
-export function commissionForLookup(credited: Prisma.Decimal | undefined) {
-  return credited ?? new Prisma.Decimal(0);
+type CashbackPeriod = { periodStart: Date; periodEnd: Date; creditedCashback: Prisma.Decimal };
+/** Source periods use inclusive ends; never distribute a multi-day amount across days. */
+export function summarizePublishedCashback(records: CashbackPeriod[], start: Date, end: Date, covered = false) {
+  if (!covered) return { status: "NO_DATA" as const, amount: null };
+  const overlap = records.filter(row => row.periodStart < end && row.periodEnd >= start);
+  if (overlap.some(row => row.periodStart < start || row.periodEnd >= end)) {
+    return { status: "INSUFFICIENT_DETAIL" as const, amount: null };
+  }
+  return { status: "REPORTED" as const, amount: overlap.reduce((sum, row) => sum.plus(row.creditedCashback), new Prisma.Decimal(0)).toFixed(10) };
 }
 
 export async function lookupCashback(raw: unknown, ip: string): Promise<LookupResponse> {
@@ -32,17 +34,29 @@ export async function lookupCashback(raw: unknown, ip: string): Promise<LookupRe
     { seconds: 60, limit: positiveConfig("LOOKUP_RATE_PER_MINUTE", 5) },
     { seconds: 3600, limit: positiveConfig("LOOKUP_RATE_PER_HOUR", 30) }
   ]);
+  const now = new Date();
   return db.$transaction(async tx => {
+    const dayStart = await latestReportedDay(tx, exchangeId, now);
+    const end = dayStart ? new Date(dayStart.getTime() + 86_400_000) : null;
+    const rollingStart = dayStart ? new Date(dayStart.getTime() - 29 * 86_400_000) : null;
+    const summaryPeriods = { reportDay: dayStart?.toISOString().slice(0, 10) ?? null, end: end?.toISOString() ?? null, rollingStart: rollingStart?.toISOString() ?? null };
+    const empty = { balances: [], summaryPeriods, hasData: false, hasMore: false, lastImportAt: null, sourceAsOf: null, transactions: [] };
     const account = await tx.uidAccount.findUnique({ where: { exchangeId_uid: { exchangeId, uid } }, select: { id: true } });
-    if (!account) return { balances: [], hasData: false, hasMore: false, lastImportAt: null, sourceAsOf: null, transactions: [] };
-    const [wallets, records, applied] = await Promise.all([
-      tx.wallet.findMany({ where: { uidAccountId: account.id }, orderBy: { asset: "asc" }, select: { asset: true, pending: true, available: true } }),
+    if (!account) return lookupResponseSchema.parse(empty);
+    const attributed = await tx.commissionRecord.findFirst({ where: { attributedUidAccountId: account.id }, select: { id: true } });
+    if (!attributed) return lookupResponseSchema.parse(empty);
+    const [wallets, records, summaryRecords, applied] = await Promise.all([
+      tx.wallet.findMany({ where: { uidAccountId: account.id }, orderBy: { asset: "asc" }, select: { asset: true, withdrawn: true } }),
       tx.commissionRecord.findMany({
         where: { attributedUidAccountId: account.id },
         orderBy: [{ periodEnd: "desc" }, { id: "desc" }],
         take: transactionCap + 1,
-        select: { id: true, asset: true, periodStart: true, periodEnd: true, cashbackRate: true, creditedCashback: true }
+        select: { id: true, asset: true, periodStart: true, periodEnd: true, creditedCashback: true }
       }),
+      end && rollingStart ? tx.commissionRecord.findMany({
+        where: { attributedUidAccountId: account.id, periodStart: { lt: end }, periodEnd: { gte: rollingStart } },
+        select: { asset: true, periodStart: true, periodEnd: true, creditedCashback: true }
+      }) : Promise.resolve([]),
       tx.$queryRaw<Array<{ publishedAt: Date | null; sourceAsOf: Date | null }>>(Prisma.sql`
         SELECT b."publishedAt", b."sourceAsOf" FROM "WalletEntry" e
         JOIN "Wallet" w ON w.id = e."walletId"
@@ -53,26 +67,21 @@ export async function lookupCashback(raw: unknown, ip: string): Promise<LookupRe
     ]);
     const hasMore = records.length > transactionCap;
     const page = hasMore ? records.slice(0, transactionCap) : records;
-    const versions = page.length ? await tx.commissionVersion.findMany({
-      where: { commissionId: { in: page.map(row => row.id) } },
-      select: { id: true, commissionId: true, amount: true, importedAt: true },
-      orderBy: [{ importedAt: "desc" }, { id: "desc" }]
-    }) : [];
-    const appliedEntries = versions.length ? await tx.walletEntry.findMany({
-      where: { sourceRef: { in: versions.map(version => version.id) }, type: { in: [...attributionTypes] } },
-      select: { sourceRef: true }
-    }) : [];
-    const credited = creditedCommissionByRecord(versions, appliedEntries);
+    const assets = [...new Set([...wallets.map(w => w.asset), ...page.map(row => row.asset), ...summaryRecords.map(row => row.asset)])].sort();
     return lookupResponseSchema.parse({
-      balances: wallets.map(w => ({ asset: w.asset, pending: w.pending.toFixed(10), available: w.available.toFixed(10) })),
-      hasData: records.length > 0, hasMore, lastImportAt: applied[0]?.publishedAt?.toISOString() ?? null, sourceAsOf: applied[0]?.sourceAsOf?.toISOString() ?? null,
+      summaryPeriods,
+      balances: assets.map(asset => ({ asset,
+        totalPaid: (wallets.find(w => w.asset === asset)?.withdrawn ?? new Prisma.Decimal(0)).toFixed(10),
+        previousDay: summarizePublishedCashback(summaryRecords.filter(row => row.asset === asset), dayStart ?? now, end ?? now, dayStart !== null),
+        rolling30Days: summarizePublishedCashback(summaryRecords.filter(row => row.asset === asset), rollingStart ?? now, end ?? now, dayStart !== null)
+      })),
+      hasData: true, hasMore, lastImportAt: applied[0]?.publishedAt?.toISOString() ?? null, sourceAsOf: applied[0]?.sourceAsOf?.toISOString() ?? null,
       transactions: page.map(row => ({
         id: row.id,
         asset: row.asset,
         periodStart: row.periodStart.toISOString(),
         periodEnd: row.periodEnd.toISOString(),
-        commission: commissionForLookup(credited.get(row.id)).toFixed(10),
-        cashbackRate: row.cashbackRate?.toFixed(4) ?? null,
+        uid,
         cashback: row.creditedCashback.toFixed(10)
       }))
     });

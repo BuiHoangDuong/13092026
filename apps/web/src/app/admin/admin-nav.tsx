@@ -21,6 +21,7 @@ const groups = [
   }
 ] as const;
 const otherPages = [
+  { href: "/admin/payables", label: "Payables" },
   { href: "/admin/withdrawals", label: "Withdrawals" },
   { href: "/admin/exchanges", label: "Exchanges" },
   { href: "/admin/offers", label: "Offers" },

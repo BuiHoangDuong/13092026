@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, refreshBinanceReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth, payoutReadiness } from "@cashback/core";
+import { claimNextJob, reapExpiredJobs, heartbeat, failJob, parseImportJob, transformImportJob, transformApiJob, purgeTransformedRaw, publishImportJob, attributeJob, releaseHoldsJob, scheduleHoldRelease, scheduleDueSyncs, refreshBybitReadiness, refreshMexcReadiness, refreshBinanceReadiness, runSyncJob, recordWorkerHeartbeat, recordWorkerStopped, getOperationalHealth, payoutReadiness, syncPayablesJob, runPayoutSlot, reconcileJob, runPayableCommandJob, schedulePayoutSlot, scheduleReconcile } from "@cashback/core";
 import type { SyncTrigger } from "@cashback/db";
 import { db } from "@cashback/db";
 
@@ -15,7 +15,7 @@ async function tick() {
   await recordWorkerHeartbeat(workerId);
   await reapExpiredJobs();
   if (Date.now() - lastReadiness > 60_000) { await refreshBybitReadiness(); await refreshMexcReadiness(); await refreshBinanceReadiness(); lastReadiness = Date.now(); }
-  if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); await scheduleDueSyncs(); lastSchedule = Date.now(); }
+  if (Date.now() - lastSchedule > 60_000) { await scheduleHoldRelease(); await scheduleDueSyncs(); await schedulePayoutSlot(); await scheduleReconcile(); lastSchedule = Date.now(); }
   if (Date.now() - lastRawPurge > 86_400_000) { await purgeTransformedRaw(); lastRawPurge = Date.now(); }
   const job = await claimNextJob(leaseSeconds, workerId);
   if (!job?.lockedBy) return;
@@ -32,6 +32,10 @@ async function tick() {
     else if (job.type === "PUBLISH" && typeof payload.batchId === "string") await publishImportJob(lease, payload.batchId);
     else if (job.type === "ATTRIBUTE" && typeof payload.exchangeId === "string") await attributeJob(lease, payload.exchangeId);
     else if (job.type === "RELEASE_HOLDS") await releaseHoldsJob(lease);
+    else if (job.type === "SYNC_PAYABLES" && typeof payload.uidAccountId === "string" && typeof payload.asset === "string") await syncPayablesJob(lease, { uidAccountId: payload.uidAccountId, asset: payload.asset });
+    else if (job.type === "PAYOUT_SLOT" && typeof payload.slotKey === "string") await runPayoutSlot(lease, payload.slotKey);
+    else if (job.type === "PAYOUT_RECONCILE") await reconcileJob(lease);
+    else if (job.type === "PAYABLE_COMMAND" && typeof payload.commandId === "string") await runPayableCommandJob(lease, payload.commandId);
     else if (job.type === "SYNC") await runSyncJob(lease, { exchangeId: typeof payload.exchangeId === "string" ? payload.exchangeId : undefined, trigger: typeof payload.trigger === "string" ? payload.trigger as SyncTrigger : undefined, dates: Array.isArray(payload.dates) ? payload.dates.filter((date): date is string => typeof date === "string") : [] });
     else throw new Error(`NO_HANDLER:${job.type}`);
   } catch (error) { await failJob(lease, job.attempts, error); }

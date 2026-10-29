@@ -1,6 +1,7 @@
 import type { WalletResponse } from "@cashback/contracts";
 import { db, Prisma } from "@cashback/db";
 import { lockCashback, withJobLease, type JobLease } from "./jobs.js";
+import { invalidateUndispatchedExecutions, markPayableSourceChanged, reduceEntitlementForCorrection } from "./payables.js";
 
 export class CashbackError extends Error {
   constructor(public readonly code: "INVALID_HISTORY_CURSOR", message: string) { super(message); }
@@ -46,6 +47,8 @@ async function attributeExchange(tx: Prisma.TransactionClient, exchangeId: strin
     if (!rate) continue;
     const target = cashbackTarget(record.reconciledAmount, rate);
     const delta = target.minus(record.creditedCashback);
+    // Req 22.22: a correction before DISPATCHING voids prepared executions and frees their money, so it nets against `available` first.
+    if (delta.lessThan(0)) await invalidateUndispatchedExecutions(tx, owner.id, record.asset, "CORRECTION");
     const wallet = await tx.wallet.upsert({ where: { uidAccountId_asset: { uidAccountId: owner.id, asset: record.asset } },
       update: {}, create: { uidAccountId: owner.id, asset: record.asset } });
     let pending = wallet.pending, available = wallet.available, receivable = wallet.receivable;
@@ -67,6 +70,7 @@ async function attributeExchange(tx: Prisma.TransactionClient, exchangeId: strin
         if (deduction.isZero()) break;
       }
       const fromAvailable = Prisma.Decimal.min(deduction, available);
+      if (fromAvailable.greaterThan(0)) await reduceEntitlementForCorrection(tx, owner.id, record.asset, fromAvailable);
       available = available.minus(fromAvailable); deduction = deduction.minus(fromAvailable);
       receivable = receivable.plus(deduction);
       type = deduction.greaterThan(0) ? "CLAWBACK" : "REVERSAL";
@@ -98,6 +102,7 @@ export async function releaseHoldsJob(lease: JobLease) {
       await tx.walletEntry.update({ where: { id: credit.id }, data: { remainingPending: 0, availableAt: due } });
       await tx.walletEntry.create({ data: { walletId: wallet.id, type: "HOLD_RELEASE", amount, sourceRef: credit.id, opKey: `release:${credit.id}`,
         balanceChanges: { pending: amount.negated().toFixed(10), available: amount.toFixed(10) } } });
+      await markPayableSourceChanged(tx, wallet.uidAccountId, wallet.asset); // same transaction: the sync request cannot be lost (Req 22.17)
     }
   });
 }

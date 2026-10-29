@@ -1,7 +1,7 @@
 # Happy-path scenarios — Cashback Affiliate Platform
 
-- **Status:** Draft v1.1 (main success paths; numbers from the live Railway dump)
-- **Last updated:** 2026-09-26
+- **Status:** Draft v3.0 (target 30/10/2026; Task 44 chưa triển khai/kiểm chứng; P1–P14 có bằng chứng mô phỏng trước đây)
+- **Last updated:** 2026-10-30
 - **Based on:** `requirements.md` (Draft v0.6), `design.md` (Draft v0.7), and
   Railway Postgres (`public`) as of 2026-09-17. A Bybit test report for UID
   `001234567` was published the same day so lookup has a real balance.
@@ -10,11 +10,13 @@
 
 > Source of truth for behavior remains `requirements.md` / `design.md`. If a step
 > here disagrees with those files, those files win — update this document.
+> **Cập nhật 30/10/2026:** khách chỉ tra cứu công khai và nhận chi tự động về UID sàn; không email binding, phiên UID, ví riêng hoặc tự rút. S8–S12/S14–S15 đã gỡ, không tái dùng số. Queue admin legacy/payables giữ nguyên. Dump bên dưới chỉ là ảnh chụp lịch sử, không chứng minh target Task 44.
+
 >
-> **Do not invent balances.** Only UIDs in a published report show money. The
+> **Không tự tạo số dư.** Số tiền thực từ cashback đã attribution; zero được xác nhận theo coverage Req 14. The
 > live dump has one: Bybit `001234567` with 30 USDT pending.
 >
-> Out of scope here: rate-limit 429s, wrong OTP, mismatched email, clawback /
+> Out of scope here: rate-limit 429s, clawback /
 > receivable, overlapping-report rejection, crash recovery, and Phase 4 API sync.
 
 ---
@@ -64,56 +66,31 @@ Offer rates match the exchange defaults (binance `0.4`, mexc `0.35`, bybit `0.3`
 | `/guides/mexc-cashback-guide` | MEXC cashback guide |
 | `/guides/bybit-cashback-guide` | Bybit cashback guide |
 
-### What lookup does **today**
+### Lookup theo target 30/10/2026 (Task 44.2 chưa làm)
 
-On `/`, choose **Bybit** (not Binance/MEXC) and UID **`001234567`** (keep the
-leading zeros). Live `POST /api/lookup` returns:
+Nhập đúng sàn + UID (giữ số 0 đầu). Ngày báo cáo D là ngày UTC mới nhất ≤ hôm qua có ImportBatch COMMISSION/PUBLISHED phủ trọn ngày, chi tiết ngày (batch ≤1 ngày hoặc TRANSACTION), không partial (sourceAsOf null hoặc ≥ periodEnd). Response `summaryPeriods { reportDay, rollingStart, end }` và metric theo Req 14; tổng đã trả = Wallet.withdrawn. Không dùng số pending trong dump làm expected lookup hiện tại.
 
-```json
-{
-  "balances": [{ "asset": "USDT", "pending": "30.0000000000", "available": "0.0000000000" }],
-  "hasData": true,
-  "lastImportAt": "2026-09-17T11:02:41.188Z",
-  "sourceAsOf": null
-}
-```
-
-`available` stays `0` until `HOLDING_PERIOD_HOURS` is set (empty = never
-release). Pending **30 USDT** is the cashback to look for. Any other UID, or
-the same UID on Binance/MEXC, still shows no-data.
-
----
+- UID không tồn tại hoặc đã biết nhưng chưa có bất kỳ cashback attribution nào → hasData=false, cùng shape rỗng và thông điệp "no cashback data for this UID under our referral links", không hiển thị metric dù sàn có D.
+- Chỉ khi hasData=true (đã có cashback attribution), có D nhưng UID không có commission trong kỳ → REPORTED 0; bảng rỗng được phép.
+- Khi hasData=true và sàn chưa có D → NO_DATA, reportDay/rollingStart/end null.
+- Khi hasData=true, bản ghi nhiều ngày cắt biên thiếu breakdown → INSUFFICIENT_DETAIL/null; không prorate. Batch sourceTz khác UTC có thể không phủ ngày UTC.
 
 ## How to use this document
 
-1. **S7 works now** for Bybit + `001234567` (pending 30 USDT). Do not expect
-   the same UID on Binance/MEXC.
-2. **S4–S5 already ran once** (batch `bd2672df-c716-43ad-8a87-d9e22b92b4a1`).
-   Re-running S4 with the same aggregate period will be a correction, not a
-   second 30 USDT credit.
-3. **S6 will not move 30 → available** until `HOLDING_PERIOD_HOURS` is set on
-   the worker (currently unset).
-4. **S0–S3, S13, S16** still run on seed content. Product UI is English only;
-   there is no customer registration.
+Các scenario là target hành vi; chỉ coi đã đạt khi có evidence tương ứng Task 44. Dump 2026-09-17 và mô phỏng payables cũ không chứng minh thay đổi mới.
 
-| Surface | Path |
-|---------|------|
-| Public home + cashback lookup | `/` |
-| Exchanges catalog / detail | `/exchanges`, `/exchanges/[slug]` |
-| Guides | `/guides`, `/guides/[slug]` |
-| Referral redirect | `/go/[linkId]` |
-| Claimant withdraw (OTP → wallet) | `/withdraw` |
-| Admin login | `/admin/login` (no sidebar) |
-| Admin operations | Left nav: `/admin` overview; Data ingest → `/admin/ingest/uploads`, `/admin/ingest/connectors`; Reports → `/admin/reports/activity`; `/admin/withdrawals`, `/admin/exchanges`, `/admin/offers`, `/admin/links`, `/admin/guides`. Old `/admin/imports`, `/admin/crawl-data`, `/admin/referrals`, `/admin/sync` redirect after login |
-
----
+| Area | Route |
+|---|---|
+| Public discovery/lookup/calculator | `/`, `/#lookup` |
+| Link cũ | `/withdraw` redirect `/#lookup` |
+| Admin legacy history | `/admin/withdrawals` (xác thực admin) |
+| Sổ phải trả | `/admin/payables` (xác thực admin) |
 
 ## Actors
 
 | Actor | Who | How they authenticate |
 |-------|-----|------------------------|
 | Visitor | Anyone on the public site | None |
-| UID claimant | Person withdrawing one (exchange, UID) | 6-digit email OTP → 30-minute UID session |
 | Admin | Operator staff | Email + password at `/admin/login` |
 | Worker | Background process | Internal (no UI). Must be running for parse / publish / attribute / hold-release |
 
@@ -129,12 +106,8 @@ These are configuration and seed conditions, not scenarios.
 | Admin in dump | Email `admin@example.com` (password = `SEED_ADMIN_PASSWORD` from the environment that last ran seed) | S1 |
 | Published content | Already in dump (3 exchanges / offers / links / guides) | S2, S3, S4 |
 | `HOLDING_PERIOD_HOURS` | `0` for a same-session test of available balance; a positive number if you will wait that many hours | Empty keeps credits **pending** forever (not withdrawable) |
-| `WITHDRAWAL_ROUTES` | e.g. `{"USDT":["TRON","ETHEREUM"]}` | Empty disables withdrawal requests |
-| `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` | e.g. `{"USDT":"100"}` | Needed for S14 (second withdrawal auto-approve). Missing asset → always review |
-| Resend | `RESEND_API_KEY` + `EMAIL_FROM` on a **verified** operator domain | OTP email in S8. Shared `resend.dev` only delivers to the Resend account owner |
-| `CLIENT_IP_HEADER` | `x-forwarded-for` on Railway | Lookup/OTP fail closed in production without a trusted IP header |
-| Test UID | Bybit `001234567` — already attributed (pending 30 USDT). Keep leading zeros. | S7–S12 |
-| Test payout address | Valid checksum address for the chosen network (EVM or TRON) | S9 |
+| `CLIENT_IP_HEADER` | `x-forwarded-for` on Railway | Lookup fail closed in production without a trusted IP header |
+| Test UID | Bybit `001234567` — already attributed (pending 30 USDT). Keep leading zeros. | S7 |
 | Normalized Bybit CSV v1 | See S4. Native Bybit export is not a cashback path yet. MEXC Referral Data XLSX is an admin activity snapshot and does not credit wallets | S4 |
 
 ---
@@ -152,11 +125,13 @@ Worker attributes cashback to UidAccount (created on demand)  →  pending
         ↓
 Worker RELEASE_HOLDS  →  available
         ↓
-Visitor looks up exchange + UID (sees pending / available only)
+Visitor looks up exchange + UID (ngày báo cáo/30 ngày, totalPaid)
         ↓
-Claimant requests OTP, verifies, withdraws available
-        ↓
-First withdrawal: admin reviews → approves → sends USDT off-platform → marks paid
+Worker lập payable sau release, tự xét chi lúc 23:00 UTC tới UID sàn
+  ↓
+Admin duyệt theo ngưỡng khi cần; worker gửi/đối soát, settle vào Wallet.withdrawn
+  ↓
+Khách xem ngày báo cáo/30 ngày và tổng đã trả qua lookup công khai
 ```
 
 ---
@@ -173,18 +148,25 @@ First withdrawal: admin reviews → approves → sends USDT off-platform → mar
 | S5 | Admin publishes the report | Admin + Worker | 6.7–6.9, 7 |
 | S6 | Cashback becomes available | Worker | 8.2, 8.3 |
 | S7 | Visitor looks up exchange + UID | Visitor | 14, 8.5 |
-| S8 | Claimant binds email via OTP | Claimant | 15, 16 |
-| S9 | First withdrawal (always review) | Claimant | 9.1–9.5, 15.9 |
-| S10 | Admin approves the first withdrawal | Admin | 9.5, 9.9 |
-| S11 | Admin pays out and marks paid | Admin | 9.6, 9.9 |
-| S12 | Later OTP uses the bound email | Claimant | 15.2, 15.3 |
 | S13 | Admin creates and publishes content | Admin | 10 |
-| S14 | Second withdrawal auto-approves | Claimant + Admin | 9.5, 9.6 |
-| S15 | Claimant cancels before paid | Claimant | 9.7, 9.10 |
 | S16 | Admin reads the operations dashboard | Admin | 11 |
 | S17 | Admin uploads a MEXC Referral Data XLSX | Admin + Worker | 6.12, 6.16 |
 | S18 | Admin publishes and reads the MEXC snapshot | Admin + Worker | 6.13, 6.15 |
 | S19 | Admin re-imports the same MEXC period with a newer export | Admin + Worker | 6.14 |
+| P1 | Cutover gate sang PAYABLE_ONLY | Admin | 22.24, 22.35 |
+| P2 | Release cashback sinh khoản phải trả | Worker + Admin | 22.2, 22.16–17 |
+| P3 | Tự trả 3+5+7 gộp một lệnh 15 USDT | Worker | 22.26, 22.6 |
+| P4 | Ngưỡng 0.5 / 20 / 20.01 và tích lũy | Worker | 22.6, 22.34, 22.36 |
+| P5 | Duyệt > 20 USDT, gửi ở đợt kế tiếp | Admin | 22.5, 22.27 |
+| P6 | Cashback mới trước đợt: gộp + duyệt lại | Worker + Admin | 22.29–30 |
+| P7 | Bỏ lỡ đợt 23:00 | Worker | 22.28 |
+| P8 | Sàn xác nhận chưa chuyển, thử lại hôm sau | Worker | 22.7, 22.31 |
+| P9 | Timeout, UNKNOWN, đối soát | Worker + Admin | 22.8–9 |
+| P10 | Thiếu tiền nguồn, release cũ nhất trước | Worker | 22.33, 22.37–38 |
+| P11 | Recipient/phí chưa sẵn sàng | Worker + Admin | 22.25, 22.33 |
+| P12 | Correction trước/sau khi gửi | Worker | 22.20, 22.22, 8.7 |
+| P13 | Trả thủ công có bằng chứng khớp | Admin | 22.9, 22.14 |
+| P14 | Khách không còn rút tiền | Khách | 22.35 |
 
 ---
 
@@ -220,8 +202,7 @@ First withdrawal: admin reviews → approves → sends USDT off-platform → mar
   Nav groups: Overview; Data ingest (Uploads, API connectors); Reports
   (Referral activity); Withdrawals, Exchanges, Offers, Referral links, Guides.
   Login has no sidebar.
-- Admin session cannot be used on `/api/uid/*`. A UID session cannot be used on
-  `/api/admin/*`.
+- Admin session chỉ dùng cho quyền admin; không có phiên khách hoặc private UID API.
 
 ---
 
@@ -349,11 +330,11 @@ published).
   `referral_link_id` in the sample CSV → exchange default, not the offer).
 - Re-clicking **Publish** on the same batch does not credit twice.
 - Before this repeat upload is published, `/` lookup of Bybit + `001234567`
-  still shows the balance from the report already published on 2026-09-17.
+  hiển thị credited cashback đã ghi nhận; tổng kỳ theo coverage D của Req 14, không theo ngày hiện tại.
 - After status is `PUBLISHED` but before the ATTRIBUTE job finishes, lookup
   still shows the previous credited commission, not the new `reconciledAmount`.
   The row matches `creditedCashback`. After ATTRIBUTE, lookup shows the new
-  commission.
+  credited cashback (không công khai commission).
 
 ---
 
@@ -367,140 +348,27 @@ have elapsed.
 ### Steps
 1. Wait for one worker `RELEASE_HOLDS` tick (about 1 minute when the period is
    `0`).
-2. Do not request a withdrawal yet.
+2. Admin theo dõi sổ nội bộ và payable; không có bước khách yêu cầu rút.
 
 ### Expected
 - The credited amount moves `pending → available`.
 - `pending` / `available` never go negative.
-- Lookup (S7) now shows a non-zero `available` if the hold has cleared.
+- Admin kiểm tra release vào available trong sổ nội bộ; lookup S7 không hiển thị bucket ví.
 - `reserved` / `withdrawn` / `receivable` stay `0` on this path.
 
 ---
 
-## S7 — Visitor looks up exchange + UID
+## S7 — Khách tra cứu công khai theo sàn + UID
 
-**Actor:** Visitor (anonymous)  
-**Preconditions:** S5 has been published for the UID you will type. Both
-**exchange and UID** are required.
+**Actor:** Visitor · **Req:** 14, 8.5 · **Trạng thái:** target mới, chưa kiểm chứng.
 
-### Steps
-1. On `/`, choose **Bybit** (id `cmu3lhxdu000enb5cb3zd72lp`).
-2. Enter UID **`001234567`** exactly (leading zeros). Submit.
+1. Admin publish batch commission đủ coverage ngày UTC D ≤ hôm qua, chi tiết ngày và không partial; ATTRIBUTE xử lý theo pipeline.
+2. Trên trang public chọn sàn + UID, giữ nguyên số 0 đầu.
+3. Kiểm tra nhãn Ngày báo cáo D, summaryPeriods và bảng chỉ ngày/kỳ, asset, UID, cashback.
 
-### Expected after S5
-- Totals: USDT `pending=30.0000000000`, `available=0.0000000000`.
-- Transaction table: period 2026-09-01–2026-09-16, exchange paid `100` USDT,
-  rate 30%, your share `30` USDT.
-- **Not** in the response: bound email, payout address, withdrawal records,
-  `reserved` / `withdrawn` / `receivable`.
-- Lookup does not create or mutate `UidAccount`, wallet, OTP, or session.
-- Same UID on **Binance** is a different subject and stays no-data unless a
-  Binance report was published.
-- **Withdraw** goes to
-  `/withdraw?exchangeId=cmu3lhxdu000enb5cb3zd72lp&uid=001234567`.
+**Kỳ vọng:** previousDay theo `[D,D+1)`, rolling30Days theo `[D−29,D+1)`; tổng trên mọi dòng không giới hạn 100 dòng bảng. totalPaid từ Wallet.withdrawn, không cộng lại payables. UID không tồn tại và UID đã biết/chưa có cashback attribution đều hasData=false, cùng shape rỗng/message "no cashback data for this UID under our referral links", không hiển thị metric. Chỉ khi hasData=true: có D và UID không dòng trong kỳ → REPORTED 0; chưa D → NO_DATA/reportDay null; kỳ nhiều ngày cắt biên → INSUFFICIENT_DETAIL/null. Không commission/rate/volume/bucket ví/email/lịch sử lệnh trong response. Lookup không tạo UID/Wallet. `/withdraw` redirect `/#lookup`; không có control đăng nhập hoặc rút.
 
----
-
-## S8 — Claimant binds email via OTP
-
-**Actor:** Claimant  
-**Preconditions:** S7. Resend is configured. Inbox is one the operator can read.
-UID has **no** bound email yet.
-
-### Steps
-1. Open `/withdraw` (from the lookup CTA or directly).
-2. Confirm exchange + UID. Enter the email. Send code.
-3. Read the 6-digit OTP from the mailbox (it is **not** in the API response or
-   server logs).
-4. Enter the code and verify.
-
-### Expected
-- OTP is hashed, single-use, short TTL (default 5 minutes).
-- Correct code binds that email to the UID account and sets a **30-minute
-  session cookie scoped to that one UID**.
-- Screen shows wallet buckets including `pending` / `available` / `reserved` /
-  `withdrawn` / `receivable`, plus movement history (session-only).
-- Binding an email does **not** pay anything by itself.
-
----
-
-## S9 — First withdrawal (always review)
-
-**Actor:** Claimant  
-**Preconditions:** S6 + S8. `available` ≥ the amount to withdraw. `receivable`
-is `0`. `WITHDRAWAL_ROUTES` includes the asset/network.
-
-### Steps
-1. On `/withdraw`, enter amount (≤ available), network, and a valid address.
-2. Submit **Request**.
-
-### Expected
-- Amount moves `available → reserved` (cannot be requested twice).
-- Because this is the **first** withdrawal for this UID, status is
-  `UNDER_REVIEW` **regardless of amount** (auto-approve threshold does not
-  apply yet).
-- Two `WithdrawalEvent` rows exist for the request/reserve path (audit).
-- `pending` is untouched and cannot be withdrawn.
-- Claimant sees the row in withdrawal history with a **Cancel** button (used
-  in S15, not required here).
-
----
-
-## S10 — Admin approves the first withdrawal
-
-**Actor:** Admin  
-**Preconditions:** S1 + S9. Row is `UNDER_REVIEW` in the withdrawal queue.
-
-### Steps
-1. Open `/admin/withdrawals`. Find the UID’s request (`first` marker).
-2. Optionally fill a note.
-3. Click **Approve** and confirm the dialog.
-
-### Expected
-- Status becomes `APPROVED`.
-- Funds stay in `reserved` (not yet `withdrawn`).
-- A `WithdrawalEvent` records admin as actor, with the note if provided.
-- Confirm dialog is required (hard-to-reverse action).
-
----
-
-## S11 — Admin pays out and marks paid
-
-**Actor:** Admin  
-**Preconditions:** S10. Admin has sent the crypto **outside the app** (MVP
-payout is manual).
-
-### Steps
-1. Send USDT (or the asset) on the stated network to the stated address.
-2. In the queue, paste the blockchain / transfer reference into **Payout ref**.
-3. Click **Mark paid** and confirm the dialog.
-
-### Expected
-- Status becomes `PAID`.
-- Wallet: `reserved` decreases, `withdrawn` increases by the same amount.
-- Claimant can no longer cancel this row.
-- Audit event includes the payout reference.
-
-This closes the **first-time full loop** (S0–S11).
-
----
-
-## S12 — Later OTP uses the bound email
-
-**Actor:** Claimant  
-**Preconditions:** S8 already bound an email. UID session expired or signed out.
-
-### Steps
-1. Open `/withdraw` again with the same exchange + UID.
-2. Enter the **same** bound email. Send code. Verify.
-
-### Expected
-- OTP is sent only to the bound address.
-- A new 30-minute UID session is issued.
-- Wallet still shows the post-S11 balances (`withdrawn` includes the paid
-  amount).
-
-*(Wrong-email rejection is an unhappy path — not run here.)*
+S8–S12 đã removed theo quyết định 30/10/2026; không tái dùng số. Admin duyệt/mark-paid theo P5/P13 và queue lịch sử, không tạo yêu cầu rút của khách.
 
 ---
 
@@ -534,42 +402,7 @@ to restore S2.
 
 ---
 
-## S14 — Second withdrawal auto-approves
-
-**Actor:** Claimant + Admin  
-**Preconditions:** This UID already has a **PAID** (or otherwise completed first)
-withdrawal. `available` is enough. Amount is **≤**
-`WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` for that asset (e.g. USDT `100`).
-
-### Steps
-1. Claimant (valid UID session) requests a second withdrawal of an amount at or
-   below the threshold.
-2. Admin still sends crypto off-platform, then **Mark paid** with a payout ref
-   (auto-approve does not send on-chain funds).
-
-### Expected
-- Status is `AUTO_APPROVED`, not `UNDER_REVIEW`.
-- Amount is reserved immediately.
-- After mark-paid: `reserved → withdrawn`, audit event recorded.
-- If the amount is **above** the threshold, the happy path is the same as S10
-  (manual review) — that is still success, just not auto-approve.
-
----
-
-## S15 — Claimant cancels before paid
-
-**Actor:** Claimant  
-**Preconditions:** An open withdrawal in `REQUESTED`, `UNDER_REVIEW`,
-`APPROVED`, or `AUTO_APPROVED` (not `PAID`). Valid UID session.
-
-### Steps
-1. On `/withdraw` history, click **Cancel** on that row.
-
-### Expected
-- Status `CANCELLED`.
-- Reserved amount returns to `available`.
-- A `WithdrawalEvent` records the claimant as actor.
-- A `PAID` row has no working cancel (not exercised on this path).
+S14–S15 đã removed theo quyết định 30/10/2026; không tái dùng số.
 
 ---
 
@@ -705,37 +538,154 @@ file name `Referral Data Export-YYYY-MM-DD HH_MM_SS.xlsx` gives the as-of time).
 
 ---
 
-## Suggested full-loop test data
+## Luồng tự trả cashback (Req 22) — happy cases P1–P14
 
-Grounded in the 2026-09-17 dump. The UID already has a published Bybit report;
-repeating S4 with the same report values must not create another credit.
+> **Không có luồng khách tự rút, bất kể gate.** Gate là kiểm soát cutover nội bộ; không mở lại UI/API khách. Hệ thống tự trả USDT nội bộ tới đúng UID cùng sàn mỗi ngày lúc **23:00 UTC**, gộp mọi cashback đủ điều kiện của cùng sàn + UID thành một lệnh. Tổng ≤ 20 USDT: tự trả. Tổng > 20 USDT: chờ admin duyệt. Tổng ≤ 0.5 USDT: tích lũy. Quy đổi cố định 1 USDT = 1 USD, phí do bạn chịu, khách nhận đủ.
+>
+> **Trạng thái kiểm chứng:** các kịch bản dưới đây đã được **mô phỏng** bằng `scripts/test-payables.mjs` (exchange giả, Docker Postgres, đồng hồ giả lập, không gửi tiền thật) — cột "Mô phỏng" chỉ nhóm assertion tương ứng. **Chưa chạy được end-to-end thật** vì chưa có adapter MEXC/Bybit và chưa xác minh tài khoản nguồn: nếu không có adapter, worker giữ nhóm ở `CONFIG_MISSING` và không gửi. Số liệu dưới đây là ví dụ minh họa, không phải dữ liệu DB Railway.
+>
+> Chạy mô phỏng: `docker compose -f infra/docker-compose.yml up -d postgres` rồi `TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/railway node scripts/test-payables.mjs` (cần `pnpm --filter @cashback/db build` và `pnpm --filter @cashback/core build` trước).
 
-| Field | Value in / from dump |
-|-------|----------------------|
-| Site | `https://cashbackweb-production.up.railway.app` |
-| Admin | `admin@example.com` |
-| Exchange | Bybit, id `cmu3lhxdu000enb5cb3zd72lp`, default rate **0.3** |
-| Referral click | `/go/cmu3lhxec000inb5ci34lc4zv` → `https://www.bybit.com/` |
-| UID | `001234567` on **Bybit only** (already in dump after test import) |
-| CSV commission | `100` USDT |
-| Expected cashback | `100 × 0.3 = 30` USDT (Bybit dump rate; no referral_link_id) |
-| Holding period | `0` hours so S6 can move 30 → `available` |
-| First withdrawal | e.g. `10` USDT on TRON → `UNDER_REVIEW` |
-| Second withdrawal | e.g. `5` USDT (≤ threshold `100`) → `AUTO_APPROVED` |
-| Payout ref | Real tx hash after the off-platform transfer |
+### Điều kiện chung (trước P1)
+
+| Mục | Giá trị |
+|-----|---------|
+| Worker | Chạy; heartbeat `HEALTHY` (S0) |
+| `HOLDING_PERIOD_HOURS` | `0` để thử cùng ngày; số dương nếu chờ thật |
+| Tài khoản chi trả | Mỗi sàn một tài khoản nguồn + API key có quyền chuyển nội bộ, khác key affiliate; **chưa có adapter nên bước này chỉ mô phỏng** |
+| UID Bybit nhận | Đã thêm/xác minh vào address book một lần (Req 22.25) |
+| Gate | `PAYABLE_ONLY` (P1) |
+
+### P1 — Cutover: đổi gate sang PAYABLE_ONLY
+**Actor:** Admin · **Req:** 22.24, 22.35 · **Mô phỏng:** C1
+1. `POST /api/admin/money-flow {"mode":"FROZEN"}` (dừng writer cũ).
+2. Còn Withdrawal đang mở hoặc có scope chưa đồng bộ/sai bất biến: `POST … {"mode":"PAYABLE_ONLY"}` bị từ chối (`LEGACY_IN_FLIGHT` / `RECONCILIATION_REQUIRED`). Xử lý xong thì gọi lại.
+3. Sau PAYABLE_ONLY, quay về `LEGACY` bị từ chối.
+
+**Kỳ vọng target 30/10:** gate thiếu dòng thì writer tiền từ chối (503); customer POST rút/hủy luôn trả 410 CUSTOMER_WITHDRAWALS_RETIRED trước gate/DB và không mutation. Lookup công khai vẫn đọc được; không ví riêng tư. Bằng chứng C1 cũ cần kiểm lại theo 44.4.
+
+### P2 — Cashback được release thì sổ tự có khoản phải trả
+**Actor:** Worker + Admin · **Req:** 22.2, 22.16, 22.17 · **Mô phỏng:** C2
+1. Import commission → ATTRIBUTE → hết holding → RELEASE_HOLDS tạo bút toán `HOLD_RELEASE`.
+2. Cùng transaction đó sinh job `SYNC_PAYABLES`; worker tạo một `CustomerPayable` cho mỗi lần release.
+3. Mở `/admin/payables`.
+
+**Kỳ vọng:** mỗi release là một dòng (ví dụ 3, 5 và 7 USDT của UID `u-sync` là ba dòng), trạng thái `UNPAID`, lý do `Waiting for the 23:00 UTC payout`. Chạy sync lại không tạo thêm dòng. Sync **không** giữ chỗ tiền. Số `pending` chưa release và activity không tạo khoản.
+
+### P3 — Tự trả: 3 + 5 + 7 gộp thành một lệnh 15 USDT lúc 23:00 UTC
+**Actor:** Worker · **Req:** 22.26, 22.6 · **Mô phỏng:** C3
+1. 23:00 UTC worker chốt manifest, gộp ba khoản của UID `u-sync` (15 USDT ≤ 20) thành một execution, giữ chỗ 15.
+2. Execution chuyển `DISPATCHING`, gọi chuyển nội bộ một lần, nhận bằng chứng thành công.
+
+**Kỳ vọng:** đúng một giao dịch 15 USDT; ví: `available 0`, `reserved 0`, `withdrawn 15`; cả ba payable `PAID` có `paidAt`; rời khỏi tab "To pay", còn ở tab "Paid". Chạy lại đợt cùng ngày không gửi lần hai.
+
+### P4 — Ngưỡng biên và tích lũy
+**Actor:** Worker · **Req:** 22.6, 22.34, 22.36 · **Mô phỏng:** C4
+
+| Tổng gộp của UID | Kết quả tại đợt 23:00 |
+|------------------|-----------------------|
+| 0.5 USDT | Chưa trả: tích lũy (`Below the minimum, accumulating`), không giữ chỗ |
+| 0.51 USDT (hoặc 0.5 + 0.1) | Tự trả ở đợt đó |
+| 20 USDT | Tự trả |
+| 20.01 USDT | `AWAITING_APPROVAL`, đã giữ chỗ, **không** gửi |
+
+**Kỳ vọng:** UID nhận lần đầu cũng theo cùng ngưỡng (không còn duyệt lần đầu). Quy tắc không phụ thuộc tỷ giá thị trường.
+
+### P5 — Duyệt khoản > 20 USDT: không gửi ngay, chờ đợt kế tiếp
+**Actor:** Admin · **Req:** 22.5, 22.27, 22.19 · **Mô phỏng:** C5
+1. Khoản 20.01 USDT hiện `Waiting for approval` ở `/admin/payables`.
+2. Nhấn **Approve**; UI gửi lệnh với `commandKey` và `expectedVersion`, nhận `202 + commandId`.
+3. Worker xử lý lệnh: execution thành `READY` + lý do `Waiting for the 23:00 UTC payout`, `earliestSendAt` = 23:00 UTC kế tiếp.
+4. Đến đợt đó khoản được gửi.
+
+**Kỳ vọng:** duyệt lúc 23:06 ngày D thì không gửi trước 23:00 ngày D+1; `expectedVersion` sai bị `REJECTED STALE_VERSION`; gửi lại cùng `commandKey` cùng nội dung trả lệnh cũ, khác nội dung bị 409; `202` không phải bằng chứng đã duyệt.
+
+### P6 — Có cashback mới trước đợt chi: gộp và duyệt lại
+**Actor:** Worker + Admin · **Req:** 22.29, 22.30 · **Mô phỏng:** C6
+1. UID có 25 USDT đã duyệt, chưa gửi.
+2. Trước cutoff đợt sau, release thêm 5 USDT.
+3. Đợt sau gộp thành **30**, approval 25 mất hiệu lực, trạng thái về `AWAITING_APPROVAL`.
+4. Admin duyệt lại; đợt kế tiếp gửi 30.
+
+**Kỳ vọng:** không bao giờ trả riêng 25; chỉ một execution mở cho UID. Cashback release **sau** 23:00 chỉ vào đợt hôm sau.
+
+### P7 — Hệ thống lỗi, bỏ lỡ đợt 23:00
+**Actor:** Worker · **Req:** 22.28 · **Mô phỏng:** C7
+1. Worker ngừng suốt 23:00; khôi phục lúc 01:00 UTC hôm sau.
+2. Job của đợt cũ bị đánh `MISSED`, không gửi bù.
+3. 23:00 UTC kế tiếp gộp và trả các khoản còn đủ điều kiện.
+
+**Kỳ vọng:** khoản vẫn `UNPAID`, lý do `WAITING_SCHEDULE`; không mất nợ, không trả ngoài giờ.
+
+### P8 — Sàn xác nhận chắc chắn chưa chuyển
+**Actor:** Worker · **Req:** 22.7, 22.31 · **Mô phỏng:** C8
+1. Sàn từ chối giao dịch (chứng minh chưa gửi).
+2. Execution `FAILED_NOT_SENT`, phân bổ giải phóng, ví: `available` hoàn lại, `reserved 0`.
+3. Đợt hôm sau tạo execution mới liên kết `previousExecutionId` và trả.
+
+**Kỳ vọng:** không thử lại trong cùng đợt; khoản vẫn còn nợ trong lúc chờ; không có nợ mới.
+
+### P9 — Timeout: chưa rõ đã chuyển hay chưa
+**Actor:** Worker + Admin · **Req:** 22.8, 22.9 · **Mô phỏng:** C9, C10
+1. Gọi chuyển bị timeout → `UNKNOWN`, giữ nguyên tiền đã giữ chỗ.
+2. Đợt sau **không** gửi lại; Cancel bị từ chối; `/admin/payables` báo `Result unknown: reconcile before anything else` và banner đỏ.
+3. Job đối soát tra sàn: có bằng chứng đã chuyển → `CONFIRMED` và settle đúng một lần; chứng minh chưa chuyển → `FAILED_NOT_SENT` rồi xử lý như P8; không có bằng chứng → vẫn `UNKNOWN`.
+4. Cashback mới trong lúc `UNKNOWN` không gộp vào execution đang bay, được trả thành lệnh riêng sau khi lệnh cũ xong.
+
+**Kỳ vọng:** biên nhận thiếu tiền hoặc sai UID → `UNKNOWN` + `RECEIPT_MISMATCH`, không đánh `PAID`.
+
+### P10 — Thiếu tiền ở tài khoản chi trả: ưu tiên release cũ nhất
+**Actor:** Worker + Admin · **Req:** 22.37, 22.38, 22.33 · **Mô phỏng:** C11
+1. Nguồn còn 10 USDT, phí 0.5. Nhóm cũ nhất cần 15 không đủ; nhóm mới hơn cần 8 đủ.
+2. Nhóm 15 được giữ `Not enough funds in the payout account`, hẹn đợt hôm sau; nhóm 8 vẫn được trả.
+3. Nạp thêm tiền rồi đợt hôm sau trả nhóm 15.
+
+**Kỳ vọng:** không gửi một phần; thiếu vì phí (principal đủ nhưng principal + phí không đủ) cũng bị giữ; không gửi bù ngay khi vừa nạp; khách luôn nhận đủ principal.
+
+### P11 — Người nhận hoặc phí chưa sẵn sàng
+**Actor:** Worker + Admin · **Req:** 22.25, 22.33 · **Mô phỏng:** C12
+- UID Bybit chưa thêm vào address book → không tạo lệnh, không giữ chỗ; lý do `Recipient not set up at the exchange`. Sau khi admin thiết lập xong, đợt kế tiếp trả.
+- Phí chưa xác định → lệnh giữ `READY`, không gửi.
+- Binance chưa có kênh Payout đã xác minh → `Payout channel not configured`.
+
+### P12 — Correction (điều chỉnh giảm cashback)
+**Actor:** Worker · **Req:** 22.20, 22.22, Req 8.7 · **Mô phỏng:** C13
+- **Trước khi gửi:** execution đang chờ duyệt bị `INVALIDATED`, tiền trả về `available`, entitlement giảm, đợt sau lập lệnh mới theo số đã chỉnh.
+- **Sau khi đã gửi/UNKNOWN:** scope `pendingCorrection` chặn gửi mới; lệnh đã thực sự chuyển vẫn được ghi nhận; phần chi thừa thành `receivable` và chặn trả tiếp cho UID tới khi được cấn trừ bởi cashback sau.
+- Hủy một lệnh chưa gửi không xóa nợ: khoản vẫn `UNPAID` và quay lại hàng đợi.
+
+### P13 — Trả thủ công có bằng chứng khớp
+**Actor:** Admin · **Req:** 22.9, 22.14 · **Mô phỏng:** C15
+1. Khoản > 20 đã được duyệt (execution `READY`), admin tự chuyển ngoài hệ thống.
+2. Gửi lệnh `MARK_PAID` với `reference`, `amount`, `toUid` khớp execution → `CONFIRMED`.
+3. Sai số tiền/UID → lệnh `REJECTED`, execution `UNKNOWN`; trùng `reference` → `REFERENCE_REUSED`; xác nhận lần hai không settle thêm.
+
+### P14 — Khách chỉ tra cứu, không truy cập riêng tư hoặc tự rút
+**Actor:** Khách · **Req:** 14, 20.4, 22.35 · **Trạng thái:** cần kiểm lại tại Task 44.4; mô phỏng C1 trước đây không chứng minh gỡ xác thực khách.
+- Lookup công khai trả số theo S7; không Wallet/email binding/phiên UID hoặc API ví/lịch sử riêng tư.
+- `/withdraw` redirect `/#lookup`; POST tạo/hủy cũ trả 410 CUSTOMER_WITHDRAWALS_RETIRED, không reserve/job, kể cả request cũ có cookie và DB gate LEGACY.
+- Admin queue legacy và payables vẫn được xác thực admin; lịch sử và email lịch sử không bị xóa.
+
+### Tính nhất quán số dư (mọi kịch bản)
+Với mỗi UID và tài sản: `Σ(T−S−R) = available`, `ΣR = reserved`, `ΣS = withdrawn`. Mô phỏng C2, C3, C8, C9, C13 và C19 kiểm tra các đẳng thức này; vi phạm khiến scope `FAILED` và chặn trả (C16).
 
 ---
 
+## Dữ liệu kiểm chứng target Task 44 (chưa chạy)
+
+- Offer hệ số null/0/1/10 chữ số thập phân: null không hiện calculator, 0 hiện hợp lệ; volume mặc định 1,000,000 USDT, kiểm tra nhóm nghìn và chỉnh sửa được.
+- Batch COMMISSION/PUBLISHED đủ ngày UTC cũ hơn hôm qua để xác nhận D không cố định hôm qua; batch partial/activity/future không làm D mới hơn.
+- UID không tồn tại/UID đã biết chưa có cashback đều hasData=false cùng shape/message; UID đã attribution nhưng không dòng trong kỳ vẫn hasData=true (có D → REPORTED 0, chưa D → NO_DATA); kỳ 30 ngày, kỳ nhiều ngày cắt biên, sourceTz khác UTC; totalPaid trước/sau settle payables không đếm đôi.
+- Nhập volume có nhóm nghìn, tháng/năm round riêng; không ô phí/affiliate hoặc cơ cấu hoa hồng nền tảng.
+- Giữ các fixture và invariant P1–P14 cho chi tự động; không tạo fixture khách tự rút.
+
 ## Explicitly not covered (do not treat as happy path)
 
-- Lookup or OTP without both exchange and UID.
-- First-claimant-wins dispute (no recourse by design — see requirements
-  “Accepted risk”).
+- Lookup thiếu sàn hoặc UID.
 - Downward CSV correction, clawback, `receivable > 0` blocking withdrawals.
 - Native Bybit export (still pending a real commission sample). MEXC Referral Data XLSX is an admin-only activity snapshot: it must not be checked as cashback credit.
 - Scheduled exchange API sync and SSE (Phase 4).
 - Automated on-chain payout (manual mark-paid in MVP).
-- Changing a UID’s bound email.
 
 ---
 
@@ -743,6 +693,11 @@ repeating S4 with the same report values must not create another credit.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-30 | happy-path-scenarios.md | Sửa S7/lookup và fixture chống dò UID: cùng hasData=false cho UID không tồn tại/chưa có cashback; chỉ hasData=true mới REPORTED zero hoặc NO_DATA | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | happy-path-scenarios.md | Chốt fixture calculator mặc định 1,000,000 USDT, nhóm nghìn và chỉnh sửa | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | happy-path-scenarios.md | Gỡ kịch bản xác thực khách/tự rút S8–S12/S14–S15 và prerequisites email; giữ admin legacy/payables | Quyết định người dùng 30/10/2026 | removed |
+| 2026-10-30 | happy-path-scenarios.md | S7/P14 và fixture calculator/coverage D/zero/no-data theo Task 44, ghi rõ chưa chạy target mới | Spec trước code | updated |
+| 2026-10-17 | happy-path-scenarios.md | Thêm P1–P14 (luồng tự trả Req 22: cutover gate, release → payable, gộp 15 USDT, ngưỡng 0.5/20/20.01, duyệt chờ đợt, merge + duyệt lại, bỏ lỡ đợt, lỗi chưa gửi, UNKNOWN/đối soát, thiếu nguồn, recipient/phí, correction, mark-paid, khách không còn rút); đánh dấu S9–S15 là LEGACY; ghi rõ mới mô phỏng | Người dùng yêu cầu viết lại happy-case và giả lập test | updated |
 | 2026-09-17 | happy-path-scenarios.md | Thêm kịch bản happy path S0–S16 (public browse, import Bybit, lookup, OTP, rút lần đầu/admin duyệt/mark-paid, lần hai auto-approve, cancel, dashboard) | Testers và admin cần runbook nghiệp vụ chính, không lẫn error path | added |
 | 2026-09-17 | happy-path-scenarios.md | Gắn snapshot dump Railway: 3 exchange seed, 0 UidAccount/wallet/import; lookup Bybit `001234567` là no-data cho đến S4–S5; rate Bybit 0.3 → cashback 30 USDT | Kịch bản trước đó bịa số dư không có trong DB | updated |
 | 2026-09-17 | happy-path-scenarios.md | Publish CSV test Bybit UID `001234567` (commission 100 → cashback 30 pending). Lookup live `hasData=true`. `available` vẫn 0 vì chưa set HOLDING_PERIOD_HOURS | Tester thấy no-data vì dump trống; import qua pipeline thật | updated |

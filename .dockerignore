@@ -15,4 +15,5 @@ packages/db/src/generated
 .git
 .claude
 .kiro
+_local/
 *.log

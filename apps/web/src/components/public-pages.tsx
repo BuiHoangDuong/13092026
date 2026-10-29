@@ -106,7 +106,7 @@ export async function HomeContent({ locale }: { locale: Locale }) {
   const orderedExchanges = [...exchanges].sort((a, b) => rank(a.slug) - rank(b.slug));
   return <main id="main-content" className="aurora-wrap aurora-home">
     <AuroraHero locale={locale} />
-    <OpportunityCheck locale={locale} offers={orderedCards.map(card => ({ id: card.offerId, exchangeId: card.exchange.id, exchangeName: card.exchange.name, slug: card.exchange.slug, rate: card.cashbackRate }))} />
+    <OpportunityCheck locale={locale} offers={orderedCards.filter(card => card.estimatedVolumeRate !== null).map(card => ({ id: card.offerId, exchangeId: card.exchange.id, exchangeName: card.exchange.name, slug: card.exchange.slug, estimatedVolumeRate: card.estimatedVolumeRate! }))} />
     {orderedExchanges.length > 0 && <div className="aurora-exchange-strip" aria-label={getMessages(locale).exchanges.title}>{orderedExchanges.map(exchange => <Link key={exchange.id} href={localePath(locale, "/exchanges/" + exchange.slug)}><ExchangeLogo name={exchange.name} src={exchange.logoUrl} /></Link>)}</div>}
     <CashbackLookup locale={locale} exchanges={orderedExchanges.map(exchange => ({ id: exchange.id, name: exchange.name }))} />
     <section id="offers" className="aurora-section"><div className="aurora-section-heading"><p className="aurora-eyebrow">{m.offersEyebrow}</p><h2>{m.offersTitle}</h2><p>{m.offersLead}</p></div>

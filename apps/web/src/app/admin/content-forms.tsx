@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { retainedChoiceId } from "@/lib/retained-choice";
 
 type Exchange = { id: string; slug: string; name: string; status: "DRAFT" | "PUBLISHED"; defaultCashbackRate: string | null; i18n: unknown };
-type Offer = { id: string; exchangeId: string; status: "DRAFT" | "PUBLISHED"; cashbackRate: string; conditions: unknown };
+type Offer = { id: string; exchangeId: string; status: "DRAFT" | "PUBLISHED"; cashbackRate: string; estimatedVolumeRate: string | null; conditions: unknown };
 type LinkRow = { id: string; exchangeId: string; offerId: string | null; destination: string; active: boolean };
 type Guide = { id: string; slug: string; exchangeId: string | null; status: "DRAFT" | "PUBLISHED"; i18n: unknown };
 
@@ -135,10 +135,11 @@ export function AdminOffersSection() {
     <Editor title="Offers" rows={rows} onEdit={setEditingId} label={(row) => `${row.cashbackRate} · ${row.status}`} onLoadMore={loadMore}>
       <form key={selected?.id ?? "new-offer"} onSubmit={(event) => {
         event.preventDefault(); const form = new FormData(event.currentTarget);
-        save("offers", { exchangeId: form.get("exchangeId"), cashbackRate: form.get("rate"), status: form.get("status"), conditions: { en: form.get("enConditions") } }, selected?.id).catch((error) => setMessage(error.message));
+        save("offers", { exchangeId: form.get("exchangeId"), cashbackRate: form.get("rate"), estimatedVolumeRate: String(form.get("estimatedVolumeRate") ?? "").trim() || null, status: form.get("status"), conditions: { en: form.get("enConditions") } }, selected?.id).catch((error) => setMessage(error.message));
       }}>
         <ExchangeSelect exchanges={exchanges} value={selected?.exchangeId} />
         <input name="rate" placeholder="Rate, e.g. 0.4" required defaultValue={selected?.cashbackRate} />
+        <label htmlFor="estimated-volume-rate">Estimated cashback (fraction of volume, 0–1)</label><input id="estimated-volume-rate" name="estimatedVolumeRate" inputMode="decimal" pattern="(?:0(?:[.][0-9]{1,10})?|1(?:[.]0{1,10})?)" defaultValue={selected?.estimatedVolumeRate ?? ""} />
         <StatusSelect value={selected?.status} />
         <textarea name="enConditions" placeholder="English conditions" required defaultValue={localizedText(selected?.conditions, "en")} />
         <Submit editing={Boolean(selected)} />

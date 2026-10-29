@@ -3,6 +3,7 @@ import { withdrawalCreateSchema, withdrawalDecisionSchema, payoutRoutesSchema, t
 import { db, Prisma, type Withdrawal, type WithdrawalStatus } from "@cashback/db";
 import { lockCashback } from "./jobs.js";
 import { PublicAccessError } from "./rate-limit.js";
+import { assertMoneyFlowMode } from "./money-gate.js";
 type Claimant = { uidAccountId: string; email: string };
 const open: WithdrawalStatus[] = ["REQUESTED", "UNDER_REVIEW", "APPROVED", "AUTO_APPROVED"];
 export function payoutRoutes(): PayoutRoutes {
@@ -45,6 +46,7 @@ export async function requestWithdrawal(principal: Claimant, raw: unknown) {
   const cutoff = threshold(input.asset);
   return db.$transaction(async tx => {
     await lockCashback(tx);
+    await assertMoneyFlowMode(tx, ["LEGACY"]); // Req 22.35: customer withdrawals end at cutover; the gate fails closed
     const account = await tx.uidAccount.findUniqueOrThrow({ where: { id: principal.uidAccountId } });
     if (account.boundEmail !== principal.email) throw new PublicAccessError("FORBIDDEN", "Email verification required", 403);
     if (await tx.wallet.findFirst({ where: { uidAccountId: account.id, receivable: { gt: 0 } }, select: { id: true } })) throw new PublicAccessError("RECEIVABLE_OUTSTANDING", "A recovery adjustment must be cleared before withdrawing", 409);
@@ -65,6 +67,7 @@ export async function requestWithdrawal(principal: Claimant, raw: unknown) {
 async function transition(id: string, to: "APPROVED" | "PAID" | "REJECTED" | "CANCELLED", actor: { type: "CLAIMANT" | "ADMIN"; id: string }, note?: string, payoutRef?: string) {
   return db.$transaction(async tx => {
     await lockCashback(tx);
+    await assertMoneyFlowMode(tx, ["LEGACY"]); // legacy mark-paid/cancel cannot create a second obligation next to the payable ledger
     const withdrawal = await tx.withdrawal.findFirst({ where: { id, ...(actor.type === "CLAIMANT" ? { uidAccountId: actor.id } : {}) }, include: { uidAccount: { select: { uid: true, exchangeId: true } } } });
     if (!withdrawal) throw new PublicAccessError("WITHDRAWAL_NOT_FOUND", "Withdrawal not found", 404);
     if (withdrawal.status === to && (to !== "PAID" || withdrawal.payoutRef === payoutRef)) return serialize(withdrawal);

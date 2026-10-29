@@ -1,11 +1,11 @@
 # Spec Governance — Requirements & Design là kim chỉ nam
 
 > Scope: chỉ áp dụng cho workspace này. Đây là steering "always included":
-> mọi phiên làm việc của Kiro trong project phải tuân theo.
+> mọi phiên làm việc của agent (Claude, Codex, agy) trong project phải tuân theo.
 
 ## 1. Nguyên tắc cốt lõi (Source of Truth)
 
-- `requirements.md` (WHAT/WHY) và `design.md` (HOW) trong `.kiro/specs/<feature>/`
+- `requirements.md` (WHAT/WHY) và `design.md` (HOW) trong `docs/specs/<feature>/`
   là **nguồn sự thật duy nhất**. Khi code và spec mâu thuẫn, spec thắng — hoặc code
   được sửa cho khớp, hoặc spec được cập nhật một cách có chủ đích (không bao giờ để
   hai bên "trôi" khỏi nhau trong im lặng).

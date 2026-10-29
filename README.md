@@ -1,6 +1,6 @@
 # Cashback Affiliate Platform
 
-TypeScript monorepo for the cashback platform described in `.kiro/specs/cashback-platform`.
+TypeScript monorepo for the cashback platform described in `docs/specs/cashback-platform`.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ Tests and development run on a Docker stack that mirrors the Railway services in
 `.railway/railway.ts`: Postgres 18.6 (Debian, `TimeZone=Etc/UTC`, `max_connections=500`,
 database `railway`), plus web and worker images built and started with the same commands
 Railway uses. The Railway database is used only for debugging or reading data on request
-(see `.kiro/steering/production-safety.md`).
+(see `.claude/rules/production-safety.md`).
 
 1. Start Postgres:
    ```

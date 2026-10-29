@@ -13,10 +13,12 @@ export async function consumeBudget(scope: string, subject: string, windows: Arr
   const retry = await db.$transaction(async tx => {
     let retryAfter = 0;
     for (const { seconds, limit } of windows) {
+      // An hour and minute can share windowStart; duration must be part of the unique key.
+      const windowScope = `${scope}:window:${seconds}`;
       const start = Math.floor(Date.now() / (seconds * 1000)) * seconds * 1000;
       const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
         INSERT INTO "RateLimitCounter" (id, scope, "subjectHash", "windowStart", count)
-        VALUES (${randomUUID()}, ${scope}, ${subjectHash}, ${new Date(start)}, 1)
+        VALUES (${randomUUID()}, ${windowScope}, ${subjectHash}, ${new Date(start)}, 1)
         ON CONFLICT (scope, "subjectHash", "windowStart") DO UPDATE
         SET count = LEAST("RateLimitCounter".count + 1, ${limit + 1}) RETURNING count
       `);

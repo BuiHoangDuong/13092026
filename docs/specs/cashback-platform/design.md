@@ -2,8 +2,8 @@
 
 - **Status:** Draft v1.0 (UID-first; adapter framework, drift policy, API write model)
 - **Last updated:** 2026-10-14
-- **Based on:** `.kiro/specs/cashback-platform/requirements.md` (Draft v0.9), `architecture.html` v0.4 (context only)
-- **Audience:** implementers and AI coding agents (Kiro / Claude / Codex)
+- **Based on:** `docs/specs/cashback-platform/requirements.md` (Draft v0.9), `architecture.html` v0.4 (context only)
+- **Audience:** implementers and AI coding agents (Claude / Codex / agy)
 
 > This document turns the requirements into a concrete technical design: component
 > boundaries, data model, flows, and cross-cutting concerns. Items marked **[PENDING]** map to open decisions in the requirements and must be
@@ -21,8 +21,8 @@
 The platform is a TypeScript monorepo with two runtime apps sharing a PostgreSQL
 database:
 
-- **`apps/web`** — Next.js 15 (App Router). Serves the public site, the UID-session area
-  (lookup/OTP/withdraw), and admin area. Contains all HTTP route handlers (`/api/*`,
+- **`apps/web`** — Next.js 15 (App Router). Serves the public site
+  (lookup công khai; không ví riêng hoặc customer money writes), and admin area. Contains all HTTP route handlers (`/api/*`,
   `/go/:linkId`).
 - **`apps/worker`** — long-running Node.js process. Parses reports, attributes
   commission, releases holds, and runs scheduled affiliate API sync jobs.
@@ -92,7 +92,6 @@ apps/
     src/app/
       (public)/                 # home, /exchanges, /exchanges/[slug], /guides
       [locale]/                 # same public pages under a non-default locale prefix
-      (uid)/                    # /uid/wallet, /uid/withdrawals (UidSession-guarded)
       (admin)/                  # /admin/... (guarded)
       api/                      # route handlers -> core services
       go/[linkId]/route.ts      # redirect + click tracking
@@ -115,7 +114,7 @@ infra/
   Dockerfile                    # one image per service, same build commands as Railway
   railway/                      # railway service config
 architecture.html
-.kiro/specs/cashback-platform/  # this spec
+docs/specs/cashback-platform/  # this spec
 ```
 
 Turborepo pipeline: `build`, `lint`, `typecheck`, `test`, `db:migrate`, `dev`.
@@ -879,100 +878,21 @@ flowchart LR
 
 #### Cashback lookup by exchange + UID (Req 14)
 
-```mermaid
-flowchart LR
-  V[Visitor: exchange + UID] --> V2{Both present?}
-  V2 -- no --> E400[400; a UID alone is never resolved]
-  V2 -- yes --> RL{Per-IP rate limit ok?}
-  RL -- no --> R429[429 + Retry-After, no lookup performed]
-  RL -- yes --> Q[Read-only: UidAccount wallets for exchange+UID]
-  Q -- found --> Y[pending + available, commission vs cashback rows, freshness]
-  Q -- none --> N[no-data result, same shape]
-```
+1. Validate sàn + UID opaque, giữ số 0 đầu; thiếu đầu vào trả 400. Consume rate-limit IP trước khi query; quá hạn trả 429 + Retry-After. Xác định `hasData` từ việc cặp (sàn, UID) đã có bất kỳ cashback attribution nào, không từ UidAccount/Wallet tồn tại, coverage sàn hoặc số dư >0. UID không tồn tại và UID đã biết nhưng chưa có cashback đều trả `hasData=false`, cùng shape, `balances=[]`, `transactions=[]`, `hasMore=false` và thông điệp "no cashback data for this UID under our referral links"; không trả/hiển thị metric cho hai trường hợp này và không tiết lộ UID membership. Các bước tính metric dưới đây chỉ áp dụng khi `hasData=true`.
+2. `latestReportedDay(exchangeId, now)` đọc `ImportBatch` theo sàn, `datasetKind=COMMISSION`, `status=PUBLISHED`; chỉ batch không partial (`sourceAsOf IS NULL OR sourceAsOf >= periodEnd`), có chi tiết ngày (`periodEnd − periodStart <= 1 ngày OR reportType=TRANSACTION`). Chọn D UTC gần nhất `D <= hôm qua UTC` có batch phủ trọn `[D,D+1)`: `periodStart <= D AND periodEnd >= D+1`. Không lấy max ngày có commission của UID, không dùng REFERRAL_ACTIVITY hoặc batch chưa PUBLISHED. D là metadata coverage cấp sàn, không phải bằng chứng UID có cashback; không thay đổi gate `hasData` ở bước 1.
+3. `summaryPeriods { reportDay, rollingStart, end }`: reportDay là ngày D dạng `YYYY-MM-DD` UTC; rollingStart là instant UTC `D−29` lúc 00:00, end là `D+1` lúc 00:00 (ISO-8601). Nếu chưa có D, cả ba null. Giữ tên metric `previousDay` cho kỳ `[D,D+1)`, UI ghi “Report day”; `rolling30Days` dùng `[D−29,D+1)`. Query coverage và tổng dùng cùng mốc now/snapshot để không lệch ngày giữa response.
+4. Chỉ khi `hasData=true`: tổng trên mọi `creditedCashback` đã attribution theo kỳ nguồn, độc lập page bảng: kỳ nằm trọn cửa sổ cộng nguyên khoản; kỳ nhiều ngày cắt biên thiếu breakdown → `INSUFFICIENT_DETAIL`, amount null, ưu tiên hơn zero khi đã có cửa sổ theo D; chưa có D vẫn NO_DATA và không dựng cửa sổ. Không prorate. Có D và không dòng commission UID trong kỳ → `REPORTED`, amount 0 cho UID đã có cashback attribution; chưa có D → `NO_DATA`, amount null. `hasData` dựa trên lịch sử cashback attribution, độc lập với dòng trong kỳ; coverage/zero trong kỳ không được nâng UID chưa có cashback thành hasData=true. Publish chưa ATTRIBUTE không thay cashback đã ghi có.
+5. Khi `hasData=true`, `balances` theo asset có `totalPaid = Wallet.withdrawn`; settle payables đã cộng vào đây, không cộng lại PayoutExecution/CustomerPayable. Không tạo metric 0 chỉ vì UID chưa có Wallet; quy tắc tài sản hỗ trợ hiện có giữ nguyên, không suy ra tài sản từ raw activity.
+6. `transactions` mới nhất trước, cap 100 + `hasMore`, chỉ id kỹ thuật, asset, uid, periodStart, periodEnd, cashback (`creditedCashback`). UI chỉ ngày/kỳ, tài sản, UID, cashback. Response strict không commission/rate/volume, email/address, lệnh chi, movement types hoặc bucket ví. Chỉ khi hasData=true và D có coverage mà UID không dòng trong kỳ, bảng có thể rỗng nhưng metric là REPORTED zero. hasData=false luôn dùng response rỗng bước 1.
+7. Lookup chỉ đọc dữ liệu nghiệp vụ, không tạo/sửa UidAccount, Wallet hoặc sổ tiền; chỉ counter rate-limit là ghi kỹ thuật. Counter Postgres `RateLimitCounter` dùng scope theo độ dài cửa sổ (`lookup:ip:window:60`, `lookup:ip:window:3600`), hash IP và pruning windowStart; giữ 5/phút, 30/giờ. Không có private UID API.
 
-- **Exchange is mandatory.** The lookup key is the pair; the same UID string on two
-  exchanges is two different subjects (Req 14.1). A request missing either half is rejected
-  before any query runs.
-- **Amounts returned:** `pending` / `available` per asset (what the UID receives) plus
-  freshness timestamps, plus a `transactions` array of attributed `CommissionRecord`s
-  (newest `periodEnd` first, cap 100): `asset`, `periodStart`, `periodEnd`,
-  `commission` (amount on the latest applied `CommissionVersion`, matched by
-  `WalletEntry.sourceRef`, not by parsing `opKey`. A published correction that
-  ATTRIBUTE has not applied yet stays off this row. If no applied entry exists,
-  commission is 0, never the in-flight `reconciledAmount`), `cashbackRate` (snapshot),
-  `cashback` (`creditedCashback`). `hasMore` is true when more than 100 rows exist
-  (Req 7, 14.2, 14.7).
-- **Withheld even so:** bound email (in any form, including masked), payout addresses,
-  withdrawal records, wallet-movement types (hold release, reserve, settle, clawback),
-  and the `reserved`/`withdrawn`/`receivable` buckets (Req 14.3). Those require a UID
-  session. Do not name the array `history`.
-- **Read-only.** No writes to `UidAccount`, `Wallet`, `EmailOtp`, or `UidSession` (Req 14.5),
-  so a lookup can never squat or claim a UID. `UidAccount` rows are created only by the
-  ATTRIBUTE job (Req 5.3).
-- **Rate limited per IP** in Postgres (`RateLimitCounter`), not in process memory: Railway
-  may run more than one web instance, and an in-memory counter would reset on every deploy.
-  Redis stays out per Req 12.6.
-- "No data" uses the same response shape whether the UID is unknown or known-with-zero
-  (Req 14.6), and is distinguishable from a real zero balance via an explicit flag rather
-  than by inference from the numbers.
+**Giới hạn coverage đã biết:** batch `sourceTz` khác UTC có thể không phủ trọn ngày UTC; so sánh instant UTC thực tế, không coi nhãn ngày nguồn là coverage. `sourceAsOf=null` được chấp nhận đúng quy tắc trên, không suy diễn thành timestamp đã xác minh. Contract không hứa 30 ngày liên tục đều có batch; zero chỉ khi hasData=true, D đã xác nhận và không có dòng trong kỳ là chính sách Req 14.6, không nội suy ngày thiếu.
+
+**Index dự kiến:** thêm `@@index([exchangeId, datasetKind, status, periodEnd])` vào ImportBatch, phục vụ tìm batch gần nhất; vẫn kiểm periodStart/sourceAsOf/reportType và coverage đầy đủ sau lọc. Task 44.2 ghi migration index và kiểm query plan trên Docker ở bước triển khai; bước tài liệu này không tạo/chạy migration.
 
 #### UID accounts (Req 5)
-1. A `UidAccount` is the unit of cashback ownership, unique per `(exchangeId, uid)`.
-2. The `ATTRIBUTE` job creates the `UidAccount` on demand when a published commission
-   references a UID that has no account yet (Req 5.3), then credits its wallet. No claimant
-   action, email, or session is needed for cashback to accrue (Req 7.2).
-3. UID is an opaque string, always scoped by exchange (Req 5.2).
-4. Ownership is **not** established here. It is asserted only at withdrawal, by binding an
-   email via OTP (Req 15). Until then a `UidAccount` has `boundEmail = null` and simply
-   holds a balance.
-5. Because there is no ownership proof, the effective rule is first-claimant-wins — see
-   requirements "Accepted risk". The design compensates only with rate limits, mandatory
-   admin review of first withdrawals, OTP limits, and the holding period.
 
-#### Email OTP binding & UID session (Req 15)
-
-```mermaid
-sequenceDiagram
-  participant C as Claimant (browser)
-  participant API as web /api/otp/*
-  participant DB as PostgreSQL
-  participant R as Resend
-
-  C->>API: POST /api/otp/request { exchangeId, uid, email }
-  API->>DB: load UidAccount
-  alt boundEmail exists and email != boundEmail
-    API-->>C: 400 email does not match the one registered for this UID
-  else allowed
-    API->>DB: check per-UID cooldown + daily cap + per-IP limit
-    API->>DB: insert EmailOtp (hash, expiresAt, attempts=0)
-    API->>R: send 6-digit code to the target address
-    R-->>API: accepted + message id
-    API->>DB: record accepted + providerMessageId
-    API-->>C: 202 (no OTP in response)
-  end
-  C->>API: POST /api/otp/verify { exchangeId, uid, code }
-  API->>DB: compare hash, check expiry/consumed/attempts
-  API->>DB: consume OTP, bind email if unbound, insert UidSession (30 min)
-  API-->>C: set UID session cookie (scoped to this UidAccount)
-```
-
-- **Send target rule (Req 15.2):** if a bound email exists, the OTP goes only to it. A
-  mismatched submission is rejected *without* sending anything to the submitted address, and
-  the error never reveals the bound address — otherwise the endpoint becomes an oracle for
-  discovering which email owns a UID.
-- **OTP storage:** hash only, never the plaintext, never logged, never in a response
-  (Req 15.8). Single-use with a short TTL (proposed 5 min) and a wrong-attempt cap (proposed
-  5) after which the OTP is invalidated (Req 15.4–15.5). 6 digits is only ~10⁶ codes, so the
-  attempt cap — not the TTL — is what makes guessing infeasible.
-- **Quota protection (Req 15.6–15.7, 16.4):** per-UID cooldown + daily send cap, plus an
-  independent per-IP limit. Resend's free plan allows 100 sends/day, so an unmetered resend
-  button would let one actor exhaust the daily quota and block real withdrawals.
-- **UID session:** hashed token stored server-side, 30-minute expiry, scoped to exactly one
-  `UidAccount`. Every withdrawal/history action derives the UID account **from the session**,
-  never from a request parameter (Req 15.10). Presenting a session against a different UID
-  is rejected (Req 15.11).
-- **Binding is not authorisation:** a bound email lets you request a withdrawal; the first
-  withdrawal per UID still goes to admin review regardless of amount (Req 9.5, 15.9).
+ATTRIBUTE upsert UidAccount theo `(exchangeId, uid)` duy nhất, không chờ khách claim hoặc đăng nhập. Lookup không tạo account. Wallet là sổ nội bộ cho attribution/release/settle và đối soát; không có ví/lịch sử riêng tư của khách. Chi tự động theo Req 9/22 và recipient readiness; admin dùng admin session. Không xác thực email cho UID.
 
 #### Bybit MVP implementation (2026-09-16)
 - Normalized Bybit CSV v1 is the first adapter. Native Bybit export mapping remains
@@ -1018,41 +938,140 @@ separate `RELEASE_HOLDS` job periodically moves cleared CREDITs `pending → ava
 withdrawals are blocked, and a later positive `delta` first offsets `receivable` before
 crediting `pending`.
 
-#### Withdrawal (Req 9)
+#### Scheduled payment execution (Req 9/22.35)
+
+Thiết kế target sau Task 44.3 (chưa triển khai gỡ truy cập riêng tư; bằng chứng gate C1 cũ không chứng minh target mới): Withdrawal là legacy history còn execution mới là `PayoutExecution`, không phải customer request hoặc nghĩa vụ thứ hai. Khách chỉ lookup công khai; server chặn customer create/cancel/partial và gỡ private wallet/history API. Admin dùng admin session; scheduler dùng system authority. Cùng payable/allocations/money gate theo Req 22.35.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> REQUESTED: UID session requests (amount <= available, no receivable)
-  REQUESTED --> UNDER_REVIEW: first withdrawal for this UID (always)
-  REQUESTED --> AUTO_APPROVED: not first AND amount <= threshold
-  REQUESTED --> UNDER_REVIEW: amount > threshold
-  UNDER_REVIEW --> APPROVED: admin approves
-  UNDER_REVIEW --> REJECTED: admin rejects
-  AUTO_APPROVED --> PAID: admin marks paid (manual payout MVP)
-  APPROVED --> PAID
-  REQUESTED --> CANCELLED: claimant cancels
-  UNDER_REVIEW --> CANCELLED: claimant cancels
-  AUTO_APPROVED --> CANCELLED: claimant cancels (before payout)
-  APPROVED --> CANCELLED: claimant cancels (before payout)
-  REJECTED --> [*]
-  CANCELLED --> [*]
-  PAID --> [*]
+  [*] --> REQUESTED: claim payable allocations atomically
+  REQUESTED --> UNDER_REVIEW: policy principal > 20 or required valuation unavailable
+  REQUESTED --> AUTO_APPROVED: USD <= 20 and all controls pass, including first payment
+  UNDER_REVIEW --> APPROVED: admin approves current snapshot
+  APPROVED --> PREPARED: scheduled slot eligible and all controls pass
+  AUTO_APPROVED --> PREPARED: scheduled slot eligible and all controls pass
+  PREPARED --> DISPATCHING: locked final version and blocker check
+  PREPARED --> INVALIDATED: correction invalidates preparation
+  DISPATCHING --> SUBMITTED: external service accepts
+  DISPATCHING --> UNKNOWN: crash or uncertain outcome
+  SUBMITTED --> UNKNOWN: uncertain confirmation
+  SUBMITTED --> PAID: verified successful transfer
+  UNKNOWN --> PAID: reconcile successful transfer
+  UNKNOWN --> FAILED_NOT_SENT: proven not sent, apply corrections first
 ```
 
-Reserved-balance model with full audit. Every transition below requires a valid UID session
-for that UID account (Req 9.1); admin transitions require an admin session.
-- **REQUESTED** (only if `receivable = 0`) → `WITHDRAWAL_RESERVE` entry:
-  `available -= amount`, `reserved += amount` (Req 9.2, 9.4, 9.11).
-- **First withdrawal per UID always routes to `UNDER_REVIEW`** regardless of amount
-  (Req 9.5). The auto-approval threshold applies only from the second withdrawal onward.
-  This is the last human checkpoint before money leaves, given there is no ownership proof.
-- **REJECTED / CANCELLED** → `WITHDRAWAL_RELEASE` entry: `reserved -= amount`,
-  `available += amount` (Req 9.7, 9.10). Cancel is claimant-initiated (via the UID session)
-  and allowed only before `PAID`.
-- **PAID** → `WITHDRAWAL_SETTLE` entry: `reserved -= amount`, `withdrawn += amount`
-  (Req 9.5).
-- Every transition writes a `WithdrawalEvent` (fromStatus, toStatus, actor, time,
-  note/reference) (Req 9.8). Only `available` is withdrawable (Req 9.7).
+REQUESTED/UNDER_REVIEW/APPROVED/AUTO_APPROVED/PREPARED có thể CANCELLED/REJECTED chỉ khi chứng minh chưa dispatch, giải phóng allocation đúng một lần; DISPATCHING/SUBMITTED/UNKNOWN không được hủy/hoàn dù còn UNPAID. Không có guard duyệt lần đầu theo câu 10/Req 22.32; lịch sử request không quyết định nhánh duyệt. Chỉ một policy `<= 20 USD` trên tổng execution, không dùng lại ngưỡng asset; thiếu quote bắt buộc ở nhánh coin khác thì không tự gửi; USDT nội bộ dùng fixed 1:1/20 USDT theo Req 22.34. Approval không settle. Thành công settle allocations `reserved → withdrawn` đúng một lần; history của payable chỉ PAID khi đã trả hết, partial vẫn UNPAID.
+
+#### Sổ khoản phải trả và lịch sử PAID/UNPAID (Req 22; nghiệp vụ trước schema)
+
+**Trạng thái (2026-10-17):** đã triển khai ở migration `202610170001_customer_payables` và core (`packages/core/src/services/payables.ts`), kiểm chứng mô phỏng bằng `scripts/test-payables.mjs`; chưa có adapter sàn thật, chưa backfill/cutover production, chưa gửi tiền thật. `CustomerPayable` ghi một nghĩa vụ chi trả cho một lần release cashback, tách khỏi raw/activity, commission và số dư `Wallet`. Bảng admin phải trả lời được: sàn nào, UID nào, tài sản gì, bao nhiêu, đã trả chưa, vì sao chưa trả và bước xử lý tiếp theo. Các bản ghi đã trả vẫn xuất hiện khi xem lịch sử.
+
+Luồng nghiệp vụ đã chốt: ingest/publish → commission/cashback hợp lệ → release → sync CustomerPayable → command → giữ chỗ/dispatch/đối soát → settle. Khách rút một phần đã loại theo câu 13; #34–35 đã duyệt (grain theo release, allocations, execution riêng). Activity/pending chưa đủ điều kiện không thành tiền chi; không backfill demo thành công nợ thật.
+
+Một khoản có các chiều độc lập:
+
+| Chiều nghiệp vụ | Quy tắc |
+| --- | --- |
+| Kết quả thanh toán | Chỉ UNPAID / PAID; PAID khi trả đầy đủ, không phải khi approve/API tiếp nhận. Phần đã trả/còn lại là `settledAmount` và T − S; PAID chỉ khi S = T. |
+| Approval | Không cần duyệt / chờ duyệt / đã duyệt / bị từ chối; lưu snapshot số tiền, tài sản, nơi nhận và người/thời điểm duyệt. Thay snapshot phải xét duyệt lại. |
+| Tiến trình và lý do | Phân biệt READY, AWAITING_APPROVAL, RECIPIENT_SETUP_REQUIRED, DESTINATION_REQUIRED, TECHNICAL_ERROR, INSUFFICIENT_SOURCE_FUNDS, PROCESSING, RECONCILIATION_REQUIRED. Đây là mã khái niệm, chưa phải enum Prisma. Lưu nhiều blockers khi cần; retry không làm mất yêu cầu approval. |
+| Hiệu lực khoản | Đóng khoản phải bảo toàn quyền hưởng theo 22.11; đóng do correction về 0 hoặc chuyển đầy đủ sang khoản kế thừa cần audit/transaction, triển khai chỉ đóng khoản dư 0 do correction; chưa có đường kế thừa. 22.20 chỉ cấm tạo thay thế để né khóa/approval, không cấm mọi trường hợp kế thừa. Cancel/reject lệnh không xóa nghĩa vụ. |
+
+Ví dụ nghiệp vụ minh họa, không phải dữ liệu khách thật:
+
+| Tình huống | Kết quả | Lý do / việc tiếp theo |
+| --- | --- | --- |
+| Khoản được định giá 8 USD, đã qua các kiểm soát | UNPAID | READY, chờ worker/admin thực hiện theo kênh được cho phép |
+| Khoản được định giá lớn hơn 20 USD, ví dụ 20.01 USD hoặc 35 USD theo chính sách Req 21 | UNPAID | AWAITING_APPROVAL; admin duyệt vẫn giữ UNPAID cho tới khi trả thành công |
+| RPC/API lỗi chắc chắn chưa gửi | UNPAID | TECHNICAL_ERROR; xử lý lại cùng khoản, lưu thêm lần thử |
+| Timeout sau khi có thể đã gửi | UNPAID | RECONCILIATION_REQUIRED; đối soát, không gửi mới hoặc hoàn giữ chỗ |
+| Sàn xác nhận chuyển thành công / giao dịch đạt điều kiện xác nhận | PAID | Lưu tham chiếu, nơi nhận, số tiền thực trả, paidAt; settle đúng một lần |
+
+Ngưỡng không quá 20 USD áp từ lần đầu theo Req 22.32, vẫn kiểm receivable, quyền nhận, recipient readiness và hạn mức. Policy snapshot lưu nguồn/mode/ratio/version của định giá; USDT nội bộ dùng fixed 1:1 theo Req 22.34, không quote TTL. Nhánh cần market valuation thiếu/hết hạn quote thì UNPAID với lý do cụ thể. Phê duyệt lịch sử chỉ có hiệu lực với đúng phiên bản khoản. Không bắt buộc khách từng được admin duyệt; bước xác minh người nhận của sàn vẫn là gate riêng.
+
+**Sổ tiền và chống trùng:** no-double-allocation là invariant do DB và code cùng giữ: một payable cho mỗi release (UNIQUE `sourceReleaseEntryId`), entitlement T/settled S/active R với CHECK T >= S + R, partial UNIQUE một allocation ACTIVE cho mỗi payable, một execution mở cho mỗi (UID account, asset). `PayoutExecution` là lệnh chi, `PayableAllocation` nối N payable; sync không bao giờ reserve; reserve/release/settle chạy trong một transaction với Wallet bằng opKey `allocation:<id>:reserve|release|settle`. Correction sau trả liên kết receivable/clawback Req 8.7. Bất biến kiểm chứng được: `Σ(T−S−R) = wallet.available`, `ΣR = wallet.reserved`, `ΣS = wallet.withdrawn` cho mỗi (UID account, asset); sync đặt scope FAILED + invariantError khi vi phạm và writer chi dừng (fail closed).
+
+**Nguồn chi chung auto/manual:** CustomerPayable quyết định khoản nào và dữ liệu nào được chi. Auto scheduler, admin/manual, yêu cầu rút khách, approval/retry/đối soát/mark-paid đều tham chiếu payableId + phiên bản; cùng command handler và các kiểm soát. Wallet vẫn kiểm tra bảo toàn tiền, không phải đường tạo lệnh chi khác. Dữ liệu client chỉ định khoản/command và bằng chứng cần thiết, không được tự thay sàn/UID/tài sản/số tiền/đích bằng một payload bên ngoài sổ. Thay đổi nội dung phải đi qua cập nhật khoản có audit, version mới và approval lại.
+
+**Ranh giới với luồng hiện hành:** `Withdrawal` cũ chỉ còn là lịch sử; execution mới là bảng riêng với `legacyWithdrawalId` UNIQUE để ánh xạ khi backfill (chưa làm). DB gate `MoneyFlowGate` (LEGACY mặc định, FROZEN, PAYABLE_ONLY; thiếu dòng = fail closed) được đọc trong transaction của writer cũ (`requestWithdrawal`, cancel, decide) và của scheduler/command mới: customer withdrawal chỉ chạy ở LEGACY, scheduler/approve/dispatch chỉ chạy ở PAYABLE_ONLY. Chuyển PAYABLE_ONLY bị từ chối khi còn Withdrawal đang mở hoặc scope chưa SYNCED/còn invariantError; không quay về LEGACY sau khi có execution. Manual mark-paid cần execution đã claim và bằng chứng khớp; chứng từ sai chuyển UNKNOWN, không tự tạo nghĩa vụ thứ hai.
+
+**Kênh chi trả đã chọn (câu 1, Req 22.25):** cả MEXC và Bybit, USDT nội bộ tới đúng UID cùng sàn. Mỗi sàn một tài khoản nguồn riêng do operator cung cấp, không mặc định trùng affiliate root. Binance nối cùng sổ khi đủ dữ liệu/UID mapping/commission và quyền kênh Payout được kiểm chứng; có dữ liệu không đủ để bật chi. Req 21 on-chain vẫn là đề xuất riêng, không tự fallback sang ví ngoài khi UID bị chặn. SDK/sender chưa chọn và tài khoản thực chưa được kiểm tra.
+
+Khảo sát có dẫn nguồn ngày 2026-10-17: `docs/exchange-uid-payout-research.md`. MEXC Spot v3 có UID internal transfer (quyền withdraw-write, history read), contract không có OTP field nhưng không đủ kết luận mọi tài khoản sẽ không gặp verification/risk hold. Bybit V5 forceChain=2 dùng source main account và UID nhận main account có trong address book; query-address kiểm readiness. Câu 2 đã chốt: operator thêm/xác minh UID Bybit một lần khi cần; sau khi kiểm chứng recipient sẵn sàng, worker tự xử lý các lần chi tiếp theo nếu mọi gate đã đạt. Không yêu cầu lặp thao tác thiết lập mỗi lần trả; khi sàn yêu cầu xác minh lại thì giữ blocker theo Req 22.25. Chưa tìm được API công khai thêm/xác minh address book nên không dùng API website thay thế. Binance Pay Merchant Batch Payout với BINANCE_ID là ứng viên cần merchant Payout credentials/quyền, không dùng key affiliate/Spot thay thế.
+
+**Source và recipient readiness:** registry cấu hình theo exchange + sourceAccountId/site + channel + secret reference; secret chỉ worker, khác với MEXC/BYBIT/BINANCE_AFFILIATE_* đang ingest. DB không giữ API secret; execution/attempt đóng băng source account + recipient + asset và scope provider ref. Đổi key/source không làm đổi nghĩa vụ hoặc tự tạo retry cho UNKNOWN. Preflight kiểm quyền/balance/recipient/whitelist/IP/limits theo khả năng API; ghi nhận điều kiện nào chưa thể xác minh. Need user action → VERIFICATION_REQUIRED hoặc RECIPIENT_SETUP_REQUIRED, UNPAID; nếu đã có thể gửi → UNKNOWN và giữ reservation. Không lưu/đọc mã TOTP/email hoặc tự tắt bảo vệ. Chỉ bật từng sàn/recipient sau kiểm chứng account thực và hoàn tất gates #34–35; cấu hình hỗ trợ cả hai không bắt một sàn thiếu quyền phải gửi cùng sàn còn lại.
+
+**Admin:** mặc định hiện tất cả UNPAID có remainingAmount > 0, kể cả partial, SYNC_PENDING/FAILED, approval, funds, PROCESSING/UNKNOWN; không lọc theo current/sync-ready để giấu nợ. Banner độc lập bộ lọc có số phạm vi/nguồn chưa sync/chưa có payable, backlog, failed/unknown và invariant errors; tổng chưa sync hiển thị chưa xác định thay vì 0. Alert mở ngay khi job FAILED/UNKNOWN/invariant error, chỉ đóng khi đối soát đạt; không tự chọn ngưỡng cảnh báo backlog theo thời gian. PAID và UNPAID dư 0 đã đóng nằm trong lịch sử. Tổng theo asset, có timeline/nguồn. GET `/api/admin/payables`, POST `/api/admin/payables/:id/commands` (202 + commandId), GET `/api/admin/payable-commands/:id`; không công khai qua lookup, không coi 202 là hoàn tất.
+
+#### Phân bổ release và xử lý legacy/receipt thiếu — đã duyệt #34–35 (Req 22.21)
+
+**Đã duyệt ngày 2026-10-17 và triển khai:** các grain/FIFO/cardinality/constraint trong mục này áp dụng. Câu 13 đã loại customer withdrawals/partial; partial allocations chỉ còn liên quan dữ liệu legacy/receipt thiếu/correction. Triển khai chọn giữ quyền hưởng trên cùng khoản và không có thao tác đóng khoản nợ dương (chỉ đóng dư 0 do correction); kế thừa khoản khác chưa làm. **Khác thiết kế gốc:** (1) execution là bảng `PayoutExecution` riêng, không đổi `Withdrawal` (tránh vỡ luồng LEGACY); (2) mọi writer dùng một khóa advisory toàn cục `lockCashback` thay cho khóa theo account/asset (đủ cho quy mô MVP, một thứ tự khóa); (3) thứ tự ưu tiên khi thiếu nguồn: release cũ nhất trước (người dùng chọn). Quy tắc UID đã có ở 5.2.
+
+- **Khóa nguồn:** sourceReleaseEntryId là WalletEntry HOLD_RELEASE đã commit, có source opKey ổn định. Một release chỉ có một payable: UNIQUE(uidAccountId, asset, sourceReleaseEntryId), release FK phải cùng account/asset; không lấy ngày chạy job làm ID. Period là metadata, không là dedup key. Import lại cùng version/source không tạo release mới; correction tăng thêm hợp lệ sau PAID tạo delta credit/release mới có liên kết nguồn, không mở lại khoản PAID.
+- **UID:** tuân theo Req 5.2 opaque string, giữ số 0 và scope sàn; không thêm policy chuẩn hóa mới. `00123` không được merge với `123` vì ép số; validation/format vẫn theo adapter contract hiện hành.
+- **Balance model:** T = entitlement đang áp trên payable, S = tổng allocations SETTLED, R = tổng allocations ACTIVE (gồm in-flight/UNKNOWN); remainingAmount = T − S, freeAmount = T − S − R. Yêu cầu T >= S + R >= 0 và wallet.available >= tổng amount claim; một correction mới đang chờ không ghi đè T của snapshot in-flight. T không bao gồm tiền khôi phục/clawback; phần thu hồi ở ledger riêng có liên kết.
+- **Claim nguyên tử:** mọi writer lấy lock scope account/asset, sau đó lock các payable theo (releasedAt,id), rồi execution/allocation theo ID. Chọn toàn bộ nguồn đủ điều kiện trong manifest chưa phân bổ; FIFO nếu được duyệt chỉ là thứ tự khóa/phân bổ, không nhận amount hoặc cắt khoản theo yêu cầu khách. Kiểm generation/freshness/receivable/approval và gates, insert allocations, tăng R và `available -= total; reserved += total` trong một transaction. Unique active payableId (partial unique index theo allocation.state=ACTIVE) ngăn một khoản bị hai execution claim cùng lúc. Constraint UNIQUE(executionId,payableId) và amount > 0; đối chiếu SUM allocations = Withdrawal.amount ở transaction commit. Tất cả code paths phải theo cùng lock order.
+- **Ví dụ cạnh tranh/cutover:** release 15 có legacy allocation 5 → scheduler không reserve lại 15 hoặc xóa phần free10; legacy in-flight phải đối soát theo gate. Customer request mới luôn bị từ chối, kể cả session hợp lệ. Khi hai replica/admin command cùng claim một nhóm đủ điều kiện15, chỉ một allocation/execution thắng lock; không nhân nghĩa vụ hoặc reserve30. Phần legacy đã trả/thiếu vẫn bảo toàn lịch sử và remaining.
+- **Release/settle:** allocation ACTIVE → RELEASED hoặc SETTLED đúng một lần; UNIQUE ledger opKey `allocation:<id>:release|settle` và state guard trong cùng transaction. Counter S/R, Wallet và audit cập nhật nguyên tử. Retry settlement không tăng S hai lần. Cancel/reject chỉ đóng execution, R về 0 sau correction, khoản còn remaining vẫn UNPAID và hiện trên bảng mặc định.
+- **Correction:** khi chưa dispatch, hủy chuẩn bị/allocations bị ảnh hưởng trước khi áp giảm entitlement; không release thành available spendable trước khi tính net correction. Nếu có DISPATCHING/SUBMITTED/UNKNOWN, ghi pendingCorrection, giữ T/snapshot/R và chặn chi mới cho scope, đối soát trước. Sau thành công, phần vượt entitlement thực tế tạo receivable/clawback; sau bằng chứng chưa gửi, release và áp correction cùng transaction. Không giảm T dưới S/R để phá invariant hoặc sửa lại PAID; difference được tất toán bằng adjustment/recovery liên kết. Nếu correction đưa phần chưa trả về 0 và không còn allocation, đóng dòng dư 0 với audit. Không có thao tác đóng khoản nợ dương hoặc tạo dòng thay thế để né blocker.
+
+#### Ranh giới gửi, correction và blockers (Req 22.22–22.23)
+
+PREPARED chưa có tác động ngoài hệ thống. Ngay trước sender, worker lấy cùng lock scope, đọc source generation và toàn bộ guards, chuyển DISPATCHING bằng compare-and-set + lưu immutable execution snapshot/dispatchKey trong transaction. Chỉ worker thắng CAS được gọi sender; mất lease hoặc retry job không được tự gọi lại. Correction/cancel đã commit trước CAS làm version khác → INVALIDATED, hủy bản chuẩn bị có audit, áp correction/release, đánh giá/approval mới trên version mới; worker cũ fail guard. Correction sau CAS được coi là có thể đã gửi ngay cả khi chưa thấy HTTP; đây là điểm không thể đảm bảo atomic giữa DB và dịch vụ ngoài.
+
+Allocation terminal RELEASED/SETTLED không được tái kích hoạt. Execution INVALIDATED/FAILED_NOT_SENT giữ lịch sử; một command RETRY rõ ràng sau bằng chứng an toàn có thể lập execution kế tiếp với previousExecutionId, commandKey mới và allocations mới từ cùng payable. Retry transport/job với cùng commandKey trả execution cũ; không tạo successor khi execution còn active/UNKNOWN. Nhờ đó UNIQUE(executionId,payableId) không buộc ghi đè lịch sử. Trả thủ công cũng phải claim execution trước khi đưa hướng dẫn chuyển tiền; mark-paid không nhận một receipt tùy ý để bỏ qua reserve/allocations. Receipt sai asset/đích/số tiền hoặc provider trả một phần ngoài snapshot → UNKNOWN, giữ khóa và xử lý đối soát riêng, không settle toàn bộ hoặc tự gửi bù.
+
+Sau DISPATCHING, crash trước/sau HTTP, timeout, NOT_FOUND đơn lẻ hoặc job mất lease đều không chứng minh chưa gửi. Giữ allocation và đối soát theo dispatchKey/provider ref/nonce/signature. Chỉ rebroadcast cùng giao dịch hoặc retry cùng provider idempotency key khi adapter chứng minh an toàn; nếu API không có cơ chế định danh/đối soát đủ chắc chắn, dừng ở UNKNOWN để operator xử lý, không bật auto retry/send mới. Giao dịch đã nhận không bị hủy chỉ vì quote/correction mới; ghi nhận kết quả thực tế rồi tạo recovery nếu chi thừa. Không tuyên bố loại được mọi overpayment do correction sau ranh giới.
+
+| Priority của primaryReason | Blockers | Thao tác được phép khi đúng quyền |
+| --- | --- | --- |
+| 1 | DISPATCHING/SUBMITTED/UNKNOWN | RECONCILE, nhận bằng chứng kết quả; không SEND/CANCEL/RELEASE |
+| 2 | pendingCorrection, SYNC_PENDING/FAILED, invariant error | SYNC/RECONCILE; CANCEL chỉ nếu chứng minh chưa dispatch |
+| 3 | ownership/destination/config/receivable | Bổ sung thông tin hoặc xử lý nguồn hợp lệ; không SEND |
+| 4 | AWAITING_APPROVAL | APPROVE/REJECT đúng snapshot current; không bỏ qua các blockers khác |
+| 5 | WAITING_SCHEDULE | Đợi đợt đủ điều kiện theo Req 22.27; không SEND trước giờ |
+| 6 | source funds/limits/minimum/fees | Nạp nguồn/đợi điều kiện hoặc tích lũy đủ minimum; không SEND |
+| 7 | technical retryable error | RETRY command, worker vẫn kiểm lại toàn bộ |
+| 8 | READY | Claim/SEND nếu không có blocker nào khác |
+
+primaryReason chỉ phục vụ hiển thị, action eligibility dùng toàn bộ blocker set. APPROVE không yêu cầu có đủ source funds nhưng yêu cầu current snapshot/quyền và không có in-flight/correction/sync/invariant; duyệt xong nếu thiếu funds vẫn UNPAID bị chặn. Thứ tự tie trong một nhóm theo mã blocker tăng dần để UI ổn định. Partial còn active được xem PROCESSING ở priority 1 cho khoản đó; scope khác không bị khóa chỉ vì đang chi một khoản độc lập.
+
+#### Cutover đường chi cũ sang sổ chung (Req 22.24)
+
+Gate DB bắt buộc `moneyFlowMode = LEGACY | FROZEN | PAYABLE_ONLY`, đọc trong transaction của tất cả HTTP routes, scheduler, worker và mark-paid; missing/unknown mode fail closed. Thay gate lấy exclusive barrier với các money transactions đang chạy. Thứ tự Task 42.3 không được đảo:
+
+1. Deploy bản tương thích đọc gate ở mọi writer nhưng chưa mở sender mới; xác nhận tất cả instance/queued handler hỗ trợ gate, tắt/loại instance cũ không có guard trước bước tiếp theo. Lập inventory writer/route, gồm legacy mark-paid và UID request/cancel.
+2. Chuyển FROZEN dưới barrier, ngăn claim/approve/cancel/manual mark-paid cũ; dừng dispatch. Ingest được tiếp tục nhưng nguồn phải checkpoint trước backfill. Xử lý các giao dịch đã gửi qua reconcile-only có snapshot/evidence; không dùng route cũ để sửa tiền. Execution UNKNOWN chưa giải quyết thì không mở gửi mới cho scope đó.
+3. Backfill release → payable và ánh xạ withdrawal cũ qua UNIQUE(legacyWithdrawalId) của execution; allocations đã reserve phải được nhận diện, không reserve/settle lại. Paid cũ cần ref/ledger khớp và chỉ backfill history. Đối chiếu available/reserved/withdrawn/receivable, source allocations và coverage toàn bộ; fixtures/không đủ bằng chứng vào exception report, không tự phát sinh nợ.
+4. Drain/phiên bản hóa jobs cũ; legacy route resolve execution/payable và enqueue command chung với key/version, thiếu mapping trả 409/503. Test concurrent legacy/new/auto trong FROZEN và PAYABLE_ONLY; không có fallback handler ghi cũ.
+5. Chỉ chuyển PAYABLE_ONLY khi reconcile/checkpoint/coverage đạt, scope có lỗi giữ blocked. Gate mở không tự bật sender/kênh chưa được duyệt. Sau execution mới, rollback chỉ về FROZEN/reconcile-only; không về LEGACY. Giữ audit người/thời điểm/version/kiểm chứng cho mỗi lần đổi mode. Production migration/cutover vẫn cần authorization riêng theo steering.
+
+#### Pipeline đồng bộ khoản phải trả và command async (Req 12.7, 22.15–22.20)
+
+Luồng đã triển khai (2026-10-17): API ingest/file/API sync đều dùng cùng đường xuống sổ; không gọi sender trong bước ingest. Dữ liệu đủ điều kiện là cashback đã HOLD_RELEASE từ commission đã qua mapping/đối soát được duyệt, không phải cứ fetch thành công là được trả. Chưa có adapter sàn thật nên worker không tự gửi: `getInternalTransferPort` trả null thì nhóm bị giữ với blocker CONFIG_MISSING.
+
+```mermaid
+flowchart LR
+  A[Ingest file hoặc API] --> B[Raw riêng từng sàn]
+  B --> C[Transform và publish]
+  C --> D{Commission đã đối soát?}
+  D -->|Chưa| E[Activity / chờ đối soát]
+  D -->|Rồi| F[Cashback và holding]
+  F -->|Release hold / correction| G[Job đồng bộ bền vững]
+  G --> H[CustomerPayable]
+  H --> I[Command auto hoặc manual]
+  I --> J[Worker kiểm tra và thực hiện]
+  J -->|Kết quả và audit| H
+```
+
+- **Chuyển tiếp bền vững:** transaction commit nguồn publish/attribution/release/correction đồng thời enqueue job cho bước tiếp theo bằng queue PostgreSQL. JobType gồm `SYNC_PAYABLES` cho đồng bộ và `PAYABLE_COMMAND` cho thao tác (đã có migration và handler; release và correction enqueue trong cùng transaction qua `markPayableSourceChanged`). Event mang phạm vi sàn/root/UID/tài sản/sourceReleaseEntryId và sourceVersion/correlation; không chứa secret hoặc thay dữ liệu DB đã commit bằng amount trong event.
+- **Đồng bộ tự động:** worker đọc nguồn phiên bản đã commit, ghi khoản/phân bổ + audit + checkpoint nguyên tử. Trigger có cả release hold theo giờ, correction và xử lý xong dữ liệu bị cách ly, không phụ thuộc lần fetch kế tiếp. Lỗi không làm rollback ingest đã thành công; job và trạng thái lỗi vẫn tồn tại để retry/khôi phục. Chỉ acknowledge sau commit và kiểm lease. At-least-once delivery phải tạo hiệu ứng idempotent, không hứa queue chỉ phát đúng một lần.
+- **Thứ tự và phiên bản:** so sourceVersion/sequence đơn điệu theo phạm vi nguồn, không dùng thời điểm worker nhận job làm thứ tự dữ liệu. Gộp job được nếu đích cuối cùng vẫn theo kịp phiên bản mới nhất; job cũ không được ghi đè job mới. Khóa phân bổ theo account/asset và khoản; một nguồn không bị đưa vào hai khoản do auto và manual cùng chạy.
+- **Chặn chi trên dữ liệu cũ:** lưu mốc sourceVersion cần áp, appliedVersion và pending/failed/ready theo phạm vi ảnh hưởng; đánh dấu nguồn thay đổi ngay trong transaction upstream. Command tạo lần chi mới phải kiểm khoản vẫn current, không còn đồng bộ tài chính chờ và snapshot approval còn hiệu lực trong cùng transaction claim/giữ chỗ. Pending thay đổi có thể ảnh hưởng khoản đang chọn thì chặn xử lý và báo SYNC_PENDING/SYNC_FAILED. Không yêu cầu đọc API sàn trực tiếp mỗi lần thao tác.
+- **Command async chung:** API kiểm auth/schema/ownership, lưu command + job nguyên tử, trả 202 với commandId; UI poll trạng thái command và sổ. Auto scheduler cũng tạo loại command này với khóa chống trùng. Khóa commandKey theo tác nhân/phạm vi, giữ payload digest; gửi lại cùng key cùng nội dung trả command cũ, cùng key khác nội dung bị từ chối. Worker kiểm lại payableVersion và policy trước khi approve/claim/send; version thay đổi thì trả lỗi stale để refresh, không tự chấp thuận số tiền mới. Request được tiếp nhận chưa làm đổi PAID hay coi approval đã xong.
+- **Chi tiền và kết quả:** worker lưu snapshot lần chi ổn định trước gọi dịch vụ ngoài; guard/lease không được coi là bảo đảm chống gửi trùng của API ngoài. Retry/timeout áp quy tắc đối soát Req 22.8. Xác nhận kết quả của lần chi đã thực hiện vẫn phải ghi nhận được ngay cả khi nguồn vừa thay đổi; settle dùng snapshot lần chi đã khóa, sau đó correction liên kết xử lý chênh lệch. Không chặn ghi nhận tiền đã chuyển chỉ vì appliedVersion hiện chưa bắt kịp nguồn mới.
+- **Correction/lỗi:** chỉ cập nhật trực tiếp khoản UNPAID còn sửa được; thay nội dung làm mất approval. Khoản đang gửi/UNKNOWN khóa snapshot và chuyển chênh lệch sang đối soát; PAID giữ nguyên lịch sử, thêm điều chỉnh có nguồn. Response thiếu UID, sync thất bại hoặc activity bị xóa không phải bằng chứng xóa quyền hưởng. Không tạo khoản thay thế để vượt khóa khoản đang xử lý.
+- **Quan sát và phục hồi:** bảng admin phân biệt trạng thái ingest, đồng bộ công nợ và command; hiện lastAppliedAt, độ trễ/backlog và mã lỗi an toàn. Có requeue/reconcile theo nguồn đã commit, dùng cùng pipeline chứ không chèn khoản/sửa số dư tay. Catch-up sau downtime phải đối chiếu checkpoint với nguồn, không quét Wallet rồi tự chi. Không đặt lịch/ngưỡng độ trễ cụ thể khi chưa chốt vận hành.
 
 #### Thanh toán coin gốc theo mạng (Req 21.1–2, 21.11, bản nháp)
 
@@ -1064,13 +1083,13 @@ Mức tối thiểu theo mạng (Req 21.16): Solana từ chối chuyển SOL và
 
 Nếu ledger là USDT, chỉ thiết kế chuyển đổi/khóa báo giá/fee/bút toán sau khi nghiệp vụ được duyệt. Khi triển khai hoặc review SDK, đối chiếu Context7/tài liệu chính thức theo steering.
 
-#### Xét điều kiện thanh toán dưới 20 USD (Req 21.3–5, bản nháp)
+#### Xét điều kiện thanh toán không quá 20 USD (Req 21.3–5, bản nháp)
 
-Đề xuất dịch vụ định giá cung cấp coin/USD, nguồn và thời điểm báo giá. Tính bằng Decimal và kiểm tra `< 20`; ngưỡng số lượng coin hiện có không thay thế được ngưỡng USD.
+Đề xuất dịch vụ định giá cung cấp coin/USD, nguồn và thời điểm báo giá. Tính bằng Decimal và kiểm tra `<= 20`; ngưỡng số lượng coin hiện có không thay thế được ngưỡng USD. Tổng đúng 20 USD có thể tự trả khi mọi gate đạt; tổng lớn hơn 20 USD giữ UNPAID + AWAITING_APPROVAL, chỉ chi sau duyệt đúng snapshot.
 
-Lưu dữ liệu định giá cho quyết định, kiểm tra lại trước khi gửi. Nếu giá thiếu/quá hạn hoặc vượt ngưỡng, không gửi theo quyết định cũ. Giữ first review, reservation, receivable và session. Design phải tách tự động duyệt khỏi gửi và xác nhận trả tiền.
+Lưu dữ liệu định giá cho quyết định, kiểm tra lại trước khi gửi. Nếu giá thiếu/quá hạn hoặc vượt ngưỡng, không gửi theo quyết định cũ. Giữ reservation, receivable, recipient readiness và xác thực admin/system của lệnh chi; không bắt duyệt lần đầu. Design phải tách tự động duyệt khỏi gửi và xác nhận trả tiền.
 
-Cần chốt nguồn/tuổi tỷ giá, khóa giá, ngưỡng theo khoản hay tổng ngày và cách tính phí vào ngưỡng. Chưa đặt mặc định cho các quyết định này.
+Định nghĩa ngưỡng thống nhất Req 9/21/22 là tổng principal execution <=20 USD, không xét riêng từng allocation hoặc ngưỡng số lượng asset. Nguồn/tuổi quote/khóa giá còn mở cho coin khác/on-chain; internal USDT dùng fixed 1:1/20 USDT. Internal USDT không daily cap riêng theo Req 22.37, nguồn thực phải đủ principal+phí và provider limits; ngân sách/hạn mức on-chain còn riêng; đây là kiểm soát bổ sung, không phải cách diễn giải khác của ranh giới <=20 USD. Thiếu policy bắt buộc thì không bật auto-send.
 
 #### Chống gửi trùng và đối soát (Req 21.7–10, bản nháp)
 
@@ -1098,15 +1117,44 @@ Cần chốt model/state machine, nonce/blockhash, confirmation, gas/hạn mức
 - Heartbeat updates `heartbeatAt`/`leaseUntil` while running.
 - Reaper: jobs whose `leaseUntil < now()` return to `PENDING` (crash recovery, Req 12.3).
 - Commit path re-verifies the worker still holds the lease before writing results.
-- Job types: `LOAD` (was `PARSE`; queued `PARSE` jobs run as `LOAD`), `TRANSFORM`, `PUBLISH`, `ATTRIBUTE`, `RELEASE_HOLDS`, `SYNC` (enabled per exchange only after readiness checks).
+- Job types: `LOAD`, `TRANSFORM`, `PUBLISH`, `ATTRIBUTE`, `RELEASE_HOLDS`, `SYNC`, `SYNC_PAYABLES`, `PAYOUT_SLOT`, `PAYOUT_RECONCILE`, `PAYABLE_COMMAND` (đã có trong migration và worker). `PARSE` chỉ tương thích job cũ. `PAYOUT_SLOT` mang `slotKey` (ISO 23:00 UTC); `PAYOUT_RECONCILE` chạy độc lập lịch chi khi còn execution in-flight.
 - `RELEASE_HOLDS` enqueued by a lightweight scheduler tick (worker interval).
 - `SYNC` uses the same queue but is eligible only for an enabled, ready exchange
   schedule. A due check and enqueue/update of `nextRunAt` occur in one database
   transaction; an active-run uniqueness guard also protects multi-replica workers.
+- `SYNC_PAYABLES` đồng bộ release/correction + checkpoints; `PAYABLE_COMMAND` xử lý approve/claim/reconcile/settle/cancel theo gate và state guards. Enqueue nguyên tử cùng transaction nguồn/command; đối soát giao dịch đã gửi vẫn chạy ở FROZEN theo quyền reconcile-only. Req 12.7 là hành vi đích cần triển khai, không phải mô tả runtime đã có.
 
-#### Lịch thanh toán và cơ chế ký (Req 21.6, 21.12; Req 12, bản nháp)
+#### Lịch thanh toán nội bộ và cơ chế ký (Req 22.26–31; Req 21.6, 21.12; Req 12)
 
-Nếu duyệt một đợt/ngày, worker quản lý lịch với định danh ngày/múi giờ và claim chống trùng giữa replica. Chốt xử lý ngày bỏ lỡ/yêu cầu sau giờ chạy; không mặc định giờ hoặc quét toàn bộ số dư.
+**Câu 3 đã chốt cho USDT nội bộ:** một đợt mỗi ngày, khởi chạy 23:00 UTC (UTC+0; cron tương đương `0 23 * * *` với timezone UTC, không lấy timezone máy chủ). Scheduler gộp các phần cashback đủ điều kiện từ CustomerPayable của cùng sàn + UID + USDT thành một execution logic trong đợt; 3 + 5 + 7 thành một lệnh 15, còn 12 + 13 thành tổng 25 cần approval, không chia để né ngưỡng. Không gom khác sàn, UID hoặc asset và không lập thêm nghĩa vụ từ số dư Wallet. Đồng bộ sổ async vẫn diễn ra độc lập suốt ngày.
+
+Claim đợt bền vững theo ngày UTC của lịch và uniqueness cho (scheduledDateUTC, exchange, uidAccountId, asset); nhiều replica hoặc job chạy lặp resolve về cùng command/execution, không tạo lệnh thứ hai khi có thêm dữ liệu trong lúc đợt đang chạy. Source account được bind trên execution theo Req 22.25, đổi source không lách khóa nhóm/ngày. Việc chọn/claim phần tiền vẫn kiểm current/freshness/approval/blockers và cùng lock với Withdrawal/correction; PAID/reserved/UNKNOWN không được tính thành tiền có thể trả mới. Đợt bắt đầu 23:00, các transfer hoàn tất async theo khả năng provider, không cam kết hoàn tất đồng thời. Đây là gộp execution, không quyết định grain CustomerPayable hoặc FIFO; customer withdrawals/partial đã loại theo câu 13; #34–35 còn chặn schema/implementation phụ thuộc. Câu 6 đã chốt bỏ lỡ đợt thì chờ 23:00 UTC kế tiếp theo Req 22.28; cutoff danh sách 23:00 UTC theo Req 22.30, retry lỗi chắc chắn chưa chuyển chờ đợt 23:00 UTC ngày sau theo Req 22.31. Lịch cho đề xuất on-chain Req 21 vẫn chưa chốt.
+
+**Câu 5 / Req 22.27:** worker xử lý APPROVE chỉ lưu approval đúng snapshot và mốc next eligible slot; không enqueue gửi ngay hoặc gọi sender do approve. Khoản >20 USD được duyệt sau đợt 23:00 UTC tiếp tục UNPAID, hiển thị approval đã duyệt + WAITING_SCHEDULE tới đợt 23:00 UTC kế tiếp. Ví dụ duyệt 23:05 UTC ngày D → earliest slot D+1 23:00 UTC. Worker SEND phải kiểm slot eligibility cùng mọi blocker/phiên bản trong transaction claim, nên gọi command trực tiếp hoặc job trùng không bỏ qua lịch. WAITING_SCHEDULE là điều kiện thời gian riêng, không ghi đè approval/funds/sync blockers. Tới giờ phải xác minh lại snapshot/approval; số tiền hoặc nội dung thay đổi làm mất approval cũ theo Req 22.5/20/22. Đợt mới tham chiếu cùng nghĩa vụ/lệnh đã duyệt theo mapping #34–35, không tự nhân nợ hoặc tạo execution độc lập cho cùng phần tiền; UNKNOWN/in-flight chỉ đối soát. Câu 7 đã chốt gộp cashback mới trước đợt kế tiếp và duyệt lại tổng mới theo Req 22.29; mapping vật lý còn mở, không dùng approval cũ cho tổng mới.
+
+**Câu 6 / Req 22.28:** nếu đợt 23:00 UTC bị bỏ lỡ, recovery không enqueue dispatch bù ngay và stale job không được coi timestamp quá hạn là quyền gửi. Ghi nhận đợt bỏ lỡ để quan sát; các khoản chắc chắn chưa gửi giữ UNPAID + WAITING_SCHEDULE và nguồn/approval hợp lệ, đợi đợt 23:00 UTC kế tiếp. Đợt kế tiếp gộp các phần còn đủ điều kiện, kiểm tổng ngưỡng và approval đúng snapshot; tổng tăng không tự kế thừa approval cũ. Không tạo payable mới chỉ để dời ngày; mapping lệnh chờ sang đợt mới còn theo #34–35, luôn bảo toàn nguồn/khóa chống trùng. Giao dịch đang gửi/UNKNOWN giữ snapshot/allocation và đối soát ngay khi có thể, không đưa lại vào nhóm chưa gửi; PAID không trả lại. Đồng bộ sổ/correction có thể catch-up ngay sau downtime, độc lập với việc hoãn dispatch tiền. Ví dụ khôi phục 01:00 UTC D+1 sau khi lỡ đợt D → chờ 23:00 UTC D+1. Cutoff theo Req 22.30, retry lỗi chắc chắn chưa chuyển theo Req 22.31; quyết định này không định nghĩa mọi tác vụ sau 23:00 là đợt bỏ lỡ.
+
+**Câu 7 / Req 22.29:** với nhóm chưa gửi, sync cashback đủ điều kiện mới trước đợt kế tiếp gộp vào tổng cùng sàn/UID/USDT, cập nhật group snapshot/version và invalidate approval cũ cùng transaction dưới lock account/asset. Ví dụ approved 25 + release mới 5 → tổng 30, UNPAID + AWAITING_APPROVAL; approval 25 giữ trong audit, không còn dùng được. Không giữ một lệnh 25 để trả trước rồi dời 5 sang ngày sau nhằm bảo toàn approval. Worker APPROVE phải CAS đúng version; job sync lặp chỉ áp một lần và worker SEND mang version cũ bị từ chối. Phần chuẩn bị chắc chắn chưa gửi bị invalidate theo Req 22.22 trước khi lập snapshot mới; allocations không được nhân đôi khi gộp. Tới DISPATCHING trở đi giữ snapshot/nguồn đã khóa và đối soát theo Req 22.18/20/22, không áp phép gộp vào execution có thể đã gửi. Grain và mapping vật lý vẫn chờ #34–35; quy tắc gộp trước đợt đã chốt, cutoff 23:00 UTC theo Req 22.30.
+
+**Câu 8 / Req 22.30:** cutoff của đợt là 23:00 UTC, không phải lúc worker tới từng UID. Lưu manifest/snapshot tham chiếu nguồn đã đủ điều kiện tại cutoff, group totals, source versions và hash/định danh dùng lại khi replay/replica. Cơ chế snapshot/version phải chứng minh nhất quán tại cutoff trước triển khai; không quét current state muộn hơn rồi gọi đó là danh sách 23:00. Nếu không xác nhận đủ nguồn/checkpoint của phần tiền đã chốt thì block theo freshness, không gửi dựa trên danh sách giả đầy đủ. Cashback mới độc lập sau cutoff thuộc đợt kế tiếp, sync vẫn cập nhật sổ nhưng không đổi danh sách/tổng/approval của execution đợt hiện tại; tránh dùng một global version tăng do nguồn mới ngoài manifest để vô hiệu approval hiện tại. Trái lại, correction hoặc thay đổi ownership/receivable/readiness ảnh hưởng phần tiền trong manifest vẫn phải chặn trước DISPATCHING; snapshot cutoff không bảo đảm quyền gửi nếu các gate này sai. Sau DISPATCHING giữ snapshot và đối soát theo Req 22.22. Ví dụ snapshot 25 lúc 23:00 và release mới 5 lúc 23:01 → đợt hiện tại giữ 25 nếu approval/gates còn hợp lệ, 5 chờ ngày sau; release 5 trước cutoff → 30 duyệt lại theo câu 7. Source lineage và khóa phân bổ ngăn cùng tiền lọt vào hai đợt; grain/schema cụ thể vẫn chờ #34–35.
+
+**Câu 9 / Req 22.31:** provider outcome có bằng chứng chắc chắn chưa chuyển → ghi FAILED_NOT_SENT cùng evidence, giữ payable UNPAID và earliest retry slot ở đợt 23:00 UTC ngày sau. Không để queue backoff hoặc command RETRY gọi sender lại trong đợt cũ. Worker có thể retry việc commit outcome/sync/reconcile, nhưng money dispatch phải kiểm lịch trong transaction claim. Đợt sau chốt nguồn/cutoff, xét lại tổng, snapshot/approval và mọi gate; nguồn mới có thể làm tổng vượt ngưỡng hoặc vô hiệu approval theo câu 7. Dùng cùng nghĩa vụ; nếu cần successor execution thì giữ previousExecutionId/nguồn và allocations mới theo quy tắc đã nêu, không re-activate allocation terminal. UNKNOWN/timeout/NOT_FOUND chưa đủ bằng chứng không được chuyển thành FAILED_NOT_SENT hoặc tự retry khi qua ngày; tiếp tục reconcile và giữ khóa tiền. Thời điểm có thể giải phóng allocation vẫn phụ thuộc bằng chứng/correction theo Req 22.22, không giải phóng chỉ vì đặt lịch retry.
+
+**Câu 10 / Req 22.32:** bỏ FIRST_REVIEW_REQUIRED và guard yêu cầu từng được admin duyệt/trả thành công. UID chưa có payment history, hoặc chỉ có request hủy/reject, áp cùng ngưỡng tổng <=20 USD từ lần đầu; >20 USD vẫn chờ approval. Không tự đánh dấu recipient verified hoặc bỏ bước thêm/xác minh UID Bybit. Auto chi vẫn theo CustomerPayable, lịch 23:00 UTC/cutoff và mọi gate khác. Task 42 phải sửa guards/contracts/UI và assertions legacy của Task 25 trước cutover; hiện chưa sửa runtime.
+
+**Câu 11 / Req 22.33:** operator chịu phí gửi USDT nội bộ; customer net receipt phải bằng principal cashback đã chốt. Ví dụ principal 15 USDT, phí giả lập 0.1 USDT cùng asset → khách nhận 15, nguồn cần đủ 15.1; không đổi CustomerPayable thành 14.9, không cộng phí vào ngưỡng approval hoặc tạo receivable của khách. Kiểm balance/fee budget theo từng asset nếu phí dùng asset khác. Execution/receipt lưu riêng principal, actual recipient amount và operator fee/asset; phí là chi phí vận hành, không settle thêm vào phần cashback của khách. Adapter phải kiểm chứng fee semantics của provider, không áp một công thức gross/net chung cho mọi sàn. Không xác nhận được fee/net-received hoặc thiếu nguồn/phí thì block UNPAID; receipt thiếu principal đi đối soát và không tự top-up. USDT nội bộ theo nguồn thực và không daily cap riêng ở Req 22.37, phí/giới hạn provider vẫn cần kiểm chứng; gas/conversion on-chain riêng ở #31; không giả định UID transfer luôn miễn phí.
+
+**Câu 12 / Req 22.34:** internal USDT dùng valuation mode FIXED_USDT_USD với ratio 1:1 và policy version trong snapshot/audit. So sánh Decimal trực tiếp tổng principal USDT với 20, không gọi quote feed, không có quote TTL/stale blocker cho nhánh này; 19.99/20 USDT có thể auto, 20.01 USDT chờ duyệt khi các gate còn lại đạt. Phí operator không cộng vào principal; tổng nguồn cần trả vẫn tính cả phí theo Req 22.33. Đây là quy ước ngưỡng nghiệp vụ, không ghi nhận conversion hoặc tuyên bố market peg. Market-quote provider/expiry/lock chỉ còn prerequisite cho nhánh cần định giá coin khác/on-chain; mất quote feed không chặn internal USDT chỉ vì thiếu tỷ giá. Source freshness/correction, recipient readiness, approval version, limits và lịch vẫn kiểm như trước.
+
+**Câu 13 / Req 22.35, cập nhật 30/10/2026:** khách chỉ lookup công khai, không ví riêng, đăng nhập hoặc tạo/hủy/chọn amount/đích chi. `/withdraw` redirect `/#lookup`; POST tạo/hủy cũ trả 410 không ghi tiền/job, GET private wallet/history được gỡ. Admin queue legacy và payables giữ nguyên; approval/retry/reconcile/mark-paid qua sổ chung. Scheduler chi về UID nguồn theo lịch/gates; cutover đối soát reserved/in-flight/UNKNOWN, không xóa lịch sử hoặc bật sender.
+
+**Câu 14 / Req 22.36:** so sánh Decimal tổng principal trong manifest với điều kiện strict `> 0.5 USDT`, không `>= 0.5`. Nếu tổng <=0.5 thì giữ UNPAID + MINIMUM_NOT_MET và nguồn quyền hưởng để tích lũy đợt sau; không reserve/dispatch chỉ vì đã tới lịch và không đóng nợ dương. Khoảng có thể auto là `0.5 < principal <= 20`, ngoài ra vẫn kiểm approval/source/recipient/fee/limits. Minimum và precision của provider là gate bổ sung: thỏa >0.5 chưa đủ nếu sàn yêu cầu cao hơn hoặc không hỗ trợ amount đó. Không cộng operator fee để vượt minimum, không round-up tới 0.5/step và không tự xóa phần dư. Khi nguồn mới trước cutoff làm tổng đủ mức thì xét lại từ cùng sổ; nguồn sau cutoff vào ngày sau, không nhân nghĩa vụ qua các ngày.
+
+**Câu 15 / Req 22.37:** USDT nội bộ không có daily auto-cap riêng; cấu hình thể hiện rõ policy không cap, không báo thiếu cấu hình chỉ vì không có một con số cap. Dùng số dư có thể chi của đúng source account, đối chiếu provider balance với principal/fees đã cam kết/in-flight để không dùng trùng nguồn hoặc trừ debit đã được provider phản ánh hai lần. Claim nguồn phải nguyên tử theo sourceAccount/asset và cùng lock order được review với claim UID/allocations; nhiều replica không cùng tiêu một số dư. Trước dispatch vẫn preflight nguồn/phí vì balance bên ngoài có thể đổi; nếu provider từ chối vì thiếu tiền thì xử lý theo bằng chứng outcome, không suy timeout là chưa gửi.
+
+Ví dụ nguồn nạp 100 USDT, không phí và mọi gate đạt → tổng có thể gửi tối đa bằng số dư đó; có phí thì principal chi được giảm tương ứng nhưng khách vẫn nhận đủ từng khoản. Nạp 200 USDT không bị trần 100 giả chặn. Nhóm không đủ tiền trả đầy đủ + phí giữ UNPAID + INSUFFICIENT_SOURCE_FUNDS, next eligible slot là 23:00 UTC ngày sau; job retry hoặc top-up không tự dispatch bù. Đợt sau re-evaluate manifest/tổng/approval/minimum/funds; không tách nhóm hoặc giảm khoản trả để dùng hết số dư. UNKNOWN giữ cam kết và tiếp tục reconcile. Câu 16/Req 22.38 chốt skip nhóm thiếu nguồn, tiếp tục nhóm sau; thứ tự ban đầu còn mở, không tự ưu tiên toàn đợt theo amount.
+
+**Câu 16 / Req 22.38:** funding check thất bại cho một UID là kết quả defer của nhóm, không fail-fast toàn đợt. Ghi UNPAID + INSUFFICIENT_SOURCE_FUNDS + next slot, tiến cursor/xử lý các nhóm sau theo thứ tự đã chốt, không revisit nhóm bị defer trong cùng đợt. Check/claim nguồn và allocation của nhóm sau là transaction mới, không giữ lock hoặc reservation nguồn không đủ của nhóm trước để chặn nguồn còn dùng được. Mỗi nhóm phải có đủ full principal + operator fee; không chia nhóm5 thành3 hoặc giảm tiền nhận. Ví dụ balance3, principal5 bị defer; principal2 có thể gửi nếu2 + fee <= nguồn khả dụng sau các cam kết. Lưu rõ nhóm deferred/paid/in-flight để replay/replica không thử lại nhóm đã xử lý hoặc chi trùng. UNKNOWN vẫn giữ cam kết và đối soát, không giải phóng cho nhóm sau. Quyết định này chỉ cho phép continue-after-insufficient, không tự sắp toàn danh sách tăng dần amount; priority/tie-break ban đầu cần chốt riêng.
 
 Đề xuất adapter sender EVM và Solana để chuẩn bị/gửi/tra cứu giao dịch. Nghiệp vụ chung ở core, contracts an toàn cho browser, model/migration ở db, tác vụ nền ở worker; web cung cấp UI/API có kiểm soát truy cập.
 
@@ -1124,7 +1172,7 @@ Không điều khiển MetaMask browser để giả lập ký nền; không thu 
 | Web | image built with `pnpm --filter @cashback/web... build`; `db:migrate` then `pnpm --filter @cashback/web start`; healthcheck `/api/health` | Railpack, same build/preDeploy/start/healthcheck |
 | Worker | image built with `pnpm --filter @cashback/worker... build`; `pnpm --filter @cashback/worker start` | Railpack, same build/start, always-on |
 
-All agent tests run on the Docker stack (`.kiro/steering/production-safety.md`). Railway is
+All agent tests run on the Docker stack (`.claude/rules/production-safety.md`). Railway is
 used only for debugging or reading data when the user asks. When Railway changes
 (Postgres version, Node version, build/start commands, settings), the Docker stack is
 updated in the same change so the two stay identical. Node: the Docker image uses
@@ -1140,11 +1188,7 @@ per deploy; builds reproducible.
 Env vars (proposed): `DATABASE_URL`, `APP_URL`, `IMPORT_STORAGE_*`, `WORKER_POLL_SECONDS`,
 `HOLDING_PERIOD_HOURS`,
 `WITHDRAWAL_AUTO_APPROVE_THRESHOLD`, `JOB_LEASE_SECONDS`, plus admin auth provider vars
-**[PENDING]**, and for Req 15/16: `RESEND_API_KEY`, `EMAIL_FROM` (must be an address on a
-Resend-verified domain — the shared `resend.dev` testing domain only delivers to the
-account owner, per Resend's own docs), `OTP_TTL_MINUTES` (proposed 5),
-`OTP_MAX_ATTEMPTS` (proposed 5), `OTP_RESEND_COOLDOWN_SECONDS`, `OTP_DAILY_CAP_PER_UID`,
-`LOOKUP_RATE_PER_MINUTE`, `UID_SESSION_MINUTES` (proposed 30). The Bybit worker
+**[PENDING]**, `LOOKUP_RATE_PER_MINUTE`. The Bybit worker
 service additionally receives `BYBIT_AFFILIATE_API_KEY` and
 `BYBIT_AFFILIATE_API_SECRET` via local ignored `.env` or Railway service variables;
 neither belongs in source control or the browser/web service. Sync intervals are DB
@@ -1159,15 +1203,7 @@ took about 60 ms; with no `connect_timeout` in the URL (Prisma default 5 s) a sl
 produced P1001 "Can't reach database server" although the database was healthy. Add
 `connect_timeout=30` to a Railway URL used for debugging or reading data.
 
-**Resend send path (Req 16):** OTP send happens **in-request**, not via the job queue —
-the claimant is waiting on the code, and a queued send would add worker-poll latency on
-top of email delivery latency. If Resend's API errors or times out, `otpService` does not
-create the `EmailOtp` row as sent and returns a retryable error; it never leaves a
-withdrawal in a state that implies delivery succeeded (Req 16.3). Resend's free plan caps
-at 100 sends/day and 3,000/month, reset at 00:00 UTC — this is the operational reason the
-per-UID cooldown/cap and per-IP limit in Req 15.6–15.7 exist: without them, one actor
-spamming OTP requests exhausts the day's quota and blocks real withdrawals for everyone
-until the reset.
+
 
 ## Components and Interfaces
 
@@ -1180,8 +1216,6 @@ until the reset.
   insert must not be an unawaited/dropped promise (which can be lost on process exit);
   recording failure still returns the redirect. Unknown/inactive link → safe fallback,
   no open redirect (Req 2.1, 2.2, 2.3, 2.4).
-- **UID API** (`/api/uid/*`): `UidSession`-guarded; scopes every query to the session's
-  `uidAccountId`; never trusts a client-sent UID/account id (Req 3.3, 15.10).
 - **Admin API** (`/api/admin/*`): admin-guarded; `Cache-Control: private, no-store`.
   Ingest and report routes are grouped under `/api/admin/ingest/*` and
   `/api/admin/reports/*` (Req 18.7); retired paths stay as aliases (Req 18.8).
@@ -1340,7 +1374,7 @@ until the reset.
   first) and remove the badge + `ledger-demo.ts` in the same change.
 
   **Masking:** UID shown as asterisks plus 3–4 trailing characters (e.g. `***4567`).
-  Never full UID, never `boundEmail`, never payout address, never
+  Never full UID, never email, never payout address, never
   `reserved` / `withdrawn` / `receivable`, never withdrawal history.
 
   **Motion:** CSS-only vertical marquee. Viewport shows a handful of rows; the
@@ -1357,11 +1391,13 @@ until the reset.
 
 #### Bảng tính tiền hoàn phí bị bỏ lỡ (Req 19)
 
-Component phía client dùng đầu vào đã được duyệt; nhãn/thông báo nằm trong catalog tiếng Anh. Tách hàm tính và validation khỏi phần hiển thị.
+Quyết định 30/10/2026 thay công thức Task 43: client island chỉ có volume/tháng USDT (tối đa 16 chữ số nguyên, 8 chữ số thập phân), giá trị mặc định và nhóm nghìn en-US. Volume mặc định chốt **1,000,000 USDT** (giá trị số 1000000) theo ví dụ cuộc họp 20/10; có thể chỉnh mặc định sau trong code, không cần hỏi lại trước triển khai. Không có control phí/affiliate và không hiển thị cơ cấu hoa hồng nền tảng. Nhãn/lỗi dùng catalog tiếng Anh; input text/inputMode decimal giữ định dạng nhóm nghìn hiện có.
 
-Đã chốt #23–24 theo plan triển khai: phí/tháng bằng USDT (0–1,000,000, tối đa 8 chữ số thập phân), affiliate commission assumption có thể chỉnh (0–100%, mặc định minh họa 50%), share từ published offer cụ thể, kết quả tháng/12 tháng. Công thức: `hoàn phí/tháng = phí/tháng × tỷ lệ hoa hồng affiliate × tỷ lệ hoàn cho khách`; ví dụ mẫu Bybit `500 USDT × 50% × 30% = 75 USDT/tháng`, `75 × 12 = 900 USDT` cho 12 tháng tương tự. Không tự chuyển USD sang USDT hoặc suy ra tỷ lệ affiliate đã xác minh.
+`Offer.estimatedVolumeRate Decimal(12,10)?` là phần volume (0–1), nullable; admin form `/admin/offers` có trường nhập hệ số, blank → null, validate server/client tối đa 10 chữ số thập phân, không âm/không lớn hơn 1; không âm thầm round input quá precision. `cashbackRate` vẫn phục vụ attribution thực, không dùng thay hệ số estimate.
 
-Dùng fixed-point BigInt scale 10^8 cho input và tỷ lệ, nhân/chia chính xác; chỉ round half-up đến cents khi format tháng/12 tháng. Tách hàm tính/validation trong `apps/web/src/lib/opportunity.ts`. Không gọi API ghi ví hay tạo `WalletEntry`; không trộn ước tính với số dư thực. Calculator là client island nhận props offer trong trang SSR; không cần route mới, đầu vào không gửi lên server (Req 19.7–19.8). Một sàn nhiều offers có selector offer, tỷ lệ và CTA gắn với cùng offer; thiếu published offer hợp lệ thì không có kết quả tiền.
+Migration dự kiến `202610300001_offer_volume_estimate`: thêm cột nullable, CHECK null hoặc trong [0,1], không backfill tỷ lệ suy đoán. Public offer card/DTO (`GET /api/exchanges` và props SSR) mang `estimatedVolumeRate` dạng decimal string hoặc null; đây là hệ số ước lượng chung của offer, không phải commission/rate của UID trong lookup. Calculator lọc published offers có hệ số khác null, chấp nhận 0, có selector khi nhiều offer; offer thiếu hệ số vẫn có thể xuất hiện ở discovery, không xuất hiện trong calculator.
+
+Tính chính xác `tháng = volume × estimatedVolumeRate`, `năm = tháng × 12`; dùng Decimal hoặc fixed-point BigInt riêng scale volume 10^8, hệ số 10^10, tích scale 10^18. Không ép hệ số 10 chữ số về scale 10^8, không JS float; chỉ round half-up cents ở format cuối từng kết quả, không nhân năm từ tháng đã round. Không API lưu input, không WalletEntry. Props thay đổi: giữ offer nếu còn hợp lệ, nếu không chọn offer hợp lệ theo thứ tự hiện có; không offer hợp lệ thì trạng thái không có ước tính.
 
 #### Giao diện và tên website (Req 20, Dark Aurora đã chốt)
 
@@ -1369,16 +1405,16 @@ Tham chiếu thiết kế: `mockups/dark-aurora.html`; kế hoạch chi tiết: 
 
 **Thứ tự trang chủ:** header → hero và toàn bộ hình ví cũ → **THE CASHBACK OPPORTUNITY CHECK** → dải logo sàn → tra cứu exchange + UID → published offers → How it works → rebate ledger hiện có (Req 17) → FAQ → footer. Calculator luôn nằm dưới hình ví; mô hình tháng/12 tháng đã chốt theo #23–24.
 
-- **Hero:** giữ headline `Same trades. More coming back.`, CTA tìm offer/tra cashback, hình ví 248.50 USDT available / 42.80 USDT pending / 1,206.00 USDT paid out và hai thẻ nổi. Giữ nhãn `Illustrative wallet` và chú thích không phải tài khoản thật; không dùng các con số này làm kết quả lookup.
+- **Hero:** giữ headline/layout và hình minh họa 248.50 / 42.80 / 1,206.00 USDT có nhãn minh họa, không là số dư thật; đổi copy sang hoàn theo lịch về UID, không CTA rút. Điều kiện holding/approval/readiness giữ theo Req 22.
 - **Opportunity Check:** khung viền/glow cam ấm, kết quả tiền lớn, copy `See what you could be missing.` và CTA tới lookup/offer. Hiển thị assumptions/công thức/điều kiện và `Past fees cannot be claimed retroactively.`; không khẳng định khách đã mất khoản tiền thật hoặc thêm countdown giả (Req 19.1–19.7).
 - **Sàn/offer:** bộ seed và mockup hiện có Bybit/Binance/MEXC, tỷ lệ mẫu lần lượt 30/40/35% trên eligible affiliate commission. Dải logo dùng ảnh local và deduplicate theo exchange ID. Card rộng ba cột desktop, một cột mobile; tỷ lệ/điều kiện/link trên ứng dụng lấy từ published data, không hard-code seed hoặc giới hạn hệ thống vĩnh viễn ở ba sàn. Một sàn nhiều offers vẫn giữ định danh và link đúng từng offer (Req 1, 7).
-- **Tích hợp:** `HomeContent` và offers giữ SSR; calculator là client island nhận props published offer. Restyle `CashbackLookup` nhưng giữ `/api/lookup`, schema, số dư theo asset, transactions, timestamps, empty/loading/error/429 và UID dạng chuỗi. Tính calculator không gửi/lưu input lên server, không ghi ví.
-- **Wallet:** trỏ `/withdraw` hiện có, giữ OTP/session; CTA từ kết quả lookup giữ exchange ID/UID trong query. Sửa link header `/me/wallet` chưa có route trong app; không tạo một luồng auth/rút tiền mới (Req 14–16, 20.4).
+- **Tích hợp:** `HomeContent` và offers giữ SSR; calculator là client island không gửi/lưu input hoặc ghi ví. `/api/lookup` dùng contract mới theo Req 14, giữ empty/loading/error/429, stale-response guard và UID dạng chuỗi. UI tổng đã trả tách khỏi tiền phát sinh ngày/30 ngày, bảng chỉ kỳ/tài sản/UID/cashback.
+- **Luồng public:** không Wallet, xác thực khách hoặc yêu cầu rút; `/withdraw` redirect `/#lookup`. POST tạo/hủy cũ trả 410 `CUSTOMER_WITHDRAWALS_RETIRED` trước body/auth/DB, không reserve/job; API đọc riêng tư khách được gỡ tại Task 44.3. Giữ admin commands/queue legacy/payables; không đổi gate/backfill hoặc tự bật sender.
 - **Public shell:** header/footer và theme scoped cho public routes; giữ admin shell/token hiện tại. Menu mobile có control mở/đóng dùng được bằng bàn phím; anchors có scroll offset. Đồng bộ cards và typography trên exchanges/detail/guides.
 - **Dữ liệu minh họa:** giữ rebate ledger generator/badge theo Req 17; không biến ticker thành lịch sử ví thật. Bỏ stats người dùng/quốc gia chưa có nguồn, chỉ dùng số sàn nếu lấy từ `getPublicStats()`. Thiếu dữ liệu thật thì hiển thị empty/unavailable, không thay bằng ví/offer demo.
 - **Accessibility:** dùng được 360–1440px không cuộn ngang; labels, focus rõ, tương phản WCAG 2.1 AA, `prefers-reduced-motion`; hình ví/thẻ nổi không tràn hoặc che calculator (Req 20.2–20.3).
 
-Giữ tên hiện tại **Cashback Hub** và UI tiếng Anh (Req 4, 20.5–20.6). Tập trung tên ở một hằng số cấu hình hoặc English message catalog, dùng chung header/footer/metadata/email OTP; không dùng biến `NEXT_PUBLIC_*` cho tên. Đổi tên sang `RebateFlow` chưa được duyệt, vẫn thuộc Open decision #22; quyết định đó không chặn triển khai layout với tên hiện tại.
+Giữ tên hiện tại **Cashback Hub** và UI tiếng Anh (Req 4, 20.5–20.6). Tập trung tên ở một hằng số cấu hình hoặc English message catalog, dùng chung header/footer/metadata; không dùng biến `NEXT_PUBLIC_*` cho tên. Đổi tên sang `RebateFlow` chưa được duyệt, vẫn thuộc Open decision #22; quyết định đó không chặn triển khai layout với tên hiện tại.
 
 ### apps/worker
 - Boot connects to Postgres, starts a poll loop (~10s) that claims one job via
@@ -1393,27 +1429,7 @@ Giữ tên hiện tại **Cashback Hub** và UI tiếng Anh (Req 4, 20.5–20.6)
   exchange default rate), guides. (Live rebate-ledger read is deferred; the home
   ticker uses `ledger-demo.ts` until Req 17.7.)
 - `clickService` — record click (best-effort), aggregate analytics.
-- `lookupService` — cashback lookup by exchange + UID: consume the per-IP rate-limit budget
-  (`RateLimitCounter`, scope `lookup:ip`), then read the `UidAccount`'s wallets
-  (`pending`/`available`) and attributed `CommissionRecord`s (commission vs cashback
-  rows, cap 100). `commission` is the latest version that already has `attr:{versionId}`,
-  not an in-flight `reconciledAmount` (Req 14.7). Read-only; never creates a `UidAccount`,
-  `Wallet`, or session (Req 14).
-- `otpService` — generates a 6-digit code with `crypto.randomInt(100000, 1000000)`, hashes
-  it with the `bcryptjs` already used for admin credentials, and enforces send order:
-  check per-UID cooldown + daily cap (`RateLimitCounter` scope `otp:uid`) and per-IP limit
-  (scope `otp:ip`) → if a bound email exists, target only it → create `EmailOtp` → call
-  `emailPort.sendOtp` → record `providerAccepted`/`providerMessageId`. Verification compares
-  the hash, checks `expiresAt`/`consumedAt`/`failedAttempts`, consumes the OTP, binds the
-  email if unbound, and issues a `UidSession` (Req 15).
-- `uidSessionService` — issues/verifies/expires hashed session tokens scoped to one
-  `UidAccount`; every `/api/uid/*` handler resolves its principal through this service, never
-  from a request parameter (Req 15.10).
-- `emailPort` — a narrow interface (`sendOtp({ to, code }): Promise<{ accepted: boolean;
-  messageId?: string }>`) so `otpService` does not depend on the Resend SDK directly. The
-  only implementation is `resendEmailAdapter`, calling the official `resend` package. Kept
-  behind a port for the same reason as `AuthPort`: swapping providers later should not touch
-  callers.
+- `lookupService` — consume per-IP budget (`lookup:ip`), đọc totalPaid từ sổ settled, tổng cashback theo kỳ UTC và bảng customer cashback (cap 100). Không public commission/rate/volume/bucket ví; tổng không giới hạn 100 dòng và không prorate kỳ cắt biên. Chỉ đọc, không tạo UID/Wallet (Req 14).
 - `importService` — create batch, enqueue parse, preview, commit (enqueue publish).
 - `ingestRegistry` — resolve a `SourceAdapter` subclass by (exchange, dataset kind,
   source method, format, contract version); adapters emit a shared
@@ -1435,9 +1451,9 @@ Giữ tên hiện tại **Cashback Hub** và UI tiếng Anh (Req 4, 20.5–20.6)
   receivable offset) with a unique op key, release holds.
 - `walletService` — balances (pending/available/reserved/withdrawn/receivable), typed
   entries, reservations.
-- `withdrawalService` — request/reserve (blocked while receivable > 0), first-withdrawal
-  detection (always `UNDER_REVIEW`), threshold decision from the second withdrawal onward,
-  approve/reject/settle, claimant cancel, events.
+- `withdrawalService` — request/reserve (blocked while receivable > 0), amount-based
+  approval from the first withdrawal onward (Req 9.5/22.32),
+  approve/reject/settle, admin cancellation, events; no customer money mutations (Req 22.35).
 - All services take a transaction/context object so they compose atomically.
 
 ### API contracts (shape summary)
@@ -1448,15 +1464,12 @@ decimal string with an `asset`. Errors use a consistent envelope
 
 | Endpoint | Method | Auth | Notes |
 |----------|--------|------|-------|
-| `/api/exchanges` | GET | public | published exchanges + offers |
+| `/api/exchanges` | GET | public | published exchanges + offers, estimatedVolumeRate decimal string hoặc null |
 | `/go/:linkId` | GET | public | 302 redirect; records click (best-effort) |
-| `/api/lookup` | POST | public | `{ exchangeId, uid }` → `pending`/`available`, freshness, `transactions[]` (commission vs cashback); IP rate-limited, 429 + `Retry-After` when exceeded |
-| `/api/otp/request` | POST | public (rate-limited) | send OTP for a withdrawal; targets the bound email if one exists |
-| `/api/otp/verify` | POST | public (rate-limited) | verify OTP → bind email + issue 30-min `UidSession` cookie |
+| `/api/lookup` | POST | public | `{ exchangeId, uid }` → previousDay theo D/rolling30Days, totalPaid, summaryPeriods { reportDay, rollingStart, end }, freshness và bảng kỳ/tài sản/UID/cashback; IP limit, 429 + Retry-After |
+| `/api/uid/withdrawals` | POST retired | unavailable | 410 CUSTOMER_WITHDRAWALS_RETIRED trước auth/DB; không reserve/job |
+| `/api/uid/withdrawals/:id/cancel` | POST retired | unavailable | 410 CUSTOMER_WITHDRAWALS_RETIRED; không mutation |
 | `/api/admin/auth/*` | POST | public→admin session | admin login/logout (interim) **[PENDING provider]** |
-| `/api/uid/wallet` | GET | UID session | balances (incl. reserved, receivable) + as-of + history, scoped to the session's UID |
-| `/api/uid/withdrawals` | GET/POST | UID session | history / request |
-| `/api/uid/withdrawals/:id/cancel` | POST | UID session | cancel a not-yet-paid withdrawal |
 | `/api/admin/ingest/adapters` | GET | admin | registered file adapters: id, exchange, dataset kind, source method, `accept`, required fields, `affectsCashback`, contract version; no credentials |
 | `/api/admin/ingest/batches` | POST | admin | file + exchange/dataset kind/period/source timezone/source as-of/report type as the adapter requires; adapter re-resolved server-side; 202 + batchId |
 | `/api/admin/ingest/batches` | GET | admin | list; filters `exchangeId`, `datasetKind`, `sourceMethod`, `status`; cursor paged |
@@ -1519,16 +1532,13 @@ payloads are never returned by sync-status or public lookup.
 
 ### Auth (admin only)
 - Define an `AuthPort` in `core` with `getSession(req)` and `requireAdmin`. Route handlers
-  depend on the port, not a concrete provider. End-user identity is a `UidSession`,
-  resolved by `uidSessionService`, not `AuthPort` (Req 3.2).
+  depend on the port, not a concrete provider. Khách chỉ lookup công khai, không principal đăng nhập (Req 3.2).
 - **Interim implementation (until a provider is chosen):** email + password with server
   sessions. Credentials are stored as a `passwordHash` on `AdminAccount`; admin sessions
   live in the `Session` table (hashed token, expiry). These fields are **interim** and are
   replaced (dropped/migrated) if a managed provider (Auth0/Clerk/Supabase) is adopted; the
   rest of the design is unaffected because everything depends on `AuthPort`.
-- An admin `Session` and a `UidSession` are structurally different tables with no shared
-  code path: an admin session cannot be presented to a `/api/uid/*` route and a `UidSession`
-  cannot be presented to a `/api/admin/*` route (Req 3.4).
+- Admin Session chỉ cấp quyền admin; sàn + UID đầu vào lookup không cấp quyền ghi hoặc lệnh chi (Req 3.4).
 
 ### Language & i18n (Req 4)
 - **English is the only enabled locale.** No other language is served (Req 4.1).
@@ -1575,6 +1585,12 @@ payloads are never returned by sync-status or public lookup.
 - Every wallet movement references its source (`sourceRef`) for audit (Req 7.7, 8.6).
 - Holding period is a config value (`HOLDING_PERIOD_HOURS`, **[PENDING]** default).
 
+### Migration dự kiến cho Task 44 (chưa tạo/chạy)
+
+- `202610300001_offer_volume_estimate`: cột Offer.estimatedVolumeRate nullable Decimal(12,10), CHECK [0,1]; giữ null cho offer cũ, admin tự cấu hình.
+- Index lookup dự kiến trên `ImportBatch(exchangeId, datasetKind, status, periodEnd)` trong migration triển khai Task 44.2; schema minh họa và API phải theo coverage Req 14.
+- `202610300002_drop_customer_otp`: sau gỡ route/service/contract/UI khách và phụ thuộc, drop `EmailOtp`, `UidSession`, cột `UidAccount.boundEmail`/`emailBoundAt`, relation/index phụ thuộc. Dừng producer cũ trước deploy schema; không có email/session fallback. Giữ `Withdrawal.email` và `WithdrawalEvent.email` để bảo toàn lịch sử; giữ AdminAccount/Session, UidAccount, Wallet, RateLimitCounter lookup, admin withdrawal queue và toàn bộ payables/receipts/audit. Không reset gate, không settle/release lại tiền. Đây là migration dự kiến, chưa thực thi.
+
 ## Data Models
 
 Prisma schema is indicative, not final; commission dedup remains **[PENDING]**
@@ -1614,6 +1630,7 @@ model Offer {
   exchange     Exchange @relation(fields: [exchangeId], references: [id])
   status       PublishStatus @default(DRAFT)
   cashbackRate Decimal  @db.Decimal(6,4) // e.g. 0.4000 = 40% of commission
+  estimatedVolumeRate Decimal? @db.Decimal(12,10) // null hoặc [0,1]; ước tính theo volume (Req 19)
   conditions   Json?
   verifiedAt   DateTime?
   i18n         Json?
@@ -1666,51 +1683,14 @@ model UidAccount {
   exchangeId   String
   exchange     Exchange @relation(fields: [exchangeId], references: [id])
   uid          String   // opaque string, always scoped by exchange (Req 5.2)
-  boundEmail   String?  // null until the first successful OTP (Req 15.3)
-  emailBoundAt DateTime?
   wallets      Wallet[]
   withdrawals  Withdrawal[]
-  otps         EmailOtp[]
-  sessions     UidSession[]
   createdAt    DateTime @default(now())
   @@unique([exchangeId, uid]) // one UID account per (exchange, UID)
-  @@index([boundEmail])       // one email may hold several UID accounts
 }
 
-/// A 6-digit code proving control of an email. Hash only; the plaintext is never stored,
-/// logged, or returned (Req 15.8).
-model EmailOtp {
-  id                String     @id @default(cuid())
-  uidAccountId      String
-  uidAccount        UidAccount @relation(fields: [uidAccountId], references: [id])
-  email             String   // address this code was sent to
-  codeHash          String   // bcrypt hash of the 6 digits
-  expiresAt         DateTime // now + OTP_TTL_MINUTES (proposed 5)
-  consumedAt        DateTime?
-  failedAttempts    Int      @default(0) // invalidate at OTP_MAX_ATTEMPTS (proposed 5)
-  providerAccepted  Boolean  @default(false) // Resend accepted the send (Req 16.6)
-  providerMessageId String?
-  createdAt         DateTime @default(now())
-  @@index([uidAccountId, createdAt]) // supports cooldown + daily-cap checks
-  @@index([expiresAt])               // supports pruning
-}
-
-/// Short-lived, scoped to exactly ONE UidAccount (Req 15.3, 15.10). Grants no admin
-/// capability. Stored hashed like an admin Session.
-model UidSession {
-  id           String     @id @default(cuid())
-  uidAccountId String
-  uidAccount   UidAccount @relation(fields: [uidAccountId], references: [id])
-  tokenHash    String   @unique
-  expiresAt    DateTime // now + 30 minutes
-  createdAt    DateTime @default(now())
-  @@index([uidAccountId])
-}
-
-/// Counter windows backing the lookup and OTP-send rate limits (Req 14.4, 15.6-15.7).
-/// `scope` distinguishes limiter kinds (e.g. "lookup:ip", "otp:ip", "otp:uid"). `subjectHash`
-/// is a hash: raw IPs are never persisted. Holds no lookup result, so this is a rate-limit
-/// ledger, not a search history.
+/// Counter lookup theo IP đã hash, scope riêng cho từng độ dài cửa sổ (Req 14.4).
+/// Không lưu IP thô hoặc kết quả lookup; pruning theo windowStart.
 model RateLimitCounter {
   id          String   @id @default(cuid())
   scope       String
@@ -1721,9 +1701,7 @@ model RateLimitCounter {
   @@index([windowStart]) // supports pruning old windows
 }
 
-/// Admin-only server session. End-user identity uses `UidSession` instead.
-/// Kept separate so an admin session can never be
-/// mistaken for withdrawal rights over a UID (Req 3.4).
+/// Admin-only server session; khách không có phiên đăng nhập.
 model Session {
   id        String   @id @default(cuid())
   adminId   String
@@ -1761,6 +1739,7 @@ model ImportBatch {
   rows        StagingRow[]
   versions    CommissionVersion[]
   snapshots   ReferralSnapshot[]
+  @@index([exchangeId, datasetKind, status, periodEnd]) // latestReportedDay (Req 14)
 }
 
 model StagingRow {
@@ -2048,8 +2027,8 @@ model Withdrawal {
   amount       Decimal  @db.Decimal(30,10)
   network      String
   address      String
-  email        String   // the bound email used for this withdrawal's OTP (Req 9.9)
-  isFirst      Boolean  // true routes unconditionally to UNDER_REVIEW (Req 9.5, 15.9)
+  email        String   // email lịch sử legacy, giữ nguyên; không dùng xác thực khách
+  isFirst      Boolean  // legacy/history metadata only; not an approval gate (Req 9.5/22.32)
   status       WithdrawalStatus @default(REQUESTED)
   payoutRef    String?
   createdAt    DateTime @default(now())
@@ -2096,14 +2075,23 @@ Enums:
 `ReportType{TRANSACTION,AGGREGATE}` (commission only),
 `BatchStatus{UPLOADED,PARSING,PREVIEW,COMMITTING,PUBLISHED,FAILED}`,
 `WalletEntryType{CREDIT,HOLD_RELEASE,WITHDRAWAL_RESERVE,WITHDRAWAL_RELEASE,WITHDRAWAL_SETTLE,ADJUSTMENT,REVERSAL,CLAWBACK}`,
-`WithdrawalStatus{REQUESTED,AUTO_APPROVED,UNDER_REVIEW,APPROVED,PAID,REJECTED,CANCELLED}`,
+`WithdrawalStatus{REQUESTED,AUTO_APPROVED,UNDER_REVIEW,APPROVED,PREPARED,DISPATCHING,SUBMITTED,UNKNOWN,INVALIDATED,FAILED_NOT_SENT,PAID,REJECTED,CANCELLED}` (spec đích; trạng thái dispatch cần migration Task 42),
 `ActorType{CLAIMANT,ADMIN,SYSTEM}`,
-`JobType{PARSE,LOAD,TRANSFORM,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC}` (`PARSE` kept only so queued jobs deserialize; new jobs never use it),
+`JobType{PARSE,LOAD,TRANSFORM,PUBLISH,ATTRIBUTE,RELEASE_HOLDS,SYNC,SYNC_PAYABLES,PAYOUT_SLOT,PAYOUT_RECONCILE,PAYABLE_COMMAND}` (PARSE chỉ deserialize queue cũ),
 `JobState{PENDING,CLAIMED,DONE,FAILED}`.
+
+### CustomerPayable và các bảng liên quan — Req 22 (migration `202610170001_customer_payables`)
+
+- **CustomerPayable**: `uidAccountId`, `exchangeId`, `asset`, `sourceReleaseEntryId` UNIQUE (FK WalletEntry HOLD_RELEASE), `entitlement` T, `settledAmount` S, `activeAmount` R, `paymentStatus` UNPAID|PAID, `version`, `releasedAt`, `closedAt`, `paidAt`. CHECK `T >= S + R` và không âm. UID luôn kèm sàn qua UidAccount (Req 5.2).
+- **PayoutExecution**: một lệnh chi USDT nội bộ tới một UID: `slotKey`, `total`, `requiresApproval`, `state` (AWAITING_APPROVAL, READY, DISPATCHING, SUBMITTED, UNKNOWN, CONFIRMED, FAILED_NOT_SENT, INVALIDATED, CANCELLED), `version`, `valuationMode`/`policyVersion`, approval (`approvedBy/At/Version/Total`), `earliestSendAt`, `blockers`, `dispatchKey` UNIQUE, `sourceAccountId`, `snapshot` bất biến lúc DISPATCHING, `providerRef`, `paidAmount`, `feeAmount`, `failureCode`, `previousExecutionId`, `legacyWithdrawalId` UNIQUE. Partial UNIQUE: một execution mở cho mỗi (UID account, asset); UNIQUE `(exchangeId, sourceAccountId, providerRef)` khi có providerRef.
+- **PayableAllocation**: `executionId`, `payableId`, `amount > 0`, `state` ACTIVE|RELEASED|SETTLED; UNIQUE `(executionId, payableId)`; partial UNIQUE một ACTIVE cho mỗi payable.
+- **PayableSyncScope** `(uidAccountId, asset)`: `sourceVersion`/`appliedVersion`, `state` SYNCED|PENDING|FAILED, `pendingCorrection`, `invariantError`. **PayoutSlot** (`slotKey` PK, `cutoffAt`, `state` RUNNING|DONE|MISSED|BLOCKED, `manifest` đóng băng danh sách tại cutoff, `summary`). **PayableCommand** (`commandKey` UNIQUE, `payloadDigest`, `status`). **PayableEvent** (audit append-only, không secret). **MoneyFlowGate** (một dòng, mặc định LEGACY).
+
+Audit và lần thử nằm ở bảng phụ; chỉ `CustomerPayable` đại diện nghĩa vụ. `Wallet` vẫn là sổ số dư; `PayoutExecution` là thực hiện chi; tổng được đối chiếu bằng các bất biến Σ ở trên để không đếm đôi giữa ba lớp.
 
 ### PayoutIntent — phương án sơ bộ cho Req 21
 
-Đề xuất `PayoutIntent` duy nhất theo withdrawal (`@@unique([withdrawalId])`), chứa coin/mạng, số tiền (cả đơn vị nhỏ nhất dạng chuỗi số nguyên), quote, destination, định danh giao dịch (EVM: nonce + tx hash của ví chi trả; Solana: signature + `lastValidBlockHeight`), trạng thái và dữ liệu lỗi/lần thử. Trạng thái đề xuất để duyệt: `PREPARED → BROADCAST → CONFIRMED` hoặc `FAILED` (chắc chắn chưa lên chain) hoặc `UNKNOWN` (cần đối soát/can thiệp). `WithdrawalStatus` hiện tại cần bổ sung trạng thái tương ứng giữa `APPROVED` và `PAID`. Đây chưa phải schema đã chốt.
+PayoutIntent duy nhất theo Withdrawal/execution (`UNIQUE(withdrawalId)`), tham chiếu immutable attempt snapshot và allocations; chứa coin/network/base units/quote/destination cùng recovery identifiers (EVM nonce/hash; Solana signature/lastValidBlockHeight). Intent/attempt cần lưu PREPARED, DISPATCHING, SUBMITTED, CONFIRMED, FAILED_NOT_SENT hoặc UNKNOWN, không ghi đè dữ liệu khôi phục khi retry. Spec đích ánh xạ dispatch boundary vào WithdrawalStatus ở trên. Trạng thái kỹ thuật không thay thế PAID/UNPAID/partial của payable; quyền kênh sender vẫn là prerequisite #35. Chưa có migration/adapter.
 
 ## Dimensional store & fact partitioning (5,000 transacting UIDs/day)
 
@@ -2169,7 +2157,7 @@ flowchart LR
 | **Snapshot (not a fact)** | `Wallet` (pending/available/reserved/withdrawn/receivable) | **No** | One row per UID+asset. Partitioning would break `SELECT … FOR UPDATE` and unique `(uidAccountId, asset)` |
 | **OLTP identity** | `CommissionRecord` (current reconciled amount + snapshots) | **No** | Unique `(exchangeId, dedupKey)`; locked during attribution |
 | **Fact** | `ClickEvent`, `WalletEntry`, `CommissionVersion`, `WithdrawalEvent`, lookup `transactions` history | **Yes — RANGE by month** on `event_date` (UTC date of the event) | Append-only, queried by UID + recent time window |
-| **Blob / control** | `ImportBatch.originalFile`, `Job`, `Session`, `EmailOtp`, `RateLimitCounter`, `WorkerHeartbeat` | No (move BYTEA to object storage before it grows) | Not analytics facts |
+| **Blob / control** | `ImportBatch.originalFile`, `Job`, `Session`, `RateLimitCounter`, `WorkerHeartbeat` | No (move BYTEA to object storage before it grows) | Not analytics facts |
 
 ### Dimension grain
 
@@ -2177,7 +2165,7 @@ flowchart LR
 |-----|-------------|--------|
 | `DimDate` | `date_key` int `YYYYMMDD` | Pre-populated 10 years. Facts store `date_key` for prune-friendly filters |
 | `DimExchange` | `exchange_id` (OLTP id) | slug, name, default rate |
-| `DimUid` | `(exchange_id, uid)` | Same grain as `UidAccount`. No bound email on this dim if used for public lookup |
+| `DimUid` | `(exchange_id, uid)` | Same grain as `UidAccount`; không chứa thông tin đăng nhập khách |
 | `DimAsset` | `asset` text (`USDT`, …) | Tiny |
 | `DimOffer` | `offer_id` | Snapshotted rate lives on the **fact**, not only on the dim |
 | `DimBatch` | `batch_id` | period, report type, published_at — not the CSV bytes |
@@ -2219,7 +2207,7 @@ Used by lookup “exchange paid vs your share” (Req 14.7).
 
 ### Application rules at this scale
 
-- **Lookup (Req 14)** reads `Wallet` for pending/available (tiny) and
+- **Lookup (Req 14)** reads `Wallet` for aggregate settled totalPaid (tiny) and
   `FactCashback` for the table (partition-pruned). It does not `SELECT * FROM
   WalletEntry`.
 - **Admin analytics** aggregates facts with `date_key BETWEEN`. No
@@ -2259,15 +2247,13 @@ CREDIT/REVERSAL.
 
 ### Property 3: One UID account per (exchange, UID)
 At most one `UidAccount` row exists per (exchange, UID), enforced by `@@unique([exchangeId,
-uid])`. Uniqueness is unconditional (no verification status): ownership is asserted only at
-withdrawal (see "Accepted risk").
+uid])`. Tính duy nhất không phụ thuộc trạng thái xác thực khách; không có bước claim. Chi tự động giữ đúng sàn + UID nguồn.
 **Validates: Requirements 5.1, 5.2**
 
 ### Property 4: Attribution needs no claimant action
 A `UidAccount` accrues cashback purely from published commissions matching its
-(exchange, UID); it can hold a positive balance with `boundEmail = null` and no session ever
-issued. No claimant action, email, or session is a precondition for crediting `pending`
-(only for withdrawing it — Property 6).
+(exchange, UID); nó có thể tích lũy số dư mà không có thao tác khách. No claimant action, email, or session is a precondition for crediting `pending`
+(automatic payouts cũng không cần thao tác khách — Property 6).
 **Validates: Requirements 5.3, 5.5, 7.1, 7.2**
 
 ### Property 5: Balance conservation & non-negativity
@@ -2275,12 +2261,12 @@ For each wallet+asset, `pending`, `available`, `reserved` never go negative and
 `receivable >= 0`; every bucket equals the signed sum of its `WalletEntry` movements.
 **Validates: Requirements 8.1, 8.4, 8.7, 9.3**
 
-### Property 6: Only-available is withdrawable, and only through a valid UID session
-A withdrawal amount is `<= available` at request time (and only when `receivable = 0`),
-requires a `UidSession` valid for that exact `UidAccount`, and is moved into `reserved` so
-it cannot be double-requested. A UID's **first** withdrawal is always `UNDER_REVIEW`
-regardless of amount; the auto-approval threshold applies only from the second withdrawal
-onward.
+### Property 6: Only eligible funds are payable, through authorised system/admin execution
+An execution claims eligible manifest funds <= available, only when receivable = 0,
+under system/admin authority and atomic reservation. Customer create/cancel/partial requests
+are rejected; khách chỉ lookup công khai, không có private history API. The same total-execution threshold applies from the first
+withdrawal onward: <=20 USD may auto-approve when all controls pass; >20 USD requires approval.
+Recipient setup and scheduled dispatch remain separate gates (Req 22.25/22.32).
 **Validates: Requirements 9.1, 9.2, 9.4, 9.5, 9.8, 9.11**
 
 ### Property 7: Atomic batches
@@ -2298,7 +2284,7 @@ computed.
 **Validates: Requirements 7.5, 7.8**
 
 ### Property 10: Withdrawal auditability
-Every withdrawal status transition (including claimant cancel) is persisted as a
+Every execution status transition (including admin cancellation and historical claimant events) is persisted as a
 `WithdrawalEvent` (from/to status, actor, time, reference).
 **Validates: Requirements 9.9, 9.10**
 
@@ -2319,35 +2305,18 @@ matching exchange; a client-supplied link/offer never raises the rate, and misma
 fall back to the exchange default.
 **Validates: Requirements 7.3**
 
-### Property 14: Lookup discloses balances and commission split, never identity or payouts
-For any (exchange, UID), the lookup response carries `pending`/`available` per asset,
-freshness timestamps, and per-period `commission` vs `cashback` rows. It never includes a
-bound email (in any form), payout address, withdrawal record, wallet-movement types, or
-the `reserved`/`withdrawn`/`receivable` buckets — those require a `UidSession` for that
-exact `UidAccount`. `commission` matches the latest attributed version, not a published
-amount ATTRIBUTE has not applied yet. The endpoint performs no writes, so a lookup can
-never create or claim a `UidAccount` (Req 14.3, 14.5, 14.7).
-**Validates: Requirements 14.2, 14.3, 14.5, 14.7**
+### Property 14: Lookup exposes customer cashback and aggregate paid amounts only
+Response theo đúng sàn/UID: chỉ khi hasData=true (đã có cashback attribution) mới trả/hiển thị `creditedCashback` theo kỳ, metric ngày D/30 ngày UTC và `totalPaid` từ sổ settled. UID không tồn tại và UID đã biết chưa có cashback đều hasData=false, cùng shape rỗng và thông điệp no cashback data for this UID under our referral links; coverage sàn không làm lộ UID membership. Không có commission/rate/volume, email/address, lệnh thanh toán, movement types hoặc bucket ví. Tổng không bị giới hạn bởi page 100; kỳ cắt biên có trạng thái thiếu chi tiết/null, không chia đều hoặc giả 0. Endpoint chỉ đọc, không tạo/claim UID và không thay đổi sổ tiền (Req 14.2–14.8).
+**Validates: Requirements 14.2, 14.3, 14.5, 14.6, 14.7**
 
 ### Property 15: Rate limits survive restarts and multiple instances
-Lookup and OTP-send budgets are stored in Postgres (`RateLimitCounter`), so they are shared
-across web instances and are not reset by a deploy or process restart. Exceeding a budget
-yields a rejection, not a computed answer or a sent email.
-**Validates: Requirements 14.4, 15.6, 15.7**
+Counter lookup nằm trong Postgres RateLimitCounter, dùng chung giữa instances và không reset khi restart/deploy; mỗi độ dài cửa sổ có scope độc lập. Quá budget trả 429, không tính lookup.
+**Validates: Requirements 14.4**
 
-### Property 16: OTP is hashed, single-use, time-boxed, and attempt-limited
-`EmailOtp.codeHash` never stores the plaintext; the plaintext never appears in a log or API
-response. An OTP is accepted at most once (`consumedAt` set atomically with the check), is
-rejected once `expiresAt` has passed, and is invalidated after `OTP_MAX_ATTEMPTS` wrong
-guesses — whichever comes first blocks further use of that code.
-**Validates: Requirements 15.4, 15.5, 15.8**
-
-### Property 17: A UID session is scoped to exactly one UID account
-Every `/api/uid/*` handler derives its target `UidAccount` from the session's
-`uidAccountId`, never from a request parameter. Presenting a valid session against a
-different UID, or an expired/consumed session, is rejected outright — it does not fall back
-to any other identifier.
-**Validates: Requirements 15.3, 15.10, 15.11**
+### Property 18: Bảo toàn quyền hưởng và settle mỗi phần tiền một lần (Req 22, đã triển khai và mô phỏng)
+Raw/activity không tự tạo nghĩa vụ chi; import/lịch/retry không nhân đôi cùng nguồn tiền. Approval/tiếp nhận không làm PAID. Lỗi/UNKNOWN giữ UNPAID và tiền đang xử lý không được rút/hoàn/gửi lại; chỉ thành công mới settle phần thực trả một lần, PAID khi khoản trả đủ. Correction không sửa PAID; đóng UNPAID phải chứng minh dư 0 hoặc kế thừa đầy đủ có liên kết, không bỏ mất nợ. Grain/khóa nguồn/mapping chưa chốt không được coi là đã có bằng chứng bảo toàn; totals tách asset.
+Tất cả đường auto/manual phải resolve cùng khoản/phiên bản; không fallback tạo chi từ Wallet/raw. Thay đổi nguồn và enqueue bền vững không có khe mất sự kiện; worker cũ không ghi đè phiên bản mới. Dữ liệu chưa đồng bộ chặn lần chi mới, nhưng không ngăn ghi nhận kết quả thực tế của lần chi đã khóa snapshot.
+**Validates: Requirements 9.5, 12.5/12.7, 22.2–22.38; RTM: payables-rtm.md**
 
 ## Error Handling
 - API: consistent error envelope; 4xx for validation/authz, 202 for accepted imports,
@@ -2356,6 +2325,8 @@ to any other identifier.
   open redirect; click recording is best-effort and never faults the redirect.
 - Worker: transient → retry w/ backoff+jitter (capped); permanent (config/auth) → FAILED
   + surfaced in sync-status; batch failures never leave partial published data (Req 6.8).
+  Internal USDT payout sends follow Req 22.31: proven-not-sent retries wait for the next
+  23:00 UTC slot; queue retries may persist/reconcile outcomes but cannot bypass that slot.
 - Money: reject any operation that would make `pending`/`available`/`reserved` negative;
   uncovered reversals become `receivable` (never a negative balance).
 - Withdrawal: reject a request while `receivable > 0`; reject a cancel once `PAID`.
@@ -2372,8 +2343,7 @@ most critical money/concurrency invariants, not an exhaustive suite.
   seed import runs.
 - **Critical invariant checks (targeted integration/concurrency):**
   - Two publish runs racing to attribute the same (exchange, UID) → exactly one
-    `UidAccount` row exists (Property 3); it accrues cashback with `boundEmail = null`
-    (Property 4).
+    `UidAccount` row exists (Property 3); nó tích lũy cashback không cần thao tác khách (Property 4).
   - ATTRIBUTE re-run, and two ATTRIBUTE workers racing the same commission → no duplicate
     credit (Properties 2, 8; `FOR UPDATE` + unique `opKey`).
   - Publish failing mid-transaction → no partially-published data (Property 7).
@@ -2381,20 +2351,16 @@ most critical money/concurrency invariants, not an exhaustive suite.
     (Property 6).
   - Downward correction after cashback was withdrawn → uncovered remainder becomes
     `receivable`, new withdrawal blocked, next credit offsets it (Property 12).
-  - Claimant cancel of a not-yet-paid withdrawal → reserved released, event recorded
+  - Admin cancel proven before DISPATCHING → reserved released once, event recorded
     (Property 10).
-  - Lookup on a funded UID returns `pending`/`available` and freshness only — no email,
-    address, history, or `reserved`/`withdrawn`/`receivable` field anywhere in the body —
+  - Lookup returns only customer cashback, summary periods and aggregate total paid — no commission/rate/volume, email,
+    address, payment history, or wallet buckets anywhere in the body —
     and writes no rows; exceeding the per-IP budget returns 429 without querying the wallet
     (Properties 14, 15).
-  - A wrong OTP guess increments `failedAttempts`; the `OTP_MAX_ATTEMPTS`-th wrong guess
-    invalidates the code even if the TTL has not elapsed; a consumed or expired OTP is
-    rejected on reuse (Property 16).
-  - A `UidSession` for UID A rejects every request scoped to UID B; an expired session is
-    rejected even against its own UID (Property 17).
-  - A UID account's first withdrawal is routed to `UNDER_REVIEW` even when the amount is
-    far below the auto-approval threshold; its second withdrawal, same amount, auto-approves
-    (Property 6).
+  - So sánh UID không tồn tại với UID đã biết/chưa từng có cashback attribution: cùng hasData=false, message và response shape/dữ liệu rỗng dù sàn có D; không metric/UID-membership leak. UID đã có cashback attribution ngoài kỳ vẫn hasData=true: có D nhưng không dòng trong kỳ → REPORTED 0; chưa D → NO_DATA. Không dùng số dư dương làm gate; kỳ cắt biên vẫn INSUFFICIENT_DETAIL khi hasData=true.
+  - First and later payments apply the same total threshold: 19.99/20 USD may auto-approve
+    when all controls pass; 20.01 USD requires approval. Recipient setup and schedule still
+    block sending when not ready (Property 6; Req 22.32).
   - Bybit fixture with cursor pages and several commission assets yields one UID
     volume metric and an asset-keyed commission map; zero and empty values are not
     stored, and a complete day distinguishes "reported no activity" from "no data".
@@ -2424,10 +2390,10 @@ most critical money/concurrency invariants, not an exhaustive suite.
 Giữ smoke gọn và kiểm tra có trọng tâm cho invariant tiền/concurrency. Quote/RPC/signer giả lập; integration trên Docker Postgres đúng steering với schema/dữ liệu biệt lập. Giả lập nhiều ngày bằng thời gian test.
 
 - Bảng tính: công thức, đơn vị, input sai, ước tính khác số dư thực.
-- UI state tests chạy trong Docker bằng React `act`/`createRoot` và jsdom: render component thật, đổi sàn/offer/props, input rỗng/sai, loading/no-data/lỗi/429, response cũ sau đổi UID/sàn hoặc unmount; assert đúng CTA Wallet và menu Escape/focus. Esbuild chỉ bundle TSX cho tests, mock Next Link/navigation; route/referral thật tiếp tục kiểm tra HTTP. jsdom không render layout nên không thay thế screenshot, contrast hoặc responsive/browser QA.
+- UI state tests chạy Docker bằng React act/createRoot và jsdom: đổi sàn/offer/props, volume mặc định 1,000,000 USDT/nhóm nghìn/chỉnh sửa/rỗng/sai; estimatedVolumeRate 0/null/1/10 chữ số, offer bị gỡ, loading/no-data/lỗi/429 và stale response/unmount; không có link Wallet/rút, menu Escape/focus. HTTP kiểm tra redirect và POST rút retired, privacy/tổng vượt 100/biên UTC. jsdom không thay thế screenshot/contrast/responsive browser QA.
 - Khi published props thay đổi, calculator giữ offer đang chọn nếu còn hợp lệ; nếu không, chọn offer Bybit hợp lệ hoặc offer hợp lệ đầu tiên, không giữ một ID đã bị gỡ. Chỉ tham chiếu control đang có trong output/ARIA và gắn lỗi đúng field. Lookup hiển thị thông báo lỗi tiếng Anh trong catalog cho response/network/JSON/schema lỗi, giữ thông báo 429 với Retry-After; không đưa lỗi transport/schema ra UI (Req 14, 19.4, 20.3).
-- UI Dark Aurora (Task 40): hero cũ trước calculator, logo ba sàn theo seed, published offer/link đúng, dữ liệu demo có nhãn; tên nhất quán, Wallet `/withdraw`, 360/390/768/1024/1440px không cuộn ngang, keyboard/menu mobile, contrast và reduced motion; admin không bị đổi theme.
-- Payout: ba cặp coin/mạng, precision, dưới/bằng/trên 20 USD, stale quote, first review.
+- UI Dark Aurora (Task 40/43): hero trước calculator volume, published offers/logo/link và nhãn minh họa; không Wallet/form rút, /withdraw redirect; 360/390/768/1024/1440px, keyboard/menu/focus/contrast/reduced motion; admin không bị đổi theme.
+- Payout: ba cặp coin/mạng, precision, dưới/bằng/trên 20 USD, stale quote, lần đầu áp cùng ngưỡng.
 - Tính đúng đắn: concurrency, retry, crash trước/sau broadcast, trạng thái chưa rõ và đua hủy/thanh toán.
 - Thiếu tiền/gas/cấu hình: không gửi và không hạch toán sai.
 
@@ -2437,33 +2403,24 @@ Bổ sung kiểm thử: hạn mức ngày/thiếu số dư ví chi trả (21.14)
 
 UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, checks tự động Docker đạt. Visual QA còn chờ browser khả dụng hoặc người dùng kiểm tra bản local. Với phần payout còn đang rà soát, sau duyệt mới cập nhật model/API/luồng/Correctness Properties và lập tasks tiếp theo; không coi checklist UI là phê duyệt các quyết định payout.
 
+### Kiểm chứng sổ khoản phải trả (Req 22; kế hoạch, chưa chạy)
+
+- Không lập khoản từ activity/demo/pending chưa giải phóng; kiểm định danh sàn + UID có số 0 đầu, nhiều tài sản/kỳ và lịch sử PAID vẫn đọc được.
+- Tạo khoản/lịch/import lặp; claim đồng thời giữa replica/admin; customer rút qua UI/API bị từ chối; không nhân nghĩa vụ, không giữ chỗ hoặc settle hai lần.
+- Định giá dưới/bằng/trên 20 USD, thiếu/hết hạn quote, lần đầu áp cùng ngưỡng, nhiều blocker; approval xong vẫn UNPAID, thay amount/asset/destination làm mất approval.
+- Lỗi chắc chắn chưa gửi → retry cùng khoản; crash/timeout trước/sau gửi → đối soát; UNPAID đang xử lý/UNKNOWN không cho hủy/hoàn/gửi mới.
+- Xác nhận thành công lặp và manual mark-paid có reference/audit; PAID không cho sửa/gửi lại; đóng UNPAID và correction trước/sau PAID không xóa quyền hưởng hoặc đếm đôi công nợ.
+- Admin auth/UID scope, bộ lọc/tổng từng asset, không lộ lịch sử qua public lookup; migration/backfill có phân loại fixtures. Integration chỉ Docker, mock transport; không tự gửi tiền thật.
+- File/API ingest → publish → cashback → release hold/correction → enqueue → đồng bộ khoản, không chờ request rút; activity chưa đủ bằng chứng không tạo khoản, holding hết hạn vẫn đồng bộ khi không có lượt ingest mới.
+- Crash sau commit nguồn/trước xử lý; lease hết hạn, job trùng/out-of-order/coalesced, downtime/catch-up, lỗi nguồn/phạm vi khác; checkpoint theo kịp nguồn mà không mất/nhân khoản hoặc ghi đè PAID.
+- Manual/auto/API legacy cùng payableId/phiên bản, commandKey lặp/khác payload, 202 chưa phải thành công; chặn chi khi SYNC_PENDING/FAILED hoặc stale approval; hai đường đồng thời chỉ có một lần chi.
+- Correction đến giữa chuẩn bị/gửi/xác nhận: khóa snapshot, không hoàn/gửi mới, vẫn ghi nhận thành công đã xảy ra và đối soát chênh lệch; requeue đi qua cùng pipeline, không sửa khoản/Wallet trực tiếp.
+
 ## Security (Req 6.2)
-- Server-side authorization on every non-public route; the acting `UidAccount` is derived
-  from the `UidSession` only, never from a request parameter.
-- Private report files in a private bucket; only web (write) and worker (read) have
-  credentials.
-- Secrets in env/secret store; never in client bundles; no public-prefixed secret vars,
-  including `RESEND_API_KEY`.
-- Admin credentials: store only a password hash; admin session tokens stored hashed with
-  an expiry. `UidSession` tokens are stored hashed the same way, with a 30-minute expiry.
-- Postgres reachable only from web/worker services (Railway private networking / local
-  compose network).
-- Financial state changes are append-only auditable (WalletEntry, WithdrawalEvent).
-- Lookup is the only anonymous **API** that returns a specific UID's balances. It is
-  read-only, per-IP rate limited from Postgres, and constrained to `pending`/`available`
-  amounts and freshness — never email, address, history, or `reserved`/`withdrawn`/
-  `receivable` (Req 14.3). The home **Online Rebate Ledger** (Req 17) is interim
-  **fake marketing HTML** (100 large deterministic credits, badge on). It must not
-  be mistaken for live wallets and must not grow into an unmasked feed.
-- **Exposure note:** admin APIs and every `/api/uid/*` write MUST require the matching
-  session type before shipping; the only intentionally anonymous endpoints are content
-  reads, the redirect, the amount-only lookup, and `/api/otp/*` (which are self-rate-limited).
-- **Accepted exposure (do not silently tighten or loosen further without revisiting):**
-  lookup discloses real per-UID amounts, and there is no ownership proof at withdrawal
-  time — see requirements.md "Accepted risk — first claimant wins". The only compensating
-  controls are per-IP rate limiting on lookup and OTP send (Req 14.4, 15.6-15.7), mandatory
-  admin review of every first withdrawal (Req 9.5, 15.9), OTP attempt/TTL limits
-  (Req 15.4-15.5), and the holding period (Req 8.3).
+- Non-public routes chỉ dành cho admin được xác thực server-side. Khách chỉ lookup theo sàn + UID; không private customer API hoặc quyền ghi. System/admin execution lấy UID/source/destination từ payable/command snapshot đã validate.
+- Private report files chỉ web/worker có quyền; secrets chỉ env/secret store, không client/public env. Admin password và session token lưu hash với expiry. Postgres chỉ backend/worker truy cập.
+- Financial changes có audit append-only (WalletEntry, WithdrawalEvent). Lookup read-only nghiệp vụ, rate-limit IP Postgres, chỉ cashback theo kỳ, summaryPeriods và totalPaid; không định danh, từng lệnh chi hoặc bucket ví. Ledger marketing vẫn fake có nhãn theo Req 17.
+- Rủi ro công khai số tiền theo UID được chấp nhận; giữ rate-limit Req 14.4, holding Req 8.3, readiness và duyệt Req 9/22. POST rút retired trả 410 trước auth/DB, không mutation; không biến endpoint riêng tư cũ thành anonymous khi gỡ xác thực.
 
 ## Requirements mapping
 
@@ -2478,19 +2435,18 @@ UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, chec
 | R6 Import pipeline | Key flows (import), Data Models (versioned), Job queue |
 | R7 Attribution/cashback | Key flows (attribution), Cashback engine (rate trust + delta + concurrency) |
 | R8 Wallet | Key flows (attribution), Cashback engine, Data Models (reserved + receivable) |
-| R9 Withdrawal | Key flows (withdrawal + cancel), Data Models (WithdrawalEvent), Property 6 |
+| R9 Scheduled payment | Key flows (Scheduled payment execution), Data Models (WithdrawalEvent), Property 6 |
 | R14 Cashback lookup | Key flows (Cashback lookup by exchange + UID), core services (`lookupService`), Data Models (`RateLimitCounter`), Properties 14-15 |
-| R15 Email OTP + UID session | Key flows (Email OTP binding & UID session), core services (`otpService`, `uidSessionService`), Data Models (`EmailOtp`, `UidSession`), Properties 6, 15-17 |
-| R16 Outbound email (Resend) | Components/core services (`emailPort`), Environments & deployment (Resend send path) |
 | R10 Admin content | Components/apps/web, core services |
 | R11 Admin analytics | Components/apps/web, API contracts |
 | R18 Admin operations shell | Components/apps/web (admin `(shell)` layout + nested routes) |
 | R12 Worker/jobs | Components/apps/worker, Job queue |
 | R13 Scheduled API sync | Key flows (Scheduled Bybit Affiliate activity sync, API write model, Use cases), Job queue, Data Models (`ExchangeSyncConfig`, `SyncRun`, `ActivityPeriodStatus`, `ActivityMetricCurrent`, `ActivityMetricChange`, `ActivityRoster`) |
 | R6.21 Schema drift | Key flows (Source adapter framework, Schema drift policy) |
-| R19 Bảng tính tiền bỏ lỡ | Components/apps/web — Bảng tính tiền hoàn phí bị bỏ lỡ; Testing Strategy; Task 40 |
-| R20 Giao diện Dark Aurora và tên tiếng Anh (hướng UI đã chốt, tên mới còn mở) | Components/apps/web — Giao diện và tên website; Testing Strategy; Task 40 |
+| R19 Bảng tính tiền bỏ lỡ | Components/apps/web — Bảng tính tiền hoàn phí bị bỏ lỡ; Testing Strategy; Task 40/44 |
+| R20 Giao diện Dark Aurora và tên tiếng Anh (hướng UI đã chốt, tên mới còn mở) | Components/apps/web — Giao diện và tên website; Testing Strategy; Task 40/44 |
 | R21 Thanh toán ETH/BNB/SOL (bản nháp) | Key flows — Thanh toán coin gốc, điều kiện USD, chống gửi trùng; Job queue — Lịch thanh toán và cơ chế ký; Data Models — PayoutIntent; Testing Strategy |
+| R22 Sổ khoản phải trả PAID/UNPAID (business trước implementation) | Key flows — Sổ khoản phải trả; Data Models — CustomerPayable; Property 18; Testing Strategy — Kiểm chứng sổ khoản phải trả; Task 42 |
 | NFR security | Security |
 | NFR deploy | Environments & deployment |
 | NFR scale 5k UID/day | Dimensional store & fact partitioning |
@@ -2508,28 +2464,12 @@ UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, chec
   payout semantics are reviewed; do not infer payable commission from API totals.
 - **[PENDING]** admin auth provider (Open decision #13, admin only) — abstracted via
   `AuthPort`; interim email+password + `Session` ships until a provider is chosen
-  (Components/Auth). End-user auth is out of scope for this decision — see Req 15.
-- **Resolved (Open decision #12):** anyone entering exchange + UID sees that UID's
-  `pending`/`available` and per-period commission vs cashback rows; history, email and
-  address need a `UidSession`.
+  (Components/Auth). Khách không có xác thực đăng nhập.
+- **Resolved (Open decision #12, 2026-10-30):** lookup công khai theo sàn + UID, ngày báo cáo D/30 ngày và totalPaid; không private wallet/history API khách.
 - **[PENDING]** compliance/KYC for payouts (Open decision #19) — payout identity kept isolated.
 - **[PENDING]** default values: cashback rate, holding period, auto-approve threshold,
   supported assets/networks, lookup rate-limit window (proposed 5/min + 30/hour per IP),
-  OTP tuning (TTL, max attempts, cooldown, daily cap). (Resolution *rules* are decided; only
-  default *values* remain.)
-- **Resolved (Open decision #20): Resend.** The only remaining prerequisites are
-  operational: verify an operator-owned domain (SPF/DKIM) — the shared `resend.dev` testing
-  domain only delivers to the account owner — and confirm the free-tier quota (100/day,
-  3,000/month) covers expected withdrawal volume. See "Resend send path" under Environments
-  & deployment.
-- **Accepted (Open decision #21): first-claimant-wins.** Lookup shows real amounts
-  for any (exchange, UID) and there is no way to verify the true owner from affiliate report
-  data alone, so ownership is effectively whoever binds an email first. The operator
-  accepted this trade-off for a frictionless flow. Mandatory admin review of every first
-  withdrawal (Req 9.5) is a velocity/sanity check, not proof of ownership — see
-  requirements.md "Accepted risk — first claimant wins" for the full reasoning and the
-  compensating controls. Revisit only if losses appear or an exchange-side ownership proof
-  becomes available.
+  không bao gồm volume calculator: mặc định đã chốt 1,000,000 USDT. Các giá trị khác chưa chốt không tự trở thành policy.
 - **[PENDING]** admin-managed exchange logos (upload/edit from the admin UI). MVP keeps
   logos as repo-committed static assets and populates `Exchange.logoUrl` from the seed
   script only; the admin content form does not expose the field. An exchange created purely
@@ -2543,12 +2483,18 @@ UI đã có Task 40; shell/hero/offers/calculator/lookup đã triển khai, chec
 
 ### Quyết định thiết kế cho Req 19–21 đang rà soát
 
-- **Tên mới (Open decision #22):** vẫn mở; giữ Cashback Hub. **#23–25 đã chốt theo plan triển khai:** phí/tháng USDT, commission assumption có thể chỉnh, published offer share, tháng/12 tháng và Dark Aurora giữ hero/hình ví, calculator bên dưới, logo Bybit/Binance/MEXC. Task 40 đã có code và checks Docker local, không phụ thuộc đổi tên hay payout.
-- **Lịch chạy/ngưỡng USD (Open decisions #26–28):** đợt thanh toán theo ngày, giờ/múi giờ, ngày bỏ lỡ; ngưỡng theo khoản hay tổng ngày, có gồm phí; nhà cung cấp/tuổi báo giá và khóa giá.
+- **Tên mới (Open decision #22):** vẫn mở, giữ Cashback Hub. **#23–24 chốt 2026-10-30:** chỉ volume/tháng × estimatedVolumeRate do admin nhập theo offer; tháng/năm. Volume mặc định 1,000,000 USDT, có thể chỉnh sau trong code. Task 44 chưa triển khai. Hướng Dark Aurora giữ nguyên.
+- **Lịch chạy/ngưỡng USD (Open decisions #26–28):** USDT nội bộ đã chọn một đợt/ngày 23:00 UTC, gộp theo sàn/UID; bỏ lỡ đợt chờ đợt kế theo câu 6; cutoff 23:00 UTC theo câu 8; retry lỗi chắc chắn chưa chuyển chờ đợt ngày sau theo câu 9. Lịch on-chain còn mở. Ngưỡng <=20 USD trên tổng principal execution đã thống nhất; câu 15 không daily cap riêng USDT nội bộ, theo nguồn đủ principal+phí; câu 16 skip nhóm thiếu nguồn/tiếp tục nhóm sau; thứ tự ưu tiên ban đầu còn mở. Nhà cung cấp/tuổi báo giá/khóa giá tài sản khác còn riêng.
 - **Sổ ví/chuyển đổi (Open decision #29):** coin gốc hay USDT, precision, chuyển đơn vị nhỏ nhất, phí và bút toán khi đổi tài sản.
 - **Ví nguồn/ký (Open decision #30):** vai trò MetaMask, signer worker, SDK và vị trí lưu secret.
 - **Thực thi/đối soát (Open decision #31):** model/state machine, nonce/blockhash, confirmation, gas, hạn mức, xử lý thất bại và can thiệp thủ công.
 - **Test mainnet (Open decision #32):** địa chỉ công khai, số tiền, phí và kế hoạch chạy sau khi local đạt.
+
+### Quyết định thiết kế cho sổ khoản phải trả (Req 22)
+
+Đã chốt #33 async chung và duyệt #34–35 (2026-10-17): payable theo release + allocations, execution riêng, release cũ nhất trước khi thiếu nguồn. Các quy tắc dispatch/recovery/blockers/cutover được triển khai và mô phỏng; còn phải xác minh quyền kênh/provider limits trên tài khoản thật; internal USDT không daily cap riêng, fixed 1:1/20 USDT. Đây không phê duyệt gửi tiền thật.
+
+Phần phạm vi #35 đã được người dùng chọn: MEXC + Bybit trả USDT qua UID, source account riêng; Binance khi đủ dữ liệu và Payout readiness. Điều này không đóng #34, mapping hoặc quyền/verification của source accounts chưa được cấp. Xem khảo sát API có nguồn; không hứa auto onboarding hay không có step-up trên tài khoản chưa kiểm tra.
 
 ## Binance GET-only connector (Req 13.2, 13.9, 13.14)
 
@@ -2579,6 +2525,32 @@ required for a later activity publishing implementation.
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-30 | design.md | Đồng bộ lookup flow/Property 14/test notes: gate hasData theo cashback attribution trước metric; chống dò UID với cùng no-data shape/message; REPORTED zero và NO_DATA chỉ khi hasData=true | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | design.md | Chốt calculator default 1,000,000 USDT; bỏ trạng thái chờ chốt ở thiết kế và Open design decisions | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | design.md | Req 19: volume-only, estimatedVolumeRate Decimal(12,10), admin form/public offer DTO và migration 202610300001_offer_volume_estimate | Quyết định người dùng 30/10/2026; spec trước code | updated |
+| 2026-10-30 | design.md | Req 14: latestReportedDay từ coverage ImportBatch, index, contract summaryPeriods, REPORTED zero và giới hạn sourceTz | Quyết định người dùng 30/10/2026; spec trước code | updated |
+| 2026-10-30 | design.md | Gỡ luồng/route/service/env/Resend/data model/Property 16–17/tests/traceability OTP-session; giữ Property 15 lookup rate-limit | Quyết định người dùng 30/10/2026; spec trước code | removed |
+| 2026-10-30 | design.md | Thiết kế migration 202610300002_drop_customer_otp, giữ email lịch sử Withdrawal/WithdrawalEvent và admin queue/payables | Quyết định người dùng 30/10/2026; spec trước code | added |
+| 2026-10-17 | design.md | Duyệt #34–35 và ghi mô hình đã triển khai: bảng CustomerPayable/PayoutExecution/PayableAllocation/PayableSyncScope/PayoutSlot/PayableCommand/PayableEvent/MoneyFlowGate, khóa toàn cục, bất biến Σ, gate, job types mới; ghi các điểm khác thiết kế gốc | Người dùng yêu cầu code theo plan; spec theo đúng code đã chạy mô phỏng | updated |
+| 2026-10-17 | design.md | Câu 13 auto-only: tách read-session khỏi worker, bỏ customer money APIs/UI, cập nhật Property 6 và allocation races | Không có khách yêu cầu rút/partial/cancel; giữ legacy evidence, admin operations và cutover | updated |
+| 2026-10-17 | design.md | Câu 14 Decimal strict >0.5 USDT, MINIMUM_NOT_MET và tích lũy; provider minimum/precision bổ sung | Không làm tròn/cộng phí để vượt minimum hoặc làm mất quyền hưởng khi qua ngày | updated |
+| 2026-10-17 | design.md | Câu 15 balance-only funding, source concurrency guard và deferred thiếu nguồn sang ngày sau | Không daily cap giả 100, không partial pay/duplicate funds; ordering/skip còn mở | updated |
+| 2026-10-17 | design.md | Câu 16 continue sau nhóm thiếu funds, cursor/defer và source guard riêng từng nhóm | Không head-of-line block hoặc revisit cùng đợt; chưa tự chọn priority theo amount | updated |
+| 2026-10-17 | design.md | Câu 10 bỏ first-review guard/blocker, đồng bộ state diagram, security, Property 6 và test scenarios | <=20 USD áp từ lần đầu; giữ recipient readiness và lịch chi | updated |
+| 2026-10-17 | design.md | Câu 11 tách customer principal/net receipt khỏi operator fees; preflight nguồn/phí, provider fee semantics và đối soát thiếu tiền nhận | Khách nhận đủ cashback, không trừ phí hoặc tạo customer receivable do phí | updated |
+| 2026-10-17 | design.md | Câu 12 FIXED_USDT_USD/Decimal threshold 20 USDT, không market quote hoặc stale blocker cho internal USDT | Tách quy ước xét ngưỡng khỏi market valuation/conversion coin khác | updated |
+| 2026-10-17 | design.md | Ghi câu 1 MEXC/Bybit USDT UID và source riêng, Binance Pay ứng viên có điều kiện; readiness/verification blockers và nghiên cứu chính thức, không thay affiliate keys | Phân biệt API ký tự động với setup/recipient whitelist và step-up tài khoản thực | updated |
+| 2026-10-17 | design.md | Chốt luồng operator thiết lập UID Bybit một lần rồi worker tự chi các lần đủ điều kiện, kiểm readiness trước khi gửi | Người dùng trả lời câu 2; không coi lựa chọn nghiệp vụ là bằng chứng tài khoản đã sẵn sàng | updated |
+| 2026-10-17 | design.md | Gộp execution USDT theo sàn/UID trong đợt hằng ngày 23:00 UTC, claim ngày/nhóm chống trùng; giữ mở grain/partial và phục hồi đợt bỏ lỡ | Câu 3 chốt cách gom lệnh, tần suất và giờ; không tự duyệt phương án allocation hay lịch on-chain | updated |
+| 2026-10-17 | design.md | Câu 4 đổi auto threshold thành <=20 USD trên tổng sau gộp, >20 USD chờ duyệt | Đồng bộ ranh giới mới với requirements; không thay cơ chế reserve/settle hay quyền rút một phần | updated |
+| 2026-10-17 | design.md | Câu 5 tách APPROVE khỏi dispatch, next eligible slot 23:00 UTC kế tiếp và WAITING_SCHEDULE; sender kiểm lịch cùng snapshot/gates | Không gửi ngay khi duyệt sau đợt, không nhân nghĩa vụ hoặc dùng approval cho tổng mới | updated |
+| 2026-10-17 | design.md | Câu 6 hoãn đợt bị lỡ tới 23:00 UTC kế tiếp, chặn stale-job dispatch bù, vẫn phục hồi sync và reconcile | Phân biệt catch-up dữ liệu/đối soát với chạy bù chi tiền, không mất nợ hoặc chi lại UNKNOWN | updated |
+| 2026-10-17 | design.md | Câu 7 gộp nguồn mới trước đợt vào tổng chưa gửi, invalidate approval bằng version/lock; giữ snapshot khi đã DISPATCHING | Chốt 25+5 thành 30 chờ duyệt lại, không gửi bằng approval 25 cũ | updated |
+| 2026-10-17 | design.md | Câu 8 manifest nguồn tại cutoff 23:00 UTC; nguồn mới ngoài manifest để ngày sau, correction/gates ảnh hưởng snapshot vẫn chặn | Giữ cutoff thống nhất giữa worker/replica mà không vô hiệu kiểm soát tài chính trước gửi | updated |
+| 2026-10-17 | design.md | Câu 9 deferred retry tới đợt 23:00 UTC ngày sau, không để backoff/redelivery vượt slot guard | Bảo toàn nghĩa vụ/allocations, UNKNOWN tiếp tục reconcile thay vì tự thử lại | updated |
+| 2026-10-17 | design.md | Đối chiếu lại review với full spec: giữ #34–35 mở và tách phương án allocation khỏi quyết định duyệt; bổ sung recovery 8.7, dispatch guard, cutover/blocker detail, RTM và enum đích ghi rõ chưa triển khai | Tránh nâng quyết định mở/đã được ghi nhận thành lỗi bỏ sót; không mở lại UID policy 5.2 hay tự áp chuẩn FSS | updated |
+| 2026-10-17 | design.md | Chốt nguồn chi chung auto/manual và pipeline/command async; enqueue nguyên tử, checkpoint/version/freshness, phục hồi và correction trong lúc gửi; cập nhật model khái niệm, Property 18, tests và #33 | Người dùng yêu cầu tất cả hoạt động dựa trên CustomerPayable tự đồng bộ sau ingest | updated |
+| 2026-10-17 | design.md | Business flow CustomerPayable, PAID/UNPAID tách approval/tiến trình/hiệu lực, mô hình khái niệm và ranh giới Wallet/Withdrawal/PayoutIntent; Property 18, test scenarios và mapping Req 22 | Đặc tả bảng lịch sử phải trả trước schema, không biến lỗi/approval thành PAID hoặc tạo công nợ trùng | added |
 | 2026-10-14 | design.md | Thiết kế adminPaused độc lập, pause endpoint/alias, scheduler/worker gates và UI busy/polling; pause/resume audit cùng transaction | Pause chủ động theo từng sàn trong API ingest | added |
 | 2026-10-14 | design.md | Bổ sung DOM component tests trong Docker cho calculator/lookup/menu và tách khỏi visual QA | Hoàn thiện kiểm tra tương tác trước khi rà phương án các task còn lại | added |
 | 2026-10-14 | design.md | Ghi trạng thái UI/calculator triển khai Docker local, dùng route-aware public shell giữ SSR children và legacy admin chrome; automated checks đạt, visual QA còn mở | Bàn giao localhost theo plan đã triển khai | updated |
@@ -2611,3 +2583,6 @@ required for a later activity publishing implementation.
 | 2026-09-27 | design.md | Cho phép readiness với key `ips=["*"]`, giữ cảnh báo và ngày hết hạn; chỉ chặn khi Bybit thực sự trả lỗi IP/quyền/key | Req 13.12: bỏ cổng chặn IP allowlist do ứng dụng tự đặt | updated |
 | 2026-09-27 | design.md | Bộ lọc Referral activity lấy ngày UTC lúc render làm mặc định cho period start/end, cố định phép đổi ranh giới kỳ sang UTC và bỏ ô source timezone riêng của báo cáo | Req 18.10: thao tác xem dữ liệu hôm nay đơn giản và cùng ranh giới ngày với API | updated |
 | 2026-09-27 | design.md | Date picker báo cáo có nút lịch tương phản cao; nhãn/ghi chú giải thích REPORTED, INCOMPLETE, NO_ACTIVITY; lưu cursor theo trang trên client để Next, Previous và First, chỉ đổi trang sau khi tải thành công | Req 18.11–18.12: dễ đọc trạng thái và không kẹt ở trang cuối | updated |
+| 2026-10-21 | design.md | Thiết kế calculator volume/hai giả định, lookup tổng theo kỳ UTC và totalPaid, contract public tối giản; bỏ Wallet/CTA rút và retire POST rút trước DB | Cuộc họp 20/10 và 5 lựa chọn đã chốt; giữ backend tiền/gate/adapter hiện tại | updated |
+| 2026-10-27 | design.md | Bổ sung độ dài cửa sổ vào namespace consumeBudget, không đổi schema/threshold; ghi ảnh hưởng reset counter một lần khi rollout | Sửa collision unique key đầu phút/giờ bằng regression test trong Docker | updated |
+| 2026-10-30 | design.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |

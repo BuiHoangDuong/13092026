@@ -7,8 +7,8 @@ import path from 'node:path';
 import dotenv from 'dotenv';
 import { PrismaClient } from '../packages/db/dist/generated/client/index.js';
 dotenv.config({path:'.env',quiet:true});
-const root=path.resolve('.');const originalUrl=process.env.TEST_DATABASE_URL??process.env.DATABASE_URL;
-if(!originalUrl) throw new Error('Configure a test database');
+const root=path.resolve('.');const originalUrl=process.env.TEST_DATABASE_URL;
+if(!originalUrl || new URL(originalUrl).hostname !== 'postgres') throw new Error('TEST_DATABASE_URL must target the project Docker host postgres');
 const schema=`cashback_test_${randomUUID().replaceAll('-','')}`;assert.match(schema,/^cashback_test_[a-f0-9]{32}$/);
 const url=new URL(originalUrl);url.searchParams.set('schema',schema);process.env.DATABASE_URL=url.href;
 Object.assign(process.env,{OTP_TTL_MINUTES:'5',OTP_MAX_ATTEMPTS:'5',OTP_COOLDOWN_SECONDS:'60',OTP_DAILY_CAP:'5',OTP_IP_PER_MINUTE:'5',OTP_IP_PER_HOUR:'30',OTP_VERIFY_IP_PER_MINUTE:'30'});
@@ -25,6 +25,18 @@ try {
  assert.equal(migrate.status,0,(migrate.stderr??'Migration failed').replaceAll(originalUrl,'[database]'));
  ({db}=await import('../packages/db/dist/index.js'));
  const core=await import('../packages/core/dist/index.js');
+ // Minute and hour windows can begin at the same instant; their budgets must stay independent.
+ const realNow=Date.now;let clock=Date.parse('2026-10-27T12:00:01Z');
+ try {
+   Date.now=()=>clock;
+   const windows=[{seconds:60,limit:5},{seconds:3600,limit:30}];
+   for(let i=1;i<=5;i++)await assert.doesNotReject(()=>core.consumeBudget('test:aligned-windows','192.0.2.254',windows),`Aligned minute/hour windows must allow request ${i}`);
+   await assert.rejects(()=>core.consumeBudget('test:aligned-windows','192.0.2.254',windows),e=>e.code==='RATE_LIMITED');
+   clock+=60000;
+   for(let i=1;i<=5;i++)await assert.doesNotReject(()=>core.consumeBudget('test:aligned-windows','192.0.2.254',windows));
+   await assert.rejects(()=>core.consumeBudget('test:aligned-windows','192.0.2.254',windows),e=>e.code==='RATE_LIMITED');
+ } finally { Date.now=realNow; }
+ console.log('PASS: aligned minute/hour rate-limit windows keep independent budgets across a minute boundary');
  const exchange=await db.exchange.create({data:{slug:'bybit',name:'Bybit',status:'PUBLISHED'}});
  await db.offer.create({data:{exchangeId:exchange.id,status:'PUBLISHED',cashbackRate:'0.3'}});
  const a=await db.uidAccount.create({data:{exchangeId:exchange.id,uid:'00123',boundEmail:'private@test.invalid'}});
@@ -42,12 +54,12 @@ try {
  assert.equal((await lookup({uid:a.uid})).status,400);assert.equal((await lookup({exchangeId:exchange.id})).status,400);
  assert.equal(await db.rateLimitCounter.count(),before.counters,'Invalid input performs no budget/database query');
  const response=await lookup({exchangeId:exchange.id,uid:a.uid});assert.equal(response.status,200);assert.match(response.headers.get('cache-control'),/private, no-store/);
- const body=await response.json();assert.equal(body.balances[0].pending,'12.0000000000');assert.equal(body.balances[0].available,'30.0000000000');
+ const body=await response.json();assert.equal(body.balances[0].totalPaid,'5.0000000000');
  const {lookupResponseSchema}=await import('../packages/contracts/dist/index.js');lookupResponseSchema.parse(body);
- assert.equal(body.transactions.length,1);assert.equal(body.transactions[0].commission,'0.0000000000');assert.equal(body.transactions[0].cashback,'0.0000000000');
- assert(!/email|address|reserved|withdrawn|receivable|"history"|private@test/.test(JSON.stringify(body)));
+ assert.equal(body.transactions.length,1);assert.equal(body.transactions[0].uid,a.uid);assert.equal(body.transactions[0].cashback,'0.0000000000');
+ assert(!/commission|cashbackRate|volume|pending|available|email|address|reserved|withdrawn|receivable|"history"|private@test/.test(JSON.stringify(body)));
  const unknown=await(await lookup({exchangeId:exchange.id,uid:'unknown'})).json();assert.equal(unknown.hasData,false);assert.deepEqual(unknown.transactions,[]);
- const realZero=await(await lookup({exchangeId:exchange.id,uid:zero.uid})).json();assert.equal(realZero.hasData,true);assert.equal(realZero.balances[0].available,'0.0000000000');
+ const realZero=await(await lookup({exchangeId:exchange.id,uid:zero.uid})).json();assert.equal(realZero.hasData,true);assert.equal(realZero.balances[0].totalPaid,'0.0000000000');
  for(let i=0;i<2;i++)assert.equal((await lookup({exchangeId:exchange.id,uid:a.uid})).status,200);
  // A fixed window may roll over while earlier assertions query a remote database.
  let limited;
@@ -55,9 +67,9 @@ try {
  assert.equal(limited.status,429);assert(Number(limited.headers.get('retry-after'))>0);
  assert.equal(await db.uidAccount.count(),before.accounts);assert.equal(await db.wallet.count(),before.wallets);assert.equal(await db.uidSession.count(),0);assert.equal(await db.emailOtp.count(),0);
  await assert.rejects(()=>core.lookupCashback({uid:a.uid},'192.0.2.3'));
- const html=await(await fetch(origin)).text();assert(html.includes('Check your cashback'));assert(html.indexOf('cashback-lookup-title')<html.indexOf('Crypto affiliate cashback'));
+ const html=await(await fetch(origin)).text();assert(html.includes('Your cashback, one lookup away.'));assert(html.indexOf('hero-title')<html.indexOf('cashback-lookup-title'));
  assert.equal((await fetch(`${origin}/api/me/wallet`)).status,404);assert.equal((await fetch(`${origin}/login`)).status,404);
- console.log('PASS: HTTP lookup exposes balances plus commission vs cashback rows, validates before queries, limits IPs, preserves read-only state and distinguishes zero; home placement and old-route removal');
+ console.log('PASS: HTTP lookup exposes customer cashback and aggregate paid only, validates input, limits IPs and preserves read-only state');
  const claimant=await db.uidAccount.create({data:{exchangeId:exchange.id,uid:'00999'}});
  const fakeEmail={sendOtp:async input=>{sent.push(input);return {accepted:true,messageId:'test-message'};}};
  const request={exchangeId:exchange.id,uid:claimant.uid,email:'claimant@test.invalid'};
@@ -93,31 +105,14 @@ try {
  assert.equal((await getWallet('',adminToken)).status,401);assert.equal((await fetch(`${origin}/api/admin/imports`,{headers:{Cookie:`${process.env.SESSION_COOKIE_NAME??'cashback_session'}=${token}`}})).status,401);
  await db.wallet.create({data:{uidAccountId:claimant.id,asset:'USDT',pending:5,available:30}});
  const destination={asset:'USDT',amount:'1',network:'ETHEREUM',address:'0x1111111111111111111111111111111111111111'};
- const adminPost=(id,body)=>fetch(`${origin}/api/admin/withdrawals/${id}/decision`,{method:'POST',headers:{'Content-Type':'application/json',Origin:origin,Cookie:`${process.env.SESSION_COOKIE_NAME??'cashback_session'}=${adminToken}`},body:JSON.stringify(body)});
- const firstResponse=await post('/api/uid/withdrawals',destination,token);assert.equal(firstResponse.status,201);const first=await firstResponse.json();assert(first.isFirst);assert.equal(first.status,'UNDER_REVIEW');
- assert.equal((await adminPost(first.id,{decision:'MARK_PAID',payoutRef:'test-tx'})).status,409);
- assert.equal((await adminPost(first.id,{decision:'APPROVE',note:'First claimant reviewed'})).status,200);
- assert.equal((await adminPost(first.id,{decision:'MARK_PAID',payoutRef:'test-tx'})).status,200);
- assert.equal((await adminPost(first.id,{decision:'MARK_PAID',payoutRef:'test-tx'})).status,200,'Settle retry is idempotent');
- assert.equal((await post(`/api/uid/withdrawals/${first.id}/cancel`,{},token)).status,409);
- const second=await(await post('/api/uid/withdrawals',destination,token)).json();assert.equal(second.status,'AUTO_APPROVED');assert.equal(second.isFirst,false);
- assert.equal((await post(`/api/uid/withdrawals/${second.id}/cancel`,{},token)).status,200);assert.equal((await post(`/api/uid/withdrawals/${second.id}/cancel`,{},token)).status,200);
- await assert.rejects(()=>core.cancelWithdrawal(a.id,second.id),e=>e.code==='WITHDRAWAL_NOT_FOUND');
- const races=await Promise.all([post('/api/uid/withdrawals',{...destination,amount:'20'},token),post('/api/uid/withdrawals',{...destination,amount:'20'},token)]);
- assert.deepEqual(races.map(r=>r.status).sort(),[201,409]);const winner=await races.find(r=>r.status===201).json();
- assert.equal((await adminPost(winner.id,{decision:'REJECT',note:'Test release'})).status,200);
- const money=(await core.getWallet(claimant.id)).balances.find(w=>w.asset==='USDT');assert.equal(money.available,'29.0000000000');assert.equal(money.reserved,'0.0000000000');assert.equal(money.withdrawn,'1.0000000000');assert.equal(money.pending,'5.0000000000');
- assert.equal((await post('/api/uid/withdrawals',{...destination,amount:'34'},token)).status,409,'Pending is not spendable');
- assert.equal((await post('/api/uid/withdrawals',{...destination,amount:'0.000'},token)).status,400);
- assert.equal((await post('/api/uid/withdrawals',{...destination,address:'invalid-address'},token)).status,400);
- assert.equal((await post('/api/uid/withdrawals',{...destination,uidAccountId:a.id},token)).status,400);
- await db.wallet.create({data:{uidAccountId:claimant.id,asset:'BTC',receivable:'0.1'}});
- assert.equal((await post('/api/uid/withdrawals',destination,token)).status,409,'Receivable in any asset blocks the UID');
- assert.equal((await post('/api/uid/withdrawals',destination)).status,401);
- const history=await(await fetch(`${origin}/api/uid/withdrawals`,{headers:{Cookie:`cashback_uid_session=${token}`}})).json();const {withdrawalsResponseSchema}=await import('../packages/contracts/dist/index.js');withdrawalsResponseSchema.parse(history);assert.equal(history.withdrawals.length,3);
- for(const [withdrawal,expected] of [[first,4],[second,3],[winner,3]]){const events=await db.withdrawalEvent.findMany({where:{withdrawalId:withdrawal.id}});assert.equal(events.length,expected);assert(events.every(e=>e.email===request.email));const reserve=await db.walletEntry.count({where:{sourceRef:withdrawal.id,type:'WITHDRAWAL_RESERVE'}});assert.equal(reserve,1);}
- const privateHtml=await(await fetch(`${origin}/withdraw`,{headers:{Cookie:`cashback_uid_session=${token}`}})).text();assert(privateHtml.includes('Withdraw cashback'));assert(privateHtml.includes(claimant.uid));
- console.log('PASS: mandatory first-review, later threshold approval, reserve/cancel/reject/settle audit, paid-cancel rejection, scoped reads, receivable/pending guards and concurrent double-spend prevention');
+ const beforeWrites={withdrawals:await db.withdrawal.count(),entries:await db.walletEntry.count(),jobs:await db.job.count(),wallets:await db.wallet.findMany({where:{uidAccountId:claimant.id}})};
+ for(const cookie of [token,undefined])for(const route of ['/api/uid/withdrawals','/api/uid/withdrawals/nonexistent/cancel']){
+   const rejected=await post(route,destination,cookie);assert.equal(rejected.status,410);assert.equal((await rejected.json()).error.code,'CUSTOMER_WITHDRAWALS_RETIRED');
+ }
+ assert.equal(await db.withdrawal.count(),beforeWrites.withdrawals);assert.equal(await db.walletEntry.count(),beforeWrites.entries);assert.equal(await db.job.count(),beforeWrites.jobs);assert.deepEqual(await db.wallet.findMany({where:{uidAccountId:claimant.id}}),beforeWrites.wallets);
+ const history=await(await fetch(`${origin}/api/uid/withdrawals`,{headers:{Cookie:`cashback_uid_session=${token}`}})).json();const {withdrawalsResponseSchema}=await import('../packages/contracts/dist/index.js');withdrawalsResponseSchema.parse(history);assert.equal(history.withdrawals.length,0);
+ const retiredPage=await fetch(`${origin}/withdraw`,{redirect:'manual',headers:{Cookie:`cashback_uid_session=${token}`}});assert.equal(retiredPage.status,307);assert.equal(retiredPage.headers.get('location'),'/#lookup');
+ console.log('PASS: retired customer money routes reject with/without UID sessions, leave all money/job state unchanged and preserve private read authorization');
  await db.uidSession.updateMany({where:{uidAccountId:claimant.id},data:{expiresAt:new Date(0)}});assert.equal((await getWallet()).status,401);
  assert(sent.every(x=>!output.join('').includes(x.code)),'OTP plaintext absent from captured stdout');
  console.log('PASS: hashed single-use OTP, binding, cooldown, five-guess invalidation, expiry, provider failure and scoped/private sessions; captured output contains no plaintext OTP');

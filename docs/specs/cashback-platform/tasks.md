@@ -1,14 +1,14 @@
 # Implementation Plan — Cashback Affiliate Platform
 
 - **Status:** Draft v2.3 (UID-first: no customer accounts; cashback lookup by exchange + UID;
-  email OTP via Resend + UID session)
-- **Last updated:** 2026-10-14
+  lookup công khai, tự trả về UID sàn; Task 44 chưa triển khai)
+- **Last updated:** 2026-10-30
 - **Derives from:** `requirements.md` (Draft v0.9), `design.md` (Draft v1.0)
 
-## Mandatory: follow `.kiro/steering/` before every task
+## Mandatory: follow `.claude/rules/` before every task
 
-Every task in this plan, whether done by a person or an agent (Kiro, Claude, Codex),
-MUST comply with all files in `.kiro/steering/`. If a task description conflicts with
+Every task in this plan, whether done by a person or an agent (Claude, Codex, agy),
+MUST comply with all files in `.claude/rules/`. If a task description conflicts with
 steering, **steering wins**; stop and ask the user instead of choosing the less strict
 reading. Read the steering files before starting a task. The summary below does not
 replace them.
@@ -49,14 +49,9 @@ numbers are stable identifiers cited in code and docs, not an execution order.
   payout Task 39. #23–24 đã chốt theo plan; 40.1–40.4 đã có code và checks Docker đạt.
   40.5 còn chờ visual QA; đổi tên (#22) không chặn UI.
 
-### Current status (2026-09-30)
+### Current status (2026-10-30)
 
-Phases 0–2 are implemented; current integration tests use the Docker Postgres stack
-per `.kiro/steering/`: UID-first lookup, OTP + UID session, attribution,
-wallet, withdrawals, admin shell and dashboard. Access model: a visitor enters exchange +
-UID and sees `pending`/`available` (Req 14); withdrawal needs an email bound by OTP via
-Resend and a 30-minute UID session (Req 15, 16); a UID's first withdrawal always goes to
-admin review (Req 9.5).
+Task 43 có code/bằng chứng lịch sử nhưng công thức calculator, ngày lookup và việc giữ truy cập khách riêng tư đã bị thay thế bởi quyết định 30/10. Task 44 chưa triển khai/kiểm chứng. Khách chỉ lookup công khai theo sàn + UID và nhận chi tự động; admin queue legacy/payables giữ nguyên. Task đã hoàn thành trước đây không chứng minh đáp ứng spec mới.
 
 Open:
 - **Import (Tasks 10.2, 10.8, 10.9, 11.1):** The shared envelope and MEXC Referral Data
@@ -67,7 +62,7 @@ Open:
   commission evidence. Referral `Your Earnings` is not payable commission.
 - **Hardening (Tasks 18, 19):** invariants pass; applying the reviewed `railway config`
   plan awaits user confirmation.
-- **Deployment:** Task 5.6 live check; Resend domain and credentials.
+- **Deployment:** Task 5.6 live check; không triển khai trong bước tài liệu này.
 - **API sync (Task 20 implemented; live rollout not run):** Bybit activity sync is in
   code. MEXC's referral API connector and Docker integration are verified on
   2026-10-07; root UID configuration and a nonzero period comparison remain
@@ -116,10 +111,7 @@ flowchart TD
   T13 --> T14[14 Wallet + hold release]
   T22 --> T23[23 Cashback lookup by exchange+UID]
   T14 --> T23
-  T22 --> T24[24 Email OTP + UID session via Resend]
-  T23 --> T24
-  T14 --> T25[25 Withdrawal flow - reserved]
-  T24 --> T25
+  T14 --> T25[25 Admin legacy payment queue]
   T25 --> T26[26 Cherry-pick UI from reference project]
   T6 --> T16[16 Admin analytics/dashboard]
   T11 --> T16
@@ -194,7 +186,7 @@ flowchart TD
     - _Requirements: technical constraints §4; Design: Architecture/Repository layout_
 
 - [x] 2. Set up the database package
-  - [x] 2.1 Add Prisma to `packages/db` with the schema from the design (content, click, admin auth, import/staging, versioned commission, wallet/ledger, withdrawal + events, job, UID account/OTP/session models and enums).
+  - [x] 2.1 Add Prisma to `packages/db` with the schema from the design (content, click, admin auth, import/staging, versioned commission, wallet/ledger, withdrawal + events, job, UID account và model lịch sử (phần xác thực khách superseded bởi Task 44.3)).
     - Money as `Decimal`, UID as `String`, timestamps UTC. Unique: `CommissionRecord(exchangeId,dedupKey)`, `CommissionVersion(commissionId,batchId)`, `WalletEntry.opKey`, `Session.tokenHash`, `UidAccount(exchangeId,uid)`.
     - _Requirements: 5.3, 6.7, 6.9, 7.4, 7.6, 7.8, 8.1, 8.7, 9.8; Design: Data Models, Auth_
   - [x] 2.2 Generate the initial migration (raw SQL for partial indexes) and repository/query helpers.
@@ -204,7 +196,7 @@ flowchart TD
     - _Requirements: 1.1; Design: Testing Strategy_
 
 - [x] 3. Define shared contracts
-  - Add zod schemas + types in `packages/contracts` for public content, click, auth, wallet (incl. reserved), lookup, OTP, withdrawal, and admin import/analytics/sync payloads.
+  - Add zod schemas + types in `packages/contracts` for public content, click, auth, wallet (incl. reserved), lookup và admin payout/legacy withdrawal, and admin import/analytics/sync payloads.
   - Define the error envelope `{ error: { code, message, details? } }` and a decimal-string money type with `asset`.
   - _Requirements: 3.3, 7.4, 8.1; Design: Components/API contracts_
 
@@ -215,7 +207,7 @@ flowchart TD
     - Config + `/api/health` are in place. The verified application smoke was a local web process using Railway test Postgres; deploying the web/worker processes on Railway remains part of production hardening rather than this smoke result.
     - _Requirements: 6.5; Design: Environments & deployment_
   - [x] 4.3 Stand up SIT against a hosted Railway test Postgres and verify it end to end. (Superseded 2026-09-27: SIT and all tests run on the Docker stack that mirrors Railway, `infra/docker-compose.yml`.)
-    - SIT uses a dedicated Railway **test** Postgres over its public proxy (no local Docker); `web`/`worker` run on the host via `pnpm dev`. `infra/docker-compose.yml` is legacy: its Postgres service must not be used (`.kiro/steering/production-safety.md`).
+    - SIT uses a dedicated Railway **test** Postgres over its public proxy (no local Docker); `web`/`worker` run on the host via `pnpm dev`. `infra/docker-compose.yml` is legacy: its Postgres service must not be used (`.claude/rules/production-safety.md`).
     - Verified live: `migrate deploy`, seed, `/api/health`, `/api/exchanges`, public pages 200, `/go/:linkId` 302 + real `ClickEvent`, unknown link falls back to `/exchanges` (no open redirect). No mocks.
     - _Requirements: 1.1, 2.1, 3.1, 6.5; Design: Environments & deployment, Testing Strategy_
   - [x] 4.4 Add a monorepo-wide env-loading story: dev scripts for `web`/`worker`/`db` should read a single root `.env` (e.g. via `dotenv-cli` / `node --env-file=../../.env`) instead of requiring vars to be exported manually per shell session.
@@ -248,7 +240,7 @@ flowchart TD
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5; Design: Key flows, Components/apps/web_
 
 - [x] 7. Auth port + interim auth
-  - [x] 7.1 Define `AuthPort` in `core` (`getSession`, `requireAdmin`). End-user identity is a `UidSession` resolved by `uidSessionService` (Task 24), not `AuthPort`.
+  - [x] 7.1 Define `AuthPort` in `core` (`getSession`, `requireAdmin`). Khách không có principal đăng nhập theo quyết định 30/10; gỡ phần xác thực khách tại Task 44.3.
     - _Requirements: 3.2, 3.3, 3.4; Design: Components/Auth_
   - [x] 7.2 Implement the interim admin auth provider behind the port (email+password with hashed `passwordHash`, admin-only `Session` table of hashed tokens + expiry); server-side authz on all guarded routes. Replaceable if a managed provider (Open decision #13) is chosen.
     - _Requirements: 3.1, 3.5; Design: Components/Auth_
@@ -323,18 +315,15 @@ flowchart TD
   - _Requirements: 5.3, 7.1, 7.2, 7.3, 7.4, 7.7, 7.8, 8.2, 8.4, 8.7; Design: Key flows/UID accounts, Key flows/attribution, Cashback engine, Correctness Properties 2, 3, 4, 11, 12, 13_
 
 - [x] 22. Re-key identity to `UidAccount` (UID-first migration)
-  - Added `UidAccount` (`@@unique([exchangeId, uid])`), `EmailOtp`, `UidSession`,
-    `RateLimitCounter`; `Session` is admin-only; wallets, withdrawals and commission
-    attribution point at `UidAccount`; `ActorType.CLAIMANT`. Customer auth routes, UID-link
-    services and their UI were deleted; `scripts/test-bybit-integration.mjs` was rewritten
-    against `UidAccount`.
+  - Thêm UidAccount unique theo sàn + UID và RateLimitCounter; Wallet/commission/lịch sử chi thuộc UID. Các model xác thực khách từng thêm ở đây bị gỡ tại Task 44.3.
+
   - **Verified:** migration on an empty schema and a populated fixture preserved balances,
     pending lots, audit and admin session; integration passes credit/release idempotency,
     rate snapshots, corrections/receivable offset, overlap rejection, atomic rollback and
     lease fencing. Build, lint and parser tests pass.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6; Design: Key flows/UID accounts, Data Models (`UidAccount`), Correctness Properties 3, 4_
 
-### Phase 2 — Lookup, wallet, withdrawals
+### Phase 2 — Lookup, sổ ví nội bộ và chi tự động
 
 - [x] 14. Wallet balances + hold release
   - [x] 14.1 Implement `walletService` and `GET /api/uid/wallet` (session-scoped `UidAccount`, Task 24) returning balances, typed movement history, last sync/import time, source as-of; distinguish "no data" from zero.
@@ -353,22 +342,13 @@ flowchart TD
     above the offer grid, copy in `en.ts`.
   - **Verified:** isolated HTTP test for the strict response, private cache, early 400,
     429, no writes, zero vs no data, home placement. Production needs a trusted-ingress IP header.
+  - **Superseded phần hiển thị/ngày/zero bởi Task 43/44.2:** bằng chứng dưới đây là kiểm tra bản cũ, không phải target 30/10.
   - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5, 14.6; Design: Key flows/Cashback lookup by exchange + UID, core services (`lookupService`), Data Models (`RateLimitCounter`), Correctness Properties 14, 15_
 
-- [x] 24. Email OTP binding & UID session via Resend (Requirement 15, 16)
-  - `emailPort` + `resendEmailAdapter` (`EMAIL_FROM` on a Resend-verified domain);
-    `otpService` (6-digit `crypto.randomInt`, bcrypt hash, TTL, per-UID cooldown/daily cap
-    and per-IP limit via `RateLimitCounter`, bound email never revealed, provider failure
-    leaves the OTP unsent); `POST /api/otp/verify` (single use, invalid after
-    `OTP_MAX_ATTEMPTS`, binds email, issues a 30-minute `UidSession` for one `UidAccount`);
-    `uidSessionService` resolves every `/api/uid/*` principal from the cookie only.
-  - **Verified:** isolated HTTP + core tests for hashing/single use, mismatched email,
-    cooldown/day cap, 5 failed guesses, expiry, provider failure, cross-UID and admin
-    session isolation; test output contains no plaintext OTP. Real Resend credentials and
-    sender domain remain deployment setup.
-  - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7, 15.8, 15.10, 15.11, 16.1, 16.2, 16.3, 16.4, 16.5, 16.6; Design: Key flows/Email OTP binding & UID session, core services (`otpService`, `uidSessionService`, `emailPort`), Data Models (`EmailOtp`, `UidSession`), Correctness Properties 16, 17_
+- [ ] 24. (removed/superseded 2026-10-30 — Req 15/16 đã removed)
+  - Không còn triển khai/bảo trì luồng xác thực khách. Phần từng làm không đáp ứng target mới; gỡ phụ thuộc tại Task 44.3.
 
-- [x] 25. Withdrawal flow (reserved balance + mandatory first-review + cancel + event audit)
+- [x] 25. Withdrawal flow (legacy runtime: reserved balance + mandatory first-review + cancel + event audit; target replacement at Task 42/Req 22.32)
   - **Verified:** service, routes, UI and isolated PostgreSQL integration (25.9).
   - [x] 25.1 `withdrawalService` in `packages/core/src/services/withdrawals.ts`: `requestWithdrawal`
     (amounts/receivable/address validation, `isFirst` detection, auto-approve vs UNDER_REVIEW,
@@ -381,14 +361,12 @@ flowchart TD
   - [x] 25.3 API routes — `GET`+`POST /api/uid/withdrawals`, `POST /api/uid/withdrawals/[id]/cancel`,
     `GET /api/admin/withdrawals`, `POST /api/admin/withdrawals/[id]/decision` — all wired with correct
     session guards (`uidPrincipal` / `withAdmin`) and same-origin checks.
-  - [x] 25.4 `WithdrawalFlow` client component (`apps/web/src/app/withdraw/`): OTP auth → wallet display
-    → withdrawal request form → history with per-withdrawal cancel; visible-tab polling; cursor
-    pagination on both wallet history and withdrawal history.
+  - [ ] 25.4 (removed/superseded 2026-10-30) — gỡ customer withdrawal UI tại Task 44.3; `/withdraw` chỉ redirect `/#lookup`.
   - [x] 25.5 `WithdrawalQueue` admin component + `POST /api/admin/withdrawals/[id]/decision`:
     decision form with note/payoutRef inputs, per-withdrawal action buttons filtered by current status,
     `window.confirm()` guard, cursor pagination.
   - [x] 25.6 i18n strings for all new copy in `apps/web/src/i18n/messages/en.ts`; no inline strings in the components.
-  - [x] 25.7 `WithdrawalQueue` wired into admin page; `WithdrawalFlow` accessible at `/withdraw`.
+  - [ ] 25.7 (superseded một phần 2026-10-30) — giữ WithdrawalQueue admin cho lịch sử legacy; gỡ WithdrawalFlow khách tại Task 44.3.
   - [x] 25.8 Document `WITHDRAWAL_ROUTES` and `WITHDRAWAL_AUTO_APPROVE_THRESHOLDS` (JSON) in `.env.example`.
   - [x] 25.9 Integration coverage in `scripts/test-bybit-integration.mjs` (verified 2026-09-17,
     isolated `cashback_test_*` schema): first withdrawal `UNDER_REVIEW`, second auto-approves,
@@ -398,7 +376,7 @@ flowchart TD
 
 - [x] 26. Cherry-pick UI components from the reference project (`cashback/`)
   - Copied component files only from the gitignored `satnaing/shadcn-admin` copy (MIT):
-    `input-otp` (wired to Task 24's real verify), `data-table/*` (withdrawal queue and
+    `data-table/*` (withdrawal queue and
     import-batch list), `confirm-dialog` (approve/reject/mark-paid), and only the `ui/*`
     primitives those import. Not copied: TanStack Router, Clerk, Vite config, or any
     `src/features/*` handler (stubs with no backend).
@@ -421,21 +399,8 @@ flowchart TD
   - _Requirements: 17.1, 17.2, 17.3, 17.4, 17.5, 17.6; Design: Components/apps/web
     (Online Rebate Ledger)_
 
-- [x] 28. Lookup shows commission vs cashback split (Requirement 14.2, 14.7)
-  - Extend `lookupResponseSchema` with `transactions`: `{ asset, periodStart, periodEnd,
-    commission, cashbackRate, cashback }[]` (decimal strings, cap 100, newest period
-    first). Empty array when `hasData` is false. Do not add keys `email`, `address`,
-    `reserved`, `withdrawn`, `receivable`, or `history`.
-  - `lookupService` reads attributed `CommissionRecord`s for that UID: `commission` =
-    amount of the latest applied `CommissionVersion` (`WalletEntry.sourceRef` = version
-    id; 0 when no applied entry exists, never in-flight `reconciledAmount`), `cashback` =
-    `creditedCashback`, `cashbackRate` snapshot. `hasMore` when more than 100 rows exist.
-  - Home lookup UI: keep pending/available totals, then a table **Exchange paid** vs
-    **Your share** (rate + period). English catalog only.
-  - Update `scripts/test-uid-access.mjs` so the body still must not match
-    `email|address|reserved|withdrawn|receivable|history` and must include
-    `transactions` when `hasData` is true.
-  - **Verified 2026-09-17:** contracts/core/web `tsc` pass.
+- [x] 28. Bảng cashback public theo kỳ (Requirement 14.2, 14.7)
+  - Schema/UI ban đầu đã có kiểm chứng 2026-09-17; phạm vi hiển thị thay bằng Task 43: chỉ kỳ/tài sản/UID/cashback, không commission/rate/volume/bucket ví. Giữ cap 100/hasMore và cashback đã attribution. Tổng ngày/30 ngày và tổng đã trả nằm riêng, theo Req 14 cập nhật.
   - _Requirements: 14.2, 14.3, 14.7, 8.5, 8.6; Design: Key flows/Cashback lookup_
 
 - [x] 16. Admin analytics & operations dashboard
@@ -447,20 +412,14 @@ flowchart TD
 
 ### Phase 3 — Hardening
 
-- [x] 17. Security hardening
-  - Server-side authz on every non-public route; the acting `UidAccount` derived from the
-    `UidSession` only, never a request parameter; private bucket credentials limited to
-    web(write)/worker(read); secrets only in env/secret store (no public-prefixed,
-    including `RESEND_API_KEY`); Postgres reachable only from web/worker; ensure admin and
-    `/api/uid/*` write routes require the matching session type before shipping.
-  - **Verified 2026-09-17:** admin writes use `withAdminMutation`; `/api/uid/*` derives
-    the account from `uidPrincipal(request)` only; no `NEXT_PUBLIC_` secrets; private
-    `DATABASE_URL` only on web/worker. Findings in `docs/security-audit.md`.
-  - _Requirements: 3.3, 6.2, 15.10; Design: Security_
+- [x] 17. Security hardening (bằng chứng bản cũ; phần customer access superseded bởi 44.3)
+  - Target 30/10: authorization admin phía server cho mọi API non-public; secrets chỉ env/secret store, không public-prefixed; bucket private giới hạn web/worker; Postgres chỉ backend/worker. Khách chỉ lookup; không API ví/lịch sử riêng tư. POST rút retired không mutation.
+  - Bằng chứng 17/09 về admin guard, private bucket và secret isolation là lịch sử, không chứng minh API khách đã gỡ. Kiểm lại tại 44.4; docs/security-audit.md ngoài phạm vi sửa Bước 1.
+  - _Requirements: 3.3, 6.2, 14, 20.4, 22.35; Design: Security_
 
 - [ ] 18. Lightweight test overview + critical invariant checks
   - Keep testing light: a thin smoke check that the app boots and key paths respond (public browse → get link → redirect records a click; admin login; seed import runs).
-  - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two publish runs racing to attribute the same (exchange, UID) → exactly one `UidAccount` (Property 3); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; two concurrent withdrawals cannot both reserve the same balance; a UID account's first withdrawal is always `UNDER_REVIEW`. No exhaustive suite.
+  - Add a few sanity checks on money logic (cashback amount, idempotent publish, only `available` is withdrawable) plus targeted integration/concurrency checks: two publish runs racing to attribute the same (exchange, UID) → exactly one `UidAccount` (Property 3); ATTRIBUTE re-run applies no extra credit; publish failing mid-transaction leaves nothing; worker that lost its lease cannot commit; hai execution đồng thời không được giữ chỗ cùng phần tiền; first and later payments apply the same <=20 USD threshold and all readiness/schedule gates (Req 22.32). No exhaustive suite.
   - Rollback-on-mid-publish-failure is covered and previously passed. Added a
     concurrent-attribution-race check (two `ATTRIBUTE` workers racing the same published
     UID) asserting exactly one `UidAccount` and exactly one wallet credit in
@@ -485,7 +444,7 @@ flowchart TD
     local-through-proxy runs. Because that `P1001` aborts before the script's `finally`
     DROP completes, one `cashback_test_*` schema was left behind; it was dropped afterwards
     and a follow-up scan confirmed 0 `cashback_test_*` schemas remain on the Railway server.
-  - _Requirements: 5.1, 6.8, 6.9, 7.8, 9.1, 9.5; Design: Testing Strategy, Correctness Properties 1-17_
+  - _Requirements: 5.1, 6.8, 6.9, 7.8, 9.1, 9.5; Design: Testing Strategy, Correctness Properties 1–15 (16–17 removed)_
 
 - [ ] 19. Production hardening & observability (Railway)
   - Building on the Phase 0 Railway skeleton (Task 4.2): add observability (web health, oldest job age, worker heartbeat, import error rate), alerts, ensure migrations run once per deploy with reproducible builds, and verify DB backup/restore.
@@ -723,7 +682,7 @@ flowchart TD
   - _Requirements: 18.5, 10.6, 14.7; Design: Admin shell, Cashback lookup, Property 14_
 
 - [x] 32. Admin ingest and reports information architecture (Req 18.2, 18.7, 18.8)
-  - Follow `.kiro/steering/` (top of this file). Spec is updated first (Req 18,
+  - Follow `.claude/rules/` (top of this file). Spec is updated first (Req 18,
     design "Admin shell"); verify on the Docker stack that mirrors Railway.
     Check Next.js App Router redirects and route groups via Context7 for the
     version in the lockfile before coding.
@@ -773,7 +732,7 @@ flowchart TD
     - _Requirements: 6.10, 6.18, 6.22, 11.3, 18.7–18.8; Design: Source adapter framework, Admin shell, API contracts_
 
 - [x] 33. Raw landing layer before target tables (Req 6.23–6.26, 6.3, 6.16, 6.21, 13.4)
-  - Follow `.kiro/steering/` (top of this file): spec is already updated; verify on
+  - Follow `.claude/rules/` (top of this file): spec is already updated; verify on
     the Docker stack that mirrors Railway; check Prisma raw SQL (`$queryRaw`/`$executeRaw`, `jsonb`,
     transactions) and PostgreSQL declarative partitioning via Context7 for the
     versions in the lockfile before coding.
@@ -902,7 +861,7 @@ flowchart TD
     - Giữ ledger generator/badge Req 17 sau How it works; bỏ stats người dùng/quốc gia
       chưa có nguồn. Thiếu data thì empty/unavailable, không lấy mockup làm fallback.
     - _Requirements: 1.1–1.2, 7.3, 17.1–17.7, 20.1–20.3, 20.6; Design: Exchange logo assets; Online Rebate Ledger; Giao diện và tên website_
-  - [x] 40.3 Opportunity Check — mô hình #23–24 đã chốt theo plan.
+  - [x] 40.3 Opportunity Check — bản đầu theo plan, thay mô hình volume tại Task 43.
     - Dependency: 40.0, 40.2 và mô hình đầu vào/nguồn tỷ lệ/kỳ đã được chốt trong
       requirements/design: phí/tháng USDT, commission assumption, published offer share,
       kết quả tháng/12 tháng, fixed-point decimal và rounding theo Req 19.8.
@@ -914,14 +873,13 @@ flowchart TD
       giữ giả định, công thức, điều kiện và không nhận lại phí quá khứ. Input lỗi
       phải xóa kết quả cũ; ước tính không trở thành available balance.
     - _Requirements: 19.1–19.7, 20.1–20.3, 20.6–20.7; Design: Bảng tính tiền hoàn phí bị bỏ lỡ; Giao diện và tên website_
-  - [x] 40.4 Restyle lookup và nối Wallet hiện có.
+  - [x] 40.4 Restyle lookup — bản đầu, thay contract/luồng public tại Task 43.
     - Dependency: 40.1; làm độc lập với 40.3. Giữ `POST /api/lookup`, response schema,
       pending/available theo asset, transactions đã attribution và timestamps.
     - Kiểm tra loading/no data/error/429, UID giữ số 0 đầu; thay sàn/UID xóa kết quả
       cũ và chỉ hiển thị kết quả của lựa chọn đã submit.
-    - CTA `/withdraw?exchangeId=...&uid=...` giữ context; không đổi OTP/session,
-      holding period, xét duyệt lần rút đầu hoặc logic payout.
-    - _Requirements: 14.1–14.7, 15, 16, 20.1–20.4, 20.6; Design: lookupService; Giao diện và tên website_
+    - Luồng hiện tại theo Task 43: không CTA rút; `/withdraw` redirect tra cứu. Không đổi holding/approval/gate/sender; toàn bộ API/phiên riêng tư của khách được gỡ theo Task 44.3 (chưa làm).
+    - _Requirements: 14.1–14.8, 20.1–20.4, 20.6; Design: lookupService; Giao diện và tên website_
   - [ ] 40.5 QA và bàn giao UI ứng dụng — automated checks đạt, visual QA còn mở.
     - Bằng chứng cập nhật 2026-10-14: Docker rebuild source mới, web unit/DOM/HTTP
       integration 26/26, core lookup-version 4/4. Web/Postgres healthy, local port 3000
@@ -942,12 +900,12 @@ flowchart TD
       ledger badge và admin giữ theme; English copy/brand nhất quán.
     - Test calculator theo mô hình được chốt: công thức, đơn vị, 0, decimals,
       input rỗng/âm/không hữu hạn, tỷ lệ ngoài 0–100, đổi offer, xóa stale result.
-    - Test lookup/no data/nhiều asset/lỗi/429, UID `001234`, đúng context `/withdraw`;
+    - Test lookup/no data/nhiều asset/lỗi/429, UID `001234`, không link Wallet/rút, `/withdraw` redirect;
       offers render trước hydrate, không fallback sang demo khi DB lỗi, referral URL đúng.
     - Chạy typecheck/lint/build theo workflow repo; check có DB/web integration dùng
       stack Docker theo steering. Ghi kết quả và ảnh; không đánh dấu hoàn thành
       dựa trên việc chỉ sửa mockup/tài liệu, không tự deploy.
-    - _Requirements: 1.1, 14, 15, 16, 17, 19.1–19.7, 20.1–20.7; Design: Testing Strategy — Kiểm chứng Req 19–21_
+    - _Requirements: 1.1, 14, 17, 19.1–19.7, 20.1–20.7; Design: Testing Strategy — Kiểm chứng Req 19–21_
 
 - [x] 41. Pause/Resume API ingestion theo từng sàn (Req 13.8).
   - [x] 41.0 Đồng bộ requirements/design: admin pause độc lập lỗi, giữ settings,
@@ -965,6 +923,87 @@ flowchart TD
       DOM/HTTP tests không thay thế kiểm tra hình ảnh trên browser của Task 40.5.
   - _Requirements: 13.8–13.9, 18.8; Design: Admin pause; Schedule and operation_
 
+- [ ] 42. Sổ khoản phải trả và lịch sử PAID/UNPAID (Req 22; business trước implementation)
+  - [x] 42.0 Đặc tả business: bảng chính CustomerPayable, định danh sàn/UID/tài sản/số tiền/nguồn;
+    PAID/UNPAID tách approval, lý do, tiến trình và hiệu lực; giữ audit, chống đếm/trả trùng.
+    #33 đã chốt: tự đồng bộ async sau pipeline ingest/cashback, không chờ yêu cầu rút.
+  - [x] 42.0a Spec nguồn chi chung auto/manual: mọi thao tác tham chiếu payableId/version,
+    command async, enqueue cùng transaction nguồn, checkpoint/freshness và xử lý correction;
+    không fallback chi từ raw/activity/Wallet, không ghi đè PAID hoặc snapshot đang gửi.
+  - [x] 42.0b Đối chiếu review theo full spec: phân biệt quyết định mở/đã có policy với thiếu
+    chi tiết; thống nhất ngưỡng/hủy, dẫn recovery 8.7, thêm cutover/blocker detail và RTM.
+    Phương án release/FIFO allocations chỉ để review #34–35, không tự duyệt grain/mapping; customer partial đã loại theo câu 13.
+  - [x] 42.1 Chốt #34–35 và các policy USD/approval/phí/hạn mức liên quan; duyệt bảng chuyển
+    trạng thái, correction, phân bổ nguồn/execution và legacy reserved/in-flight; không có khách rút một phần.
+    Gate đã mở ngày 2026-10-17: người dùng duyệt phương án release + allocations (#34), execution riêng (#35) và thứ tự ưu tiên release cũ nhất trước.
+    Câu 1 đã chọn MEXC + Bybit trả USDT qua UID, source riêng; Binance thêm khi data + quyền đủ.
+    Câu 2 chấp nhận operator thêm/xác minh mỗi UID Bybit một lần, sau đó auto khi đủ điều kiện;
+    phần lựa chọn này đã chốt, quy trình thực tế và recipient readiness vẫn cần kiểm chứng.
+    Câu 3 chốt USDT nội bộ: một đợt/ngày 23:00 UTC, gộp theo sàn + UID; xét ngưỡng trên tổng.
+    #26 đã chốt lịch/cutoff/retry USDT nội bộ; #34 grain/khóa nguồn/mapping còn review; khách không yêu cầu rút theo câu 13.
+    Câu 4 chốt tổng sau gộp <=20 USD tự trả khi đủ gate, >20 USD giữ UNPAID chờ approval;
+    đúng 20 USD thuộc nhánh tự trả. Quyền rút chủ động đã loại ở câu 13/22.35.
+    Câu 5 chốt khoản >20 USD approve sau đợt phải đợi 23:00 UTC kế tiếp; approve không dispatch.
+    Câu 6 chốt bỏ lỡ đợt thì chờ 23:00 UTC kế tiếp, gộp phần còn đủ điều kiện, không gửi bù ngay.
+    Câu 7 chốt nguồn mới trước đợt gộp vào tổng chưa gửi, approval cũ mất hiệu lực; 25+5=30 duyệt lại.
+    Câu 8 chốt danh sách 23:00 UTC; nguồn mới sau cutoff để đợt sau, correction vẫn theo guard.
+    Câu 9 chốt lỗi chắc chắn chưa chuyển chờ đợt 23:00 UTC ngày sau, xét lại mọi gate; UNKNOWN đối soát riêng.
+    Câu 10 bỏ first-review guard/blocker/UI: <=20 USD có thể tự trả từ lần đầu, >20 USD chờ duyệt.
+    Sửa assertions legacy Task 25/QA khi triển khai; evidence đã chạy của runtime cũ vẫn giữ lịch sử.
+    Câu 11 operator chịu phí USDT nội bộ, khách nhận đủ cashback; kiểm provider fee semantics,
+    nguồn đủ principal+phí theo từng asset, fee readiness và provider limits trước bật; internal USDT không daily cap riêng theo câu 15. Không trừ phí khỏi payable.
+    Câu 12 ngưỡng internal USDT cố định 20 USDT (1:1), không market quote; lưu valuation mode/policy.
+    Câu 13 auto-only: bỏ customer create/cancel/partial và money controls UI; private customer reads cũng bị gỡ theo Task 44.3 ngày 30/10.
+    Scheduler không cần OTP/email/session khách, admin vẫn dùng command chung/gates. Cutover
+    inventory và vô hiệu customer routes/jobs cũ, đối soát legacy reserved/UNKNOWN trước mở gate.
+    Câu 14 minimum strict >0.5 USDT sau gộp; <=0.5 UNPAID tích lũy, vẫn kiểm provider minimum/precision.
+    Câu 15 không daily cap riêng USDT nội bộ, chi theo nguồn thực đủ principal+phí; thiếu nguồn
+    UNPAID chờ đợt 23:00 UTC ngày sau. 100 là ví dụ nạp, không hard-code. Review source funding
+    reservation/concurrency với UID allocation; thứ tự ban đầu còn cần chốt, skip nhóm theo câu 16.
+    Câu 16 thiếu funds một UID thì defer ngày sau và tiếp tục nhóm sau đủ nguồn/phí, không dừng
+    toàn đợt hoặc retry nhóm bị defer cùng đợt; lưu cursor/group outcome để replay không chi trùng.
+    Khảo sát API tại docs/exchange-uid-payout-research.md đã xong bước tài liệu; chưa verify tài khoản,
+    chưa test transfer. Cần kiểm source key rights, Bybit recipient book/verification, MEXC thực tế,
+    và Binance merchant Payout eligibility; không thay key affiliate hoặc tự bypass OTP/2FA.
+  - [x] 42.1p Module chính sách thuần USDT nội bộ không phụ thuộc #34: `packages/core/src/payout/internal-usdt-policy.ts`
+    (ngưỡng ≤20 / >0.5 strict, 1:1 FIXED_USDT_USD, slot 23:00 UTC cho duyệt/lỡ đợt/retry, thứ tự blocker 22.23,
+    command guard, hiệu lực approval). Không DB, không sender, không tiền thật; chưa nối vào luồng nào.
+    Verified: `packages/core/test/internal-usdt-policy.test.mjs` 7/7, core typecheck/lint/build đạt.
+  - [x] 42.2 (hoàn thành 2026-10-17, mô phỏng) Thiết kế schema/unique keys/transactions/contracts và migration/backfill trên Docker;
+    thêm sync checkpoint, commandKey/payload digest, durable jobs/lease/retry/catch-up; nối
+    ingest/publish/attribution/release/correction sang đồng bộ. Một nguồn tiền không có hai
+    nghĩa vụ/lệnh độc lập; loại fixtures khỏi công nợ thật.
+  - **Trạng thái triển khai 2026-10-17:** migration `202610170001_customer_payables` (8 bảng + 7 enum + CHECK/partial UNIQUE + gate LEGACY); `packages/core/src/services/{payables,money-gate}.ts`, `payout/internal-transfer.ts` (port + `SimulatedInternalTransfer` chỉ để test); hooks trong `cashback.ts` (release → `markPayableSourceChanged`, correction → invalidate/reduce); worker xử lý `SYNC_PAYABLES`, `PAYOUT_SLOT`, `PAYOUT_RECONCILE`, `PAYABLE_COMMAND`; gate chặn writer cũ; API `/api/admin/{payables,payout-executions/:id,payout-executions/:id/commands,payable-commands/:id,money-flow}` và trang `/admin/payables`. **Chưa làm:** adapter MEXC/Bybit thật (không có sender thật, worker không tự gửi), backfill legacy + 42.3a inventory/42.3c mapping, gỡ UI rút của khách, tỷ lệ cashback/holding, xác minh tài khoản/quyền API. Chạy: `TEST_DATABASE_URL=<Docker> node scripts/test-payables.mjs` → 19 nhóm PASS; evidence và case chưa chạy ở `payables-rtm.md`.
+  - [ ] 42.3 (một phần: core, API, UI cơ bản, gate và scheduler đã có; thiếu inventory/backfill/gỡ UI khách) Core + admin API/UI bảng lịch sử, lọc/tổng từng asset, approval và audit;
+    API trả 202/commandId, poll trạng thái; auto/manual/legacy dùng cùng command và khóa/version.
+    Scheduler USDT nội bộ chạy 23:00 UTC mỗi ngày; claim đợt/ngày và nhóm sàn/UID/asset bền vững,
+    gộp một execution logic, kiểm tổng ngưỡng, chống trùng replica/job; đợt bị lỡ chờ đợt kế,
+    chặn stale-job dispatch ngoài lịch, giữ UNPAID/nguồn và không gộp lại UNKNOWN. Sync/reconcile
+    vẫn recovery độc lập; lưu manifest nguồn/tổng/versions tại cutoff 23:00 UTC, nguồn mới sau đó để ngày sau.
+    Retry lỗi chắc chắn chưa chuyển chỉ từ đợt 23:00 UTC ngày sau theo 22.31; UNKNOWN đối soát.
+    APPROVE sau đợt lưu next eligible slot và WAITING_SCHEDULE; SEND kiểm lịch cùng snapshot/gates,
+    không enqueue chi tức thì hoặc nhân nghĩa vụ ở đợt sau; RTM PAY-038.
+    SYNC_PENDING/FAILED chặn chi mới; PAID chỉ sau bằng chứng thành công, UNKNOWN giữ chỗ.
+    - [ ] 42.3a Inventory mọi money writer/route/job; deploy bản đọc DB moneyFlowMode ở tất cả
+      instance, chưa bật producer/sender mới, loại instance cũ không có gate.
+    - [ ] 42.3b FROZEN dưới exclusive barrier; dừng dispatch/money mutations cũ, drain/reconcile
+      in-flight theo evidence; UNKNOWN giữ scope blocked. Ingest tiếp tục với checkpoint rõ.
+    - [ ] 42.3c Backfill/mapping theo #34–35 đã duyệt, unique legacy IDs; đối soát nguồn và
+      available/reserved/withdrawn/receivable, không reserve/settle lại, fixtures vào exceptions.
+    - [ ] 42.3d Customer money routes/jobs cũ bị chặn; admin route cũ thành alias command; thiếu mapping trả 409/503, gate missing fail
+      closed; drain/version jobs cũ, chứng minh concurrent old/new/auto không có bypass/fallback.
+    - [ ] 42.3e Chỉ mở PAYABLE_ONLY sau coverage/checkpoint/reconcile đạt; quyền sender vẫn
+      kiểm riêng. Sau execution mới rollback chỉ FROZEN/reconcile-only, không LEGACY.
+  - [ ] 42.4 (một phần: `scripts/test-payables.mjs` C1–C19 PASS, xem RTM; còn các case NOT RUN/PARTIAL) Docker integration các scenarios Req 22: trùng lịch/import/retry/concurrency,
+    approval dưới/bằng/trên ngưỡng, timeout/crash, xác nhận lặp, correction và phân quyền;
+    atomic enqueue, out-of-order/lease/catch-up, release không có ingest mới, freshness và
+    command idempotency; correction giữa gửi/xác nhận không chặn ghi nhận tiền đã chuyển.
+    RTM/Given–When–Then: `payables-rtm.md` (38/38 AC, planned). Evidence từng case phải có
+    commit/migration/command/expected/actual; các case allocation cụ thể chờ duyệt #34–35.
+  - Sender nội bộ/on-chain và gửi tiền thật là bước riêng; Task 42.0 không tạo bảng DB,
+    không migrate/deploy hoặc bật thanh toán. Task 39 vẫn chỉ là khung config/readiness.
+  - _Requirements: 22.1–22.38, 8, 9, 12.5/12.7, 21; Design: Sổ khoản phải trả; Pipeline async; Cutover; Property 18; RTM: payables-rtm.md_
+
 ## Notes
 
 - Phương án các nhóm còn mở sau UI: `docs/remaining-work-plan.md` (2026-10-14).
@@ -980,18 +1019,13 @@ flowchart TD
   automation may attribute cashback or change a wallet.
 - **[PENDING] admin auth provider** (Open decision #13): Task 7 ships interim
   email+password behind `AuthPort`; swap provider without changing dependents.
-- **Resolved (Open decision #12):** anyone entering exchange + UID sees that UID's
-  `pending`/`available` (Task 23); everything else needs a `UidSession` (Task 24).
+- **Resolved (Open decision #12, 30/10):** công khai cashback kỳ D/30 ngày và totalPaid theo Req 14; không private customer reads.
 - **[PENDING] default values**: cashback rate (Task 13), holding period (Task 14),
-  withdrawal auto-approve threshold + supported assets/networks (Task 25), lookup
-  rate-limit window (Task 23), OTP TTL/attempts/cooldown/daily-cap (Task 24). The
+  supported assets/networks + valuation/limits policy (Task 25/42; internal USDT fixed <=20 USDT, coin khác cần quote theo policy), lookup
+  rate-limit window (Task 23). Volume mặc định calculator đã chốt 1,000,000 USDT (Task 44.1), không còn pending. The
   *resolution rules* are decided; only default *values* remain.
-- **Resolved (Open decision #20): Resend** (Task 24). Remaining prerequisites are
-  operational — verify a domain, confirm quota fits volume — not design.
-- **Accepted (Open decision #21): first-claimant-wins.** Lookup shows real amounts with no
-  way to verify the true UID owner; the operator accepted this trade-off. Task 25's
-  mandatory first-withdrawal review is the compensating control, not a fix. See
-  requirements.md "Accepted risk — first claimant wins".
+- **Rủi ro đã chấp nhận:** công khai cashback khi biết sàn + UID; không còn claim UID. Giữ threshold approval, rate-limit, holding và recipient readiness.
+
 - **Decided (revisitable):** reversal-after-release policy = reduce pending → available →
   `receivable` (clawback), block new withdrawals while `receivable > 0`, offset future
   credits (Req 8.7; Tasks 13/14/25).
@@ -1012,11 +1046,59 @@ flowchart TD
   read-only GET from the deployed worker returned 0 Spot and 0 USD-M Futures
   records; public health OK. Automatic sync remains disabled until admin enables it.
 
+- [ ] 43. [Lịch sử; phần bị thay thế chuyển Task 44] Đồng bộ website với cuộc họp 20/10 và 5 lựa chọn chốt ngày 21/10/2026 (Req 8/14/19/20)
+  - Kế hoạch tiếp nối và bằng chứng: `docs/meeting-2026-10-20-implementation-plan.md` (cập nhật 2026-10-30).
+  - [x] 43.0 Cập nhật requirements → design → tasks trước code; giữ lịch 23:00 UTC, minimum/ngưỡng/approval và gate/readiness đã chốt.
+  - [x] 43.1 [Superseded bởi 44.1 ngày 30/10; bằng chứng cũ] Calculator volume/tháng, phân tách hàng nghìn; hai giả định phí/commission ban đầu rỗng, khách tự nhập; công thức bốn thành phần, tháng/12 tháng, fixed-point và validation. Code đã build; kiểm tra calculator và DOM đã đạt trong bộ 32 web tests.
+  - [x] 43.2 [Ngày lookup/zero superseded bởi 44.2; bằng chứng cũ] API lookup không commission/rate/volume/bucket ví; bảng kỳ/tài sản/UID/cashback; tổng ngày UTC trước/30 ngày không theo giới hạn bảng, totalPaid từ settled ledger; thiếu chi tiết kỳ không prorate/giả 0. HTTP Docker đã kiểm tra privacy, tổng 131 dòng ngày trước, kỳ cắt biên, dữ liệu 0 và nhiều asset.
+  - [x] 43.3 Bỏ Wallet/nút rút/OTP khỏi public navigation và nội dung; /withdraw redirect tra cứu; POST tạo/hủy rút luôn từ chối không mutation. Việc giữ private history/API ở bản này đã bị thay thế bởi 44.3; không bật sender thật. HTTP Docker đã kiểm tra redirect/410 và trạng thái tiền/job không đổi.
+  - [ ] 43.4 Kiểm chứng calculator/DOM/contracts/core và HTTP trên Docker: privacy, tổng vượt 100 dòng, biên UTC/kỳ nhiều ngày/no-data/0, tổng đã trả không đếm đôi, route rút retired, stale request; typecheck/lint/build và kiểm tra browser local.
+    - [x] 43.4a Build web + contracts/db/core trong Docker đạt; bộ web unit/DOM/HTTP 32/32 PASS, không skip.
+    - [ ] 43.4b [Kế hoạch cũ, thay bằng 44.4] Chạy và ghi kết quả core lookup tests, lint các package đã sửa và `scripts/test-uid-access.mjs` đã cập nhật. Lệnh gần nhất bị ngắt, chưa có kết quả xác nhận; không tính là đã chạy đạt.
+    - [ ] 43.4c [Chuyển kiểm chứng spec mới sang 44.4] Kiểm tra browser desktop/mobile, focus/menu/định dạng volume và bố cục kết quả. Chưa có bằng chứng visual QA.
+    - [ ] 43.4d [Chuyển rà spec mới sang 44.4] Rà diff, dọn mô tả cũ còn mâu thuẫn ở tài liệu liên quan, ghi kết quả cuối và bàn giao. Không tự stage/commit/deploy.
+    - Kiểm tra trạng thái 2026-10-22: Docker API không kết nối được; chưa xác nhận web local đang chạy. Kết quả PASS ở 43.4a là bằng chứng lần chạy trước, không phải lần kiểm tra hiện tại.
+  - Phạm vi để sau: domain/brand mới, tỷ lệ thật/holding và tài khoản affiliate/API, adapter chi trả thật/cutover, BingX, dashboard nhiều UID, campaign marketing. Không tự chọn hay bật các phần đó.
+
+- [ ] 44. Triển khai quyết định 30/10/2026 (Req 14/19/20; Req 15/16 removed) — **chưa làm**
+  - Tài liệu đã cập nhật trong Bước 1; không tính là đã triển khai Task 44. Không migrate/DB, stage/commit hoặc deploy trong bước này.
+  - [ ] 44.1 Calculator volume-only: thêm Offer.estimatedVolumeRate Decimal(12,10) nullable và migration `202610300001_offer_volume_estimate` (CHECK [0,1]); admin form/validation tối đa 10 chữ số; public offer card/contract decimal string hoặc null; lọc calculator chỉ offer có hệ số; volume mặc định 1,000,000 USDT/nhóm nghìn, tháng/năm tính chính xác và chỉ round hiển thị. Mặc định đã chốt, có thể chỉnh sau trong code; không cần xác nhận lại.
+  - [ ] 44.2 Lookup latest reported day: helper latestReportedDay từ ImportBatch COMMISSION/PUBLISHED, full UTC day ≤ hôm qua, day detail và sourceAsOf không partial; index `(exchangeId, datasetKind, status, periodEnd)` và migration index; summaryPeriods { reportDay, rollingStart, end }, kỳ D và [D−29,D+1), hasData=false/cùng shape rỗng và message cho UID không tồn tại hoặc chưa có cashback attribution; chỉ hasData=true mới có REPORTED 0 khi có D nhưng UID không dòng trong kỳ, NO_DATA khi chưa D; giữ INSUFFICIENT_DETAIL, totalPaid=Wallet.withdrawn và privacy.
+  - [ ] 44.3 Gỡ OTP/UID session/customer withdrawal UI: route/service/contract/env/SDK/cookie/guard và GET private wallet/history, bỏ luồng khách riêng tư; giữ `/withdraw` redirect và POST tạo/hủy retired 410 không mutation. Migration dự kiến `202610300002_drop_customer_otp` drop EmailOtp/UidSession/UidAccount.boundEmail/emailBoundAt và phụ thuộc; giữ Withdrawal.email/WithdrawalEvent.email, admin Session, UID/Wallet, queue admin legacy/payables/receipts/audit và lookup rate-limit; không thay gate hoặc bật sender.
+  - [ ] 44.4 Kiểm chứng spec mới: rà diff/traceability/privacy; calculator 0/null/1/10 chữ số, lỗi precision/range, nhiều offer, mặc định 1,000,000 USDT/grouping/chỉnh sửa và rounding năm độc lập; lookup coverage UTC, stale D, TRANSACTION nhiều ngày, sourceAsOf null/partial, sourceTz khác UTC, D tương lai, UID lạ và UID đã biết chưa có cashback cùng hasData=false/no-data shape/message; UID đã có cashback ngoài kỳ có hasData=true, có D/không dòng trong kỳ REPORTED zero, chưa D NO_DATA, kỳ cắt biên INSUFFICIENT_DETAIL, tổng >100 dòng và totalPaid không đếm đôi. Xác nhận API/phiên khách đã gỡ không lộ dữ liệu, route rút không mutation; admin queue/payables giữ nguyên. Ở bước triển khai sau: migration/integration trên schema Docker riêng, typecheck/lint/build và browser desktop/mobile/focus. Không dùng PASS Task 43 thay kiểm chứng Task 44.
+
 ## Changelog
 
 
 | Ngày | File | Thay đổi | Lý do | Loại |
 |------|------|----------|-------|------|
+| 2026-10-30 | tasks.md | Sửa Task 44.2/44.4 kiểm chứng hasData chống dò UID và chỉ tính metric cho UID đã có cashback attribution | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | tasks.md | Chốt Task 44.1/44.4 volume mặc định 1,000,000 USDT; bỏ bước hỏi xác nhận số mặc định, giữ task chưa làm | Review Claude Bước 1 và quyết định người dùng 30/10/2026 | updated |
+| 2026-10-30 | tasks.md | Task 24 và 25.4 removed/superseded, 25.7 chỉ giữ admin legacy; bỏ tuyên bố tiếp tục giữ private customer APIs | Quyết định người dùng 30/10/2026; chỉ sửa tài liệu | removed |
+| 2026-10-30 | tasks.md | Task 43 giữ bằng chứng lịch sử có nhãn superseded; trạng thái hiện hành theo quyết định 30/10 | Quyết định người dùng 30/10/2026; chỉ sửa tài liệu | updated |
+| 2026-10-30 | tasks.md | Thêm Task 44.1–44.4 chưa làm: calculator, latestReportedDay, gỡ xác thực khách/migration và kiểm chứng | Quyết định người dùng 30/10/2026; chỉ sửa tài liệu | added |
+| 2026-10-22 | tasks.md | Đánh dấu 43.1–43.3 đã có code và 43.4a build/web tests 32/32 đạt; tách các kiểm tra bổ sung, visual QA và bàn giao còn mở; liên kết kế hoạch tiếp nối | Người dùng yêu cầu báo cáo trạng thái và lập lại plan; Docker hiện chưa kết nối, không nhận kết quả test bị ngắt là PASS | updated |
+| 2026-10-17 | tasks.md | Duyệt #34–35: 42.1 và 42.2 hoàn thành (mô phỏng Docker); 42.3/42.4 làm một phần, ghi rõ phần chưa làm; sửa `scripts/test-bybit-integration.mjs` cho job LOAD/TRANSFORM và SYNC_PAYABLES | Người dùng yêu cầu code theo plan, viết lại happy-case và giả lập test | updated |
+| 2026-10-17 | tasks.md | Câu 13 auto-only, customer money routes/UI disabled at cutover; RTM 35 AC | Không có khách rút toàn bộ/một phần/hủy, không cần OTP/session cho scheduler; bảo toàn legacy balances | updated |
+| 2026-10-17 | tasks.md | Câu 14 strict >0.5 USDT/accumulation gate, RTM 36 AC | Kiểm bằng ngưỡng không gửi, tích lũy qua ngày và provider minimum cao hơn | updated |
+| 2026-10-17 | tasks.md | Câu 15 no daily cap/balance-only và source guard, RTM 37 AC | Kiểm thiếu nguồn đợi ngày sau, top-up không gửi bù và source không double-spend | updated |
+| 2026-10-17 | tasks.md | Câu 16 per-group defer/continue, RTM 38 AC | Kiểm balance3/nhóm5/nhóm2, phí và replica replay không chi trùng | updated |
+| 2026-10-17 | tasks.md | Câu 10 bỏ mandatory first review trong policy đích, RTM 32 AC; assertions legacy cần sửa qua Task 42 | Giữ evidence runtime cũ, không dùng làm policy mới | updated |
+| 2026-10-17 | tasks.md | Câu 11 fee payer/recipient net constraints, RTM 33 AC | Kiểm khách nhận đủ, nguồn/phí riêng và thiếu phí không giảm khoản trả | updated |
+| 2026-10-17 | tasks.md | Câu 12 fixed 1:1/20 USDT, RTM 34 AC; quote chỉ cho nhánh cần market valuation | Kiểm quote feed lỗi không chặn USDT nội bộ, coin khác vẫn fail closed | updated |
+| 2026-10-17 | tasks.md | Ghi phạm vi câu 1 và khảo sát API UID/verification; thêm account/channel/recipient readiness vào 42.1, RTM 25 AC | Hỗ trợ cả MEXC và Bybit USDT nguồn riêng, Binance có điều kiện; chưa cấu hình/sử dụng key chi tiền | updated |
+| 2026-10-17 | tasks.md | Cập nhật 42.1 với câu 2 đã chốt: operator thiết lập UID Bybit một lần, kiểm readiness vẫn mở | Tiếp tục chốt business từng câu trước triển khai | updated |
+| 2026-10-17 | tasks.md | Ghi câu 3 và scheduler 23:00 UTC/gộp execution vào 42.1/42.3, RTM 26 AC | Chốt lịch và gom lệnh trước code, chưa chốt catch-up/partial | updated |
+| 2026-10-17 | tasks.md | Ghi câu 4 <=20 USD tự trả, >20 USD chờ duyệt; boundary tests gồm đúng 20 USD | Thay ranh giới trước theo quyết định mới, giữ mở partial | updated |
+| 2026-10-17 | tasks.md | Ghi câu 5/slot guard trong 42.1/42.3, RTM 27 AC | Approval sau đợt chỉ cho phép chi từ đợt 23:00 UTC kế tiếp | updated |
+| 2026-10-17 | tasks.md | Ghi câu 6/skip missed dispatch trong 42.1/42.3, RTM 28 AC | Đợi đợt 23:00 UTC kế tiếp sau downtime, không trì hoãn đối soát đã gửi | updated |
+| 2026-10-17 | tasks.md | Ghi câu 7/approval invalidation theo tổng mới, RTM 29 AC | Gộp cashback trước đợt, kiểm race sync/approve/send theo version | updated |
+| 2026-10-17 | tasks.md | Câu 8 chốt cutoff 23:00 UTC/manifest bền vững, RTM 30 AC | Kiểm nguồn mới trước/sau cutoff, worker trễ/replay và correction trước gửi | updated |
+| 2026-10-17 | tasks.md | Câu 9 deferred retry/slot guard, RTM 31 AC | Kiểm job backoff/RETRY không gửi lại trước đợt ngày sau, UNKNOWN không tự retry | updated |
+| 2026-10-17 | tasks.md | Bổ sung 42.0b đánh giá full-spec, gate #34–35 trước 42.2, cutover 42.3a–e và RTM 24 AC/GWT chưa chạy | Nhận phản biện review: quyết định mở không phải lỗi bỏ sót, cần recovery/cutover/truy vết rõ hơn | updated |
+| 2026-10-17 | tasks.md | Thêm 42.1p: module chính sách thuần USDT nội bộ + 7 test; 42.2 vẫn chặn bởi #34–35 | Làm phần đã chốt, không phụ thuộc grain/khóa nguồn | added |
+| 2026-10-17 | tasks.md | Hoàn thành đặc tả 42.0a nguồn chi chung và async; #33 đã chốt, thêm durable jobs/checkpoint/commands/freshness/recovery vào các bước implementation chưa làm | Đồng bộ Task 42 với yêu cầu tự đồng bộ CustomerPayable sau ingest và dùng cho cả auto/manual | updated |
+| 2026-10-17 | tasks.md | Thêm Task 42; hoàn thành bước đặc tả business 42.0, các bước quyết định/schema/API/UI/kiểm chứng vẫn chưa làm | Người dùng yêu cầu spec trước code cho bảng lịch sử khoản phải trả | added |
 | 2026-10-14 | tasks.md | Hoàn thành Task 41 theo từng bước: spec, migration/core gates, API/UI; Docker build, 29 web tests, pause integration và sync regression đạt; giữ localhost | Người dùng yêu cầu Pause sync từng sàn | added |
 | 2026-10-14 | tasks.md | QA tiếp Task 40: 11 DOM state tests, sửa calculator/lookup/ARIA, rebuild local; web 26 và core lookup 4 tests đạt; lập phương án các nhóm còn mở | Người dùng yêu cầu hoàn tất kiểm tra UI rồi rà phương án triển khai phần khác | updated |
 | 2026-10-14 | tasks.md | Review Task 40: hiển thị % share chính xác (`sharePercent`, bỏ lỗi float như 0.57 → 56.99999999999999%), brand lấy từ `site.name`, logo trang chi tiết không đọc trùng tên, xóa stats placeholder và message `home.*` không còn dùng; web typecheck/lint/build và 5 unit test đạt | Clean code sau khi triển khai UI | updated |
@@ -1034,9 +1116,11 @@ flowchart TD
 | 2026-09-26 | tasks.md | Task 20 Bybit Affiliate API sync: lập và code 20.0–20.4 (adapter framework, drift, metric nhiều asset, connector theo probe thật, lịch 30m/1h/12h/24h, admin controls); 20.5 rollout còn mở | Activity sync không ghi ví; API không có pending/settled | added |
 | 2026-09-26 | tasks.md | Task 32 admin IA (Data ingest / Reports): hoàn thành 32.1–32.3 và 32.5 (descriptor adapter, API `/api/admin/ingest/*`, `/api/admin/reports/activity`, alias và redirect route cũ, form upload theo registry, sửa review) | Req 18.2, 18.7, 18.8 | added |
 | 2026-09-26 | tasks.md | Task 33 raw landing layer: hoàn thành 33.1–33.5 (`raw_record` partition theo sàn, LOAD → TRANSFORM async, re-transform có audit, retention 30 ngày); deploy web + worker, upload/publish qua route mới | Req 6.23–6.26 | added |
-| 2026-09-27 | tasks.md | Mục bắt buộc tuân thủ `.kiro/steering/` ở đầu file: test trên stack Docker mô phỏng Railway (`infra/docker-compose.yml`), Railway chỉ để debug/đọc dữ liệu khi được yêu cầu; các bước verify của Task 20.5, 32, 33 chuyển sang Docker | Người dùng đổi chính sách môi trường test | updated |
+| 2026-09-27 | tasks.md | Mục bắt buộc tuân thủ `.claude/rules/` ở đầu file: test trên stack Docker mô phỏng Railway (`infra/docker-compose.yml`), Railway chỉ để debug/đọc dữ liệu khi được yêu cầu; các bước verify của Task 20.5, 32, 33 chuyển sang Docker | Người dùng đổi chính sách môi trường test | updated |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 34: admin nav dropdown cho Data ingest/Reports, link xếp dọc và tự mở nhóm hiện tại; typecheck/lint/build web qua | Req 18.9 và phản hồi về sidebar khó đọc | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 35: worker ghi readiness, web đọc trạng thái còn hạn, tránh yêu cầu Bybit secret trên web; Docker build/migration/integration qua; probe thật local báo IP_ALLOWLIST_REQUIRED | Req 13.14, sửa lỗi Connector is not ready giả và hiện đúng blocker | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 36: bỏ cổng chặn key không IP allowlist, giữ cảnh báo/expiry và lỗi Bybit 401/403; Docker build/unit/integration qua, probe key local báo READY với IP `*` | Req 13.12 theo yêu cầu người vận hành | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 37: mặc định period start/end của Referral activity là hôm nay theo UTC và bỏ ô source timezone của báo cáo; Docker web build qua | Req 18.10 và yêu cầu giảm thao tác lọc báo cáo | added |
 | 2026-09-27 | tasks.md | Thêm và hoàn thành Task 38: giải thích trạng thái dữ liệu, làm nổi bật nút lịch và thêm Previous/First cho báo cáo nhiều trang; Docker web build qua | Req 18.11–18.12 và phản hồi về khả năng sử dụng | added |
+| 2026-10-21 | tasks.md | Thêm Task 43 triển khai và kiểm chứng các quyết định cuộc họp; đánh dấu Task 40.3–40.4 là bản đầu được thay thế | Truy vết spec/code/test, không tự mở phạm vi sender/cutover hoặc quyết định còn lại | added/updated |
+| 2026-10-30 | tasks.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |

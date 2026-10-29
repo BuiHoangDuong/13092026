@@ -34,11 +34,6 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   {messages.nav.guides}
                 </Link>
               </nav>
-              <div className="ml-auto flex items-center gap-4 text-sm font-medium text-muted-foreground">
-                <Link href="/withdraw" className="transition-colors hover:text-foreground">
-                  {messages.nav.wallet}
-                </Link>
-              </div>
             </div>
           </header>} legacyFooter={<footer className="border-t border-border">
             <div className="mx-auto max-w-6xl px-6 py-14">

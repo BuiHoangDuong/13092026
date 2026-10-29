@@ -40,6 +40,7 @@ async function main() {
         exchangeId: exchange.id,
         status: PublishStatus.PUBLISHED,
         cashbackRate: item.rate,
+        estimatedVolumeRate: "0.0001", // Illustrative estimate only.
         conditions: { en: "Cashback applies to eligible affiliate commission." },
         verifiedAt: new Date()
       },
@@ -48,6 +49,7 @@ async function main() {
         exchangeId: exchange.id,
         status: PublishStatus.PUBLISHED,
         cashbackRate: item.rate,
+        estimatedVolumeRate: "0.0001", // Illustrative estimate only.
         conditions: { en: "Cashback applies to eligible affiliate commission." },
         verifiedAt: new Date()
       }

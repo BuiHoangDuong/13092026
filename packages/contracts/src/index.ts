@@ -6,6 +6,7 @@ export const assetSchema = z.string().trim().min(1).max(16).transform((value) =>
 export const decimalStringSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/, "Must be a decimal string");
 export const rateSchema = z.string()
   .regex(/^(?:0(?:\.\d{1,4})?|1(?:\.0{1,4})?)$/, "Rate must be between 0 and 1 with at most 4 decimal places");
+export const estimatedVolumeRateSchema = z.string().regex(/^(?:0(?:\.\d{1,10})?|1(?:\.0{1,10})?)$/, "Rate must be between 0 and 1 with at most 10 decimal places");
 export const moneySchema = z.object({ amount: decimalStringSchema, asset: assetSchema });
 export type Money = z.infer<typeof moneySchema>;
 
@@ -36,7 +37,7 @@ export const adminExchangeCreateSchema = z.object({
 export const adminExchangeUpdateSchema = adminExchangeCreateSchema.partial().extend({ id: z.string().min(1) });
 export const adminOfferCreateSchema = z.object({
   exchangeId: z.string().min(1), status: publishStatusSchema.default("DRAFT"), cashbackRate: rateSchema,
-  conditions: localizedTextSchema, verifiedAt: z.iso.datetime().nullable().optional()
+  estimatedVolumeRate: estimatedVolumeRateSchema.nullable().optional(), conditions: localizedTextSchema, verifiedAt: z.iso.datetime().nullable().optional()
 });
 export const adminOfferUpdateSchema = adminOfferCreateSchema.partial().extend({ id: z.string().min(1) });
 export const adminLinkCreateSchema = z.object({
@@ -64,7 +65,7 @@ export const exchangeSchema = z.object({
   id: z.string(), slug: z.string(), name: z.string(), status: publishStatusSchema,
   logoUrl: z.string().regex(/^\/exchange-logos\/[a-z0-9]+(?:-[a-z0-9]+)*\.png$/).nullable(),
   defaultCashbackRate: decimalStringSchema.nullable(), locale: localeSchema,
-  offers: z.array(z.object({ id: z.string(), cashbackRate: decimalStringSchema, conditions: z.unknown().nullable() }))
+  offers: z.array(z.object({ id: z.string(), cashbackRate: decimalStringSchema, estimatedVolumeRate: decimalStringSchema.nullable(), conditions: z.unknown().nullable() }))
 });
 export const exchangesResponseSchema = z.object({ exchanges: z.array(exchangeSchema) });
 
@@ -93,16 +94,20 @@ export const walletResponseSchema = z.object({
 });
 export type WalletResponse = z.infer<typeof walletResponseSchema>;
 export const lookupRequestSchema = z.object({ exchangeId: z.string().trim().min(1).max(128), uid: z.string().trim().min(1).max(128) }).strict();
+const lookupMetricSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("REPORTED"), amount: decimalStringSchema }).strict(),
+  z.object({ status: z.enum(["NO_DATA", "INSUFFICIENT_DETAIL"]), amount: z.null() }).strict()
+]);
 export const lookupResponseSchema = z.object({
-  balances: z.array(z.object({ asset: assetSchema, pending: decimalStringSchema, available: decimalStringSchema }).strict()),
+  balances: z.array(z.object({ asset: assetSchema, totalPaid: decimalStringSchema, previousDay: lookupMetricSchema, rolling30Days: lookupMetricSchema }).strict()),
+  summaryPeriods: z.object({ reportDay: z.iso.date().nullable(), end: z.iso.datetime().nullable(), rollingStart: z.iso.datetime().nullable() }).strict(),
   hasData: z.boolean(), hasMore: z.boolean(), lastImportAt: z.iso.datetime().nullable(), sourceAsOf: z.iso.datetime().nullable(),
   transactions: z.array(z.object({
     id: z.string(),
     asset: assetSchema,
     periodStart: z.iso.datetime(),
     periodEnd: z.iso.datetime(),
-    commission: decimalStringSchema,
-    cashbackRate: decimalStringSchema.nullable(),
+    uid: z.string(),
     cashback: decimalStringSchema
   }).strict())
 }).strict();
@@ -237,3 +242,22 @@ export const activityReportResponseSchema = z.object({
 export type ActivityReportResponse = z.infer<typeof activityReportResponseSchema>;
 
 export const jobPayloadSchema = z.object({ type: z.string(), payload: z.record(z.string(), z.unknown()) });
+
+// ---------- Customer payables ledger (Req 22) ----------
+export const payableCommandSchema = z.object({
+  type: z.enum(["APPROVE", "CANCEL", "RECONCILE", "MARK_PAID"]),
+  commandKey: z.string().trim().regex(/^[\w:.-]{8,100}$/),
+  expectedVersion: z.number().int().positive().optional(),
+  note: z.string().trim().max(1000).optional(),
+  reference: z.string().trim().min(1).max(256).optional(),
+  amount: z.string().regex(/^\d{1,20}(?:\.\d{1,10})?$/).optional(),
+  toUid: z.string().trim().min(1).max(128).optional()
+}).strict().refine(v => v.type !== "APPROVE" || v.expectedVersion !== undefined, "expectedVersion is required to approve")
+  .refine(v => v.type !== "MARK_PAID" || Boolean(v.reference && v.amount && v.toUid), "reference, amount and toUid are required to mark paid");
+export const payableListQuerySchema = z.object({
+  status: z.enum(["UNPAID", "PAID", "ALL"]).default("UNPAID"),
+  exchangeId: z.string().optional(), uid: z.string().max(128).optional(), asset: z.string().regex(/^[A-Z0-9]{1,16}$/).optional(),
+  includeClosed: z.enum(["true", "false"]).default("false").transform(v => v === "true"),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+}).strict();
+export const moneyFlowModeSchema = z.object({ mode: z.enum(["LEGACY", "FROZEN", "PAYABLE_ONLY"]) }).strict();

@@ -73,6 +73,10 @@ enum JobType {
   ATTRIBUTE
   RELEASE_HOLDS
   SYNC
+  SYNC_PAYABLES
+  PAYOUT_SLOT
+  PAYOUT_RECONCILE
+  PAYABLE_COMMAND
 }
 
 enum RawLoadState {
@@ -142,20 +146,20 @@ enum SyncAuditAction {
 }
 
 model Exchange {
-  id                  String         @id @default(cuid())
-  slug                String         @unique
+  id                  String              @id @default(cuid())
+  slug                String              @unique
   name                String
   logoUrl             String? // Root-relative path to a repo asset in /exchange-logos/.
-  status              PublishStatus  @default(DRAFT)
-  defaultCashbackRate Decimal?       @db.Decimal(6, 4)
+  status              PublishStatus       @default(DRAFT)
+  defaultCashbackRate Decimal?            @db.Decimal(6, 4)
   i18n                Json?
   uidAccounts         UidAccount[]
   offers              Offer[]
   links               ReferralLink[]
   guides              Guide[]
   syncConfig          ExchangeSyncConfig?
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
 }
 
 model Offer {
@@ -165,6 +169,7 @@ model Offer {
   exchange     Exchange       @relation(fields: [exchangeId], references: [id], onDelete: Cascade)
   status       PublishStatus  @default(DRAFT)
   cashbackRate Decimal        @db.Decimal(6, 4)
+  estimatedVolumeRate Decimal? @db.Decimal(12, 10)
   conditions   Json?
   verifiedAt   DateTime?
   i18n         Json?
@@ -215,18 +220,20 @@ model AdminAccount {
 }
 
 model UidAccount {
-  id           String             @id @default(cuid())
-  exchangeId   String
-  exchange     Exchange           @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
-  uid          String
-  boundEmail   String?
-  emailBoundAt DateTime?
-  wallets      Wallet[]
-  withdrawals  Withdrawal[]
-  otps         EmailOtp[]
-  sessions     UidSession[]
-  commissions  CommissionRecord[]
-  createdAt    DateTime           @default(now())
+  id               String             @id @default(cuid())
+  exchangeId       String
+  exchange         Exchange           @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
+  uid              String
+  boundEmail       String?
+  emailBoundAt     DateTime?
+  wallets          Wallet[]
+  withdrawals      Withdrawal[]
+  otps             EmailOtp[]
+  sessions         UidSession[]
+  commissions      CommissionRecord[]
+  payables         CustomerPayable[]
+  payoutExecutions PayoutExecution[]
+  createdAt        DateTime           @default(now())
 
   @@unique([exchangeId, uid])
   @@index([boundEmail])
@@ -283,36 +290,37 @@ model Session {
 }
 
 model ImportBatch {
-  id           String              @id @default(cuid())
-  exchangeId   String
-  rootAccount  String
-  datasetKind  IngestDatasetKind
-  sourceMethod IngestSourceMethod
-  reportType   ReportType?
-  periodStart  DateTime
-  periodEnd    DateTime
-  sourceTz     String
-  sourceAsOf   DateTime?
-  fileRef      String
-  originalFile Bytes?
-  publishedAt  DateTime?
-  status       BatchStatus         @default(UPLOADED)
-  totals       Json?
+  id                String              @id @default(cuid())
+  exchangeId        String
+  rootAccount       String
+  datasetKind       IngestDatasetKind
+  sourceMethod      IngestSourceMethod
+  reportType        ReportType?
+  periodStart       DateTime
+  periodEnd         DateTime
+  sourceTz          String
+  sourceAsOf        DateTime?
+  fileRef           String
+  originalFile      Bytes?
+  publishedAt       DateTime?
+  status            BatchStatus         @default(UPLOADED)
+  totals            Json?
   schemaFingerprint String?
   adapterId         String?
   contractVersion   String?
   driftReport       Json?
-  createdAt    DateTime            @default(now())
-  rows         StagingRow[]
-  versions     CommissionVersion[]
-  snapshots    ReferralSnapshot[]
-  rawLoads     RawLoad[]
+  createdAt         DateTime            @default(now())
+  rows              StagingRow[]
+  versions          CommissionVersion[]
+  snapshots         ReferralSnapshot[]
+  rawLoads          RawLoad[]
 
   @@index([exchangeId, createdAt])
+  @@index([exchangeId, datasetKind, status, periodEnd])
 }
 
 model RawLoad {
-  id                String       @id @default(cuid())
+  id                String              @id @default(cuid())
   exchangeId        String
   sourceSystem      String
   datasetKind       IngestDatasetKind
@@ -321,16 +329,16 @@ model RawLoad {
   periodStart       DateTime
   periodEnd         DateTime
   batchId           String?
-  batch             ImportBatch? @relation(fields: [batchId], references: [id])
+  batch             ImportBatch?        @relation(fields: [batchId], references: [id])
   runId             String?
-  state             RawLoadState @default(LOADED)
+  state             RawLoadState        @default(LOADED)
   rowCount          Int
   fieldNames        Json
   schemaFingerprint String
   sourceMetadata    Json?
   driftReport       Json?
   safeErrorCode     String?
-  loadedAt          DateTime     @default(now())
+  loadedAt          DateTime            @default(now())
   transformedAt     DateTime?
   audits            RawTransformAudit[]
 
@@ -363,29 +371,29 @@ model StagingRow {
 
 /// Period referral metrics. Not payable commission and not a wallet balance.
 model ReferralSnapshot {
-  id               String      @id @default(cuid())
+  id               String           @id @default(cuid())
   batchId          String
-  batch            ImportBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  batch            ImportBatch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
   exchangeId       String
   rootAccount      String
   uid              String
   periodStart      DateTime
   periodEnd        DateTime
-  tradingVolume    Decimal     @db.Decimal(30, 10)
+  tradingVolume    Decimal          @db.Decimal(30, 10)
   tradingAsset     String
-  reportedEarnings Decimal     @db.Decimal(30, 10)
+  reportedEarnings Decimal          @db.Decimal(30, 10)
   earningsAsset    String
   referralCode     String?
-  partial          Boolean     @default(false)
-  current          Boolean     @default(true)
-  importedAt       DateTime    @default(now())
+  partial          Boolean          @default(false)
+  current          Boolean          @default(true)
+  importedAt       DateTime         @default(now())
   metrics          ReferralMetric[]
+  // One current row per (exchange, root, uid, exact period) is a partial unique
+  // index WHERE current = true, added in SQL because Prisma cannot declare it.
 
   @@unique([batchId, uid])
   @@index([exchangeId, rootAccount, periodStart, periodEnd, current])
   @@index([exchangeId, uid, periodEnd])
-  // One current row per (exchange, root, uid, exact period) is a partial unique
-  // index WHERE current = true, added in SQL because Prisma cannot declare it.
 }
 
 /// Manual snapshot metrics. API sync uses ActivityMetricCurrent instead.
@@ -402,27 +410,27 @@ model ReferralMetric {
 }
 
 model ExchangeSyncConfig {
-  exchangeId           String   @id
-  exchange             Exchange @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
-  rootAccount          String
-  enabled              Boolean  @default(false)
-  adminPaused          Boolean  @default(false)
-  intervalMinutes      Int      @default(30)
-  backfillDays         Int      @default(365)
-  nextRunAt            DateTime?
-  lastAttemptAt        DateTime?
-  lastSuccessAt        DateTime?
-  lastFetchedPeriodEnd DateTime?
-  consecutiveFailures  Int      @default(0)
-  pausedReason         String?
-  credentialsConfigured Boolean  @default(false)
-  readinessReady        Boolean  @default(false)
+  exchangeId            String    @id
+  exchange              Exchange  @relation(fields: [exchangeId], references: [id], onDelete: Restrict)
+  rootAccount           String
+  enabled               Boolean   @default(false)
+  adminPaused           Boolean   @default(false)
+  intervalMinutes       Int       @default(30)
+  backfillDays          Int       @default(365)
+  nextRunAt             DateTime?
+  lastAttemptAt         DateTime?
+  lastSuccessAt         DateTime?
+  lastFetchedPeriodEnd  DateTime?
+  consecutiveFailures   Int       @default(0)
+  pausedReason          String?
+  credentialsConfigured Boolean   @default(false)
+  readinessReady        Boolean   @default(false)
   readinessReason       String?
   readinessCheckedAt    DateTime?
   readinessExpiresAt    DateTime?
-  readinessIpWarning    Boolean  @default(false)
-  updatedBy            String?
-  updatedAt            DateTime @updatedAt
+  readinessIpWarning    Boolean   @default(false)
+  updatedBy             String?
+  updatedAt             DateTime  @updatedAt
 }
 
 model SyncRun {
@@ -598,17 +606,18 @@ model Wallet {
 }
 
 model WalletEntry {
-  id               String          @id @default(cuid())
+  id               String           @id @default(cuid())
   walletId         String
-  wallet           Wallet          @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  wallet           Wallet           @relation(fields: [walletId], references: [id], onDelete: Cascade)
   type             WalletEntryType
-  amount           Decimal         @db.Decimal(30, 10)
+  amount           Decimal          @db.Decimal(30, 10)
   sourceRef        String?
-  opKey            String?         @unique
+  opKey            String?          @unique
   availableAt      DateTime?
-  remainingPending Decimal         @default(0) @db.Decimal(30, 10)
+  remainingPending Decimal          @default(0) @db.Decimal(30, 10)
   balanceChanges   Json?
-  createdAt        DateTime        @default(now())
+  createdAt        DateTime         @default(now())
+  payable          CustomerPayable?
 
   @@index([walletId, createdAt])
 }
@@ -666,10 +675,208 @@ model Job {
 }
 
 model WorkerHeartbeat {
-  id         String   @id
-  startedAt  DateTime @default(now())
-  lastSeenAt DateTime @default(now())
+  id         String    @id
+  startedAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
   stoppedAt  DateTime?
 
   @@index([lastSeenAt])
+}
+
+// ---------- Customer payables ledger (Req 22; approved #34 release grain, #35 execution mapping) ----------
+enum PaymentStatus {
+  UNPAID
+  PAID
+}
+
+enum AllocationState {
+  ACTIVE
+  RELEASED
+  SETTLED
+}
+
+enum ExecutionState {
+  AWAITING_APPROVAL
+  READY
+  DISPATCHING
+  SUBMITTED
+  UNKNOWN
+  CONFIRMED
+  FAILED_NOT_SENT
+  INVALIDATED
+  CANCELLED
+}
+
+enum SyncScopeState {
+  SYNCED
+  PENDING
+  FAILED
+}
+
+enum MoneyFlowMode {
+  LEGACY
+  FROZEN
+  PAYABLE_ONLY
+}
+
+enum SlotState {
+  RUNNING
+  DONE
+  MISSED
+  BLOCKED
+}
+
+enum CommandStatus {
+  ACCEPTED
+  DONE
+  REJECTED
+}
+
+/// One payable per released cashback (WalletEntry HOLD_RELEASE). T = entitlement, S = settledAmount, R = activeAmount.
+model CustomerPayable {
+  id                   String              @id @default(cuid())
+  uidAccountId         String
+  uidAccount           UidAccount          @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  exchangeId           String
+  asset                String
+  sourceReleaseEntryId String              @unique
+  sourceRelease        WalletEntry         @relation(fields: [sourceReleaseEntryId], references: [id], onDelete: Restrict)
+  entitlement          Decimal             @db.Decimal(30, 10)
+  settledAmount        Decimal             @default(0) @db.Decimal(30, 10)
+  activeAmount         Decimal             @default(0) @db.Decimal(30, 10)
+  paymentStatus        PaymentStatus       @default(UNPAID)
+  version              Int                 @default(1)
+  releasedAt           DateTime
+  closedAt             DateTime?
+  paidAt               DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  allocations          PayableAllocation[]
+
+  @@unique([uidAccountId, asset, sourceReleaseEntryId])
+  @@index([uidAccountId, asset, releasedAt])
+  @@index([paymentStatus, closedAt])
+}
+
+/// A payout execution: one logical internal USDT transfer to one UID. Legacy Withdrawal rows map via legacyWithdrawalId.
+model PayoutExecution {
+  id                  String              @id @default(cuid())
+  uidAccountId        String
+  uidAccount          UidAccount          @relation(fields: [uidAccountId], references: [id], onDelete: Restrict)
+  exchangeId          String
+  asset               String
+  slotKey             String
+  total               Decimal             @db.Decimal(30, 10)
+  requiresApproval    Boolean
+  state               ExecutionState
+  version             Int                 @default(1)
+  valuationMode       String
+  policyVersion       String
+  approvedBy          String?
+  approvedAt          DateTime?
+  approvedVersion     Int?
+  approvedTotal       Decimal?            @db.Decimal(30, 10)
+  earliestSendAt      DateTime
+  blockers            Json                @default("[]")
+  dispatchKey         String?             @unique
+  sourceAccountId     String?
+  snapshot            Json?
+  providerRef         String?
+  paidAmount          Decimal?            @db.Decimal(30, 10)
+  feeAmount           Decimal?            @db.Decimal(30, 10)
+  failureCode         String?
+  previousExecutionId String?
+  legacyWithdrawalId  String?             @unique
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  dispatchedAt        DateTime?
+  confirmedAt         DateTime?
+  allocations         PayableAllocation[]
+
+  @@index([uidAccountId, asset, state])
+  @@index([state, earliestSendAt])
+  @@index([slotKey])
+}
+
+model PayableAllocation {
+  id          String          @id @default(cuid())
+  executionId String
+  execution   PayoutExecution @relation(fields: [executionId], references: [id], onDelete: Restrict)
+  payableId   String
+  payable     CustomerPayable @relation(fields: [payableId], references: [id], onDelete: Restrict)
+  amount      Decimal         @db.Decimal(30, 10)
+  state       AllocationState @default(ACTIVE)
+  createdAt   DateTime        @default(now())
+  closedAt    DateTime?
+
+  @@unique([executionId, payableId])
+  @@index([payableId, state])
+}
+
+/// Append-only audit of payable/execution changes (Req 22.13). Never stores secrets.
+model PayableEvent {
+  id           String    @id @default(cuid())
+  uidAccountId String
+  executionId  String?
+  payableId    String?
+  kind         String
+  actorType    ActorType
+  actorId      String?
+  detail       Json?
+  createdAt    DateTime  @default(now())
+
+  @@index([uidAccountId, createdAt])
+  @@index([executionId, createdAt])
+}
+
+/// Sync checkpoint per (UID account, asset): source writers bump sourceVersion, SYNC_PAYABLES applies it (Req 22.17-22.18).
+model PayableSyncScope {
+  uidAccountId      String
+  asset             String
+  sourceVersion     Int            @default(0)
+  appliedVersion    Int            @default(0)
+  state             SyncScopeState @default(PENDING)
+  pendingCorrection Boolean        @default(false)
+  invariantError    String?
+  lastError         String?
+  lastAppliedAt     DateTime?
+  updatedAt         DateTime       @updatedAt
+
+  @@id([uidAccountId, asset])
+  @@index([state])
+}
+
+/// One row per daily 23:00 UTC payout slot; manifest freezes the cutoff list (Req 22.30).
+model PayoutSlot {
+  slotKey    String    @id
+  cutoffAt   DateTime
+  state      SlotState @default(RUNNING)
+  manifest   Json?
+  summary    Json?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+}
+
+model PayableCommand {
+  id            String        @id @default(cuid())
+  commandKey    String        @unique
+  type          String
+  executionId   String
+  payloadDigest String
+  actorId       String
+  status        CommandStatus @default(ACCEPTED)
+  result        Json?
+  createdAt     DateTime      @default(now())
+  finishedAt    DateTime?
+
+  @@index([executionId, createdAt])
+}
+
+/// Single-row DB gate for the money-flow cutover (Req 22.24). Missing/unknown mode fails closed.
+model MoneyFlowGate {
+  id        Int           @id @default(1)
+  mode      MoneyFlowMode @default(LEGACY)
+  version   Int           @default(1)
+  updatedBy String?
+  updatedAt DateTime      @updatedAt
 }

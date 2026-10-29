@@ -10,8 +10,11 @@ packages/db/dist/
 infra/data/
 *.log
 *.tsbuildinfo
-.kiro/skills
+.claude/skills/
+.claude/worktrees/
+.claude/settings.local.json
 cashback/
 data/*
 .env.example
 mockups/
+_local/*

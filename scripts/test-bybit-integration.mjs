@@ -39,10 +39,13 @@ try {
   const referral = await db.referralLink.create({ data: { exchangeId: exchange.id, offerId: offer.id, destination: 'https://www.bybit.com/' } });
   const base = { exchangeId: exchange.id, rootAccount: 'bybit-test-root', datasetKind: 'COMMISSION', sourceMethod: 'NORMALIZED_FILE', reportType: 'AGGREGATE', periodStart: '2026-09-01T00:00:00Z', periodEnd: '2026-09-01T23:59:59Z', sourceTz: 'UTC' };
   async function runNext(expected) {
-    const job = await core.claimNextJob(120, 'test');
+    let job = await core.claimNextJob(120, 'test');
+    // Payable sync (Req 22.17) is enqueued by release/attribution; it is not part of what this script asserts, so run it inline.
+    while (job && job.type === 'SYNC_PAYABLES') { await core.syncPayablesJob({ id: job.id, lockedBy: job.lockedBy }, job.payload); job = await core.claimNextJob(120, 'test'); }
     assert(job && job.lockedBy); if (expected) assert.equal(job.type, expected);
     const lease = { id: job.id, lockedBy: job.lockedBy };
-    if (job.type === 'PARSE') await core.parseImportJob(lease, job.payload.batchId);
+    if (job.type === 'PARSE' || job.type === 'LOAD') await core.parseImportJob(lease, job.payload.batchId);
+    else if (job.type === 'TRANSFORM') await core.transformImportJob(lease, (await db.rawLoad.findUniqueOrThrow({ where: { id: job.payload.loadId } })).id);
     else if (job.type === 'PUBLISH') await core.publishImportJob(lease, job.payload.batchId);
     else if (job.type === 'ATTRIBUTE') await core.attributeJob(lease, job.payload.exchangeId);
     else if (job.type === 'RELEASE_HOLDS') await core.releaseHoldsJob(lease);
@@ -51,7 +54,7 @@ try {
   }
   async function importCsv(text, metadata = {}) {
     const result = await core.createImportBatch({ ...base, ...metadata }, { bytes: Buffer.from(text), extension: 'csv' });
-    await runNext('PARSE'); return result.batchId;
+    await runNext('LOAD'); await runNext('TRANSFORM'); return result.batchId;
   }
   async function report(amount, metadata = {}) {
     const id = await importCsv(`uid,asset,commission\n00123,USDT,${amount}`, metadata);
