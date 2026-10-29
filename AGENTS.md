@@ -31,6 +31,8 @@ node scripts/test-<name>.mjs                          # DB integration; needs TE
 - Only the Docker Postgres: `docker compose -f infra/docker-compose.yml up -d postgres` → `postgresql://postgres:postgres@localhost:5432/railway`. Migrate/seed/reset there freely.
 - Before any DB command check `DATABASE_URL`/`TEST_DATABASE_URL`: if the host matches `*.rlwy.net`, `*.railway.internal`, `*.up.railway.app`, stop and report.
 - No other Postgres, no SQLite. If Docker is unavailable, skip DB steps and report it.
+- The root `.env` may point at Railway: set `DATABASE_URL` and `TEST_DATABASE_URL` to the Docker URL inline in every DB command (`with-root-env.mjs` never overrides already-set env). Do not use `prisma migrate reset`; use a fresh `?schema=` instead.
+- Never edit, rename or delete a migration folder that exists in any pushed commit; fix forward with a new idempotent migration.
 - New migrations: hand-written folder `packages/db/prisma/migrations/YYYYMMDD000N_snake_case/migration.sql`, matching existing style.
 
 ## Architecture essentials
