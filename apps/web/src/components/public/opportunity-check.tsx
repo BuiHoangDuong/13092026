@@ -5,7 +5,7 @@ import { ArrowRight, ShieldCheck } from "lucide-react";
 import { getMessages, localePath, type Locale } from "../../i18n";
 import { calculateVolumeEstimate, formatVolume, normalizeVolume } from "../../lib/opportunity";
 
-export type EstimateOffer = { id: string; exchangeId: string; exchangeName: string; slug: string; commissionVolumeRate: string; cashbackRate: string };
+export type EstimateOffer = { id: string; exchangeId: string; exchangeName: string; slug: string; cashbackRate: string };
 export function OpportunityCheck({ offers, locale }: { offers: EstimateOffer[]; locale: Locale }) {
   const m = getMessages(locale).aurora;
   const defaultOffer = offers.find(offer => offer.slug === "bybit") ?? offers[0];
@@ -15,7 +15,7 @@ export function OpportunityCheck({ offers, locale }: { offers: EstimateOffer[]; 
   if (offerId !== (selected?.id ?? "")) setOfferId(selected?.id ?? "");
   const exchangeOffers = offers.filter(offer => offer.exchangeId === selected?.exchangeId);
   const exchanges = [...new Map(offers.map(offer => [offer.exchangeId, offer])).values()];
-  const estimate = selected ? calculateVolumeEstimate(volume, selected.commissionVolumeRate, selected.cashbackRate) : null;
+  const estimate = selected ? calculateVolumeEstimate(volume, selected.cashbackRate) : null;
   const invalid = Boolean(selected && !estimate);
   return <section className="aurora-opportunity" id="opportunity" aria-labelledby="opportunity-title">
     <div className="aurora-opportunity-top"><div><p className="aurora-kicker">{m.opportunityKicker}</p><h2 id="opportunity-title">{m.opportunityTitle}</h2></div><span className="aurora-pill">{m.estimateBadge}</span></div>

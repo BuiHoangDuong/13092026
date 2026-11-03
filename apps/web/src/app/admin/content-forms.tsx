@@ -2,10 +2,9 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { defaultLocale, getMessages } from "../../i18n";
 import { retainedChoiceId } from "@/lib/retained-choice";
 
-type Exchange = { id: string; slug: string; name: string; status: "DRAFT" | "PUBLISHED"; defaultCashbackRate: string | null; commissionVolumeRate: string; i18n: unknown };
+type Exchange = { id: string; slug: string; name: string; status: "DRAFT" | "PUBLISHED"; defaultCashbackRate: string | null; i18n: unknown };
 type Offer = { id: string; exchangeId: string; status: "DRAFT" | "PUBLISHED"; cashbackRate: string; conditions: unknown };
 type LinkRow = { id: string; exchangeId: string; offerId: string | null; destination: string; active: boolean };
 type Guide = { id: string; slug: string; exchangeId: string | null; status: "DRAFT" | "PUBLISHED"; i18n: unknown };
@@ -115,12 +114,11 @@ export function AdminExchangesSection() {
     <Editor title="Exchanges" rows={exchanges} onEdit={setEditingId} label={(row) => `${row.name} · ${row.status}`} onLoadMore={loadMore}>
       <form key={selected?.id ?? "new-exchange"} onSubmit={(event) => {
         event.preventDefault(); const form = new FormData(event.currentTarget);
-        save("exchanges", { slug: form.get("slug"), name: form.get("name"), defaultCashbackRate: form.get("rate") || null, commissionVolumeRate: form.get("commissionVolumeRate"), status: form.get("status"), i18n: { en: { name: form.get("enName"), description: form.get("enDescription") } } }, selected?.id).catch((error) => setMessage(error.message));
+        save("exchanges", { slug: form.get("slug"), name: form.get("name"), defaultCashbackRate: form.get("rate") || null, status: form.get("status"), i18n: { en: { name: form.get("enName"), description: form.get("enDescription") } } }, selected?.id).catch((error) => setMessage(error.message));
       }}>
         <input name="slug" placeholder="slug" required defaultValue={selected?.slug} />
         <input name="name" placeholder="Internal name" required defaultValue={selected?.name} />
         <input name="rate" placeholder="Rate, e.g. 0.4" defaultValue={selected?.defaultCashbackRate ?? ""} />
-        <label htmlFor="commission-volume-rate">{getMessages(defaultLocale).adminContent.commissionVolumeRate}</label><input id="commission-volume-rate" name="commissionVolumeRate" inputMode="decimal" required pattern="(?:0(?:[.][0-9]{1,10})?|1(?:[.]0{1,10})?)" defaultValue={selected?.commissionVolumeRate ?? "0.01"} />
         <StatusSelect value={selected?.status} />
         <input name="enName" placeholder="English name" required defaultValue={text(selected?.i18n, "en", "name")} />
         <textarea name="enDescription" placeholder="English description" required defaultValue={text(selected?.i18n, "en", "description")} />

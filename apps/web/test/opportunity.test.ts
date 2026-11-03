@@ -35,50 +35,34 @@ test("share percent is exact for rates that float multiplication distorts", () =
   assert.equal(calculateOpportunity("100", "100", "0.57")?.monthly, "57.00");
 });
 
-test("volume-only estimate preserves ten-digit rates and rounds each final result half-up", () => {
-  assert.equal(calculateVolumeEstimate("1,000,000", "0.0001", "1")?.monthly, "100.00");
-  assert.equal(calculateVolumeEstimate("1,000,000", "0.0001", "1")?.annual, "1,200.00");
-  assert.equal(calculateVolumeEstimate("100000000", "0.0000000001", "1")?.monthly, "0.01");
-  assert.equal(calculateVolumeEstimate("100000000", "0.0000000001", "1")?.ratePercent, "0.00000001");
-  assert.equal(calculateVolumeEstimate("0.05", "0.1", "1")?.monthly, "0.01");
-  assert.equal(calculateVolumeEstimate("0.05", "0.1", "1")?.annual, "0.06");
-  assert.equal(calculateVolumeEstimate("0.01", "0.1", "1")?.monthly, "0.00");
-  assert.equal(calculateVolumeEstimate("0.01", "0.1", "1")?.annual, "0.01");
-  assert.equal(calculateVolumeEstimate("9999999999999999.99999999", "1", "1")?.monthly, "10,000,000,000,000,000.00");
-  assert.equal(calculateVolumeEstimate("1", "1", "1")?.ratePercent, "100");
-  for (const [volume, rate] of [["0", "1"], ["100", "0"]]) {
-    assert.equal(calculateVolumeEstimate(volume!, rate!, "1")?.monthly, "0.00");
-    assert.equal(calculateVolumeEstimate(volume!, rate!, "1")?.zero, true);
+test("common fee estimates use exact offer shares and final half-up rounding", () => {
+  const result = calculateVolumeEstimate("1,000,000", "0.30");
+  assert.equal(result?.monthly, "300.00"); assert.equal(result?.annual, "3,600.00"); assert.equal(result?.ratePercent, "0.03");
+  for (const [share, monthly, percent] of [["0", "0.00", "0"], ["1", "1,000.00", "0.1"], ["0.1234", "123.40", "0.01234"]]) {
+    const estimate = calculateVolumeEstimate("1000000", share!);
+    assert.equal(estimate?.monthly, monthly); assert.equal(estimate?.ratePercent, percent);
   }
+  assert.equal(calculateVolumeEstimate("50", "0.1")?.monthly, "0.01");
+  assert.equal(calculateVolumeEstimate("50", "0.1")?.annual, "0.06");
+  assert.equal(calculateVolumeEstimate("10", "0.1")?.monthly, "0.00");
+  assert.equal(calculateVolumeEstimate("10", "0.1")?.annual, "0.01");
+  assert.equal(calculateVolumeEstimate("9999999999999999.99999999", "1")?.monthly, "10,000,000,000,000.00");
+  assert.equal(calculateVolumeEstimate("9999999999999999.99999999", "1")?.annual, "120,000,000,000,000.00");
+  assert.equal(calculateVolumeEstimate("0.00000001", "1")?.zero, false);
+  assert.equal(calculateVolumeEstimate("0", "1")?.zero, true);
+  assert.equal(calculateVolumeEstimate("100", "0")?.zero, true);
 });
-test("volume formatting and validation reject invalid precision, grouping and rates", () => {
+test("volume formatting and validation reject invalid precision, grouping and shares", () => {
   assert.equal(formatVolume("5000000.12345678"), "5,000,000.12345678");
   assert.equal(normalizeVolume("5,000,000.12345678"), "5000000.12345678");
-  for (const value of ["", " ", "1,00", "1,2,000", "Infinity", "-1", "1e6", "0.123456789", "1.000000000", "10000000000000000"]) assert.equal(calculateVolumeEstimate(value, "0.1", "1"), null);
-  for (const rate of ["", "-1", "1.0000000001", "0.00000000001", "0.10000000000", "NaN", "1e-4"]) assert.equal(calculateVolumeEstimate("100", rate, "1"), null);
+  for (const value of ["", " ", "1,00", "1,2,000", "Infinity", "NaN", "-1", "1e6", "0.123456789", "1.000000000", "10000000000000000"]) assert.equal(calculateVolumeEstimate(value, "1"), null);
+  for (const share of ["", "-1", "1.0001", "0.12345", "NaN", "1e-4"]) assert.equal(calculateVolumeEstimate("100", share), null);
 });
-
-test("admin exchange commission rates accept defaults and ten decimal places and reject invalid rates at the field", () => {
+test("admin exchange schemas have no per-exchange fee setting or default", () => {
   const exchange = { slug: "bybit", name: "Bybit", i18n: { en: { name: "Bybit", description: "Eligible trades" } } };
-  assert.equal(adminExchangeCreateSchema.parse(exchange).commissionVolumeRate, "0.01");
-  assert.equal("commissionVolumeRate" in adminExchangeUpdateSchema.parse({ id: "exchange" }), false);
-  for (const commissionVolumeRate of [undefined, "0", "1", "0.1234567891", "0.0000000001"]) {
-    assert.equal(adminExchangeCreateSchema.safeParse({ ...exchange, commissionVolumeRate }).success, true);
-    assert.equal(adminExchangeUpdateSchema.safeParse({ id: "offer", commissionVolumeRate }).success, true);
+  const removedField = "commission" + "VolumeRate";
+  for (const schema of [adminExchangeCreateSchema, adminExchangeUpdateSchema]) {
+    assert.equal(removedField in schema.shape, false);
+    assert.equal(removedField in schema.parse({ ...exchange, id: "exchange", [removedField]: "0.01" }), false);
   }
-  for (const commissionVolumeRate of [null, "-0.1", "1.0000000001", "0.12345678910", "1e-4", "NaN", ""]) {
-    const parsed = adminExchangeCreateSchema.safeParse({ ...exchange, commissionVolumeRate });
-    assert.equal(parsed.success, false);
-    if (!parsed.success) assert.deepEqual(parsed.error.issues[0]?.path, ["commissionVolumeRate"]);
-  }
-});
-
-test("exchange commission times offer share uses exact scale 1e22", () => {
-  const result = calculateVolumeEstimate("1,000,000", "0.01", "0.30");
-  assert.equal(result?.monthly, "3,000.00"); assert.equal(result?.annual, "36,000.00"); assert.equal(result?.ratePercent, "0.3");
-  assert.equal(calculateVolumeEstimate("100000000", "0.0000000001", "0.3")?.annual, "0.04");
-  assert.equal(calculateVolumeEstimate("0.05", "1", "0.1")?.monthly, "0.01");
-  assert.equal(calculateVolumeEstimate("0.05", "1", "0.1")?.annual, "0.06");
-  assert.equal(calculateVolumeEstimate("1", "0.1234567891", "0.1234")?.ratePercent, "1.523456777494");
-  for (const share of ["", "-1", "1.0001", "0.12345", "1e-4"]) assert.equal(calculateVolumeEstimate("100", "0.01", share), null);
 });

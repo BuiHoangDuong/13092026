@@ -48,20 +48,19 @@ export function formatVolume(value: string): string {
   return whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fraction ? `.${fraction}` : "");
 }
 
-/** Volume 1e8 × exchange commission 1e10 × offer share 1e4; round only final outputs. */
-export function calculateVolumeEstimate(volume: string, commissionVolumeRate: string, cashbackRate: string) {
+/** Volume 1e8 * common fee 1/1000 * offer share 1e4; round only final outputs. */
+export function calculateVolumeEstimate(volume: string, cashbackRate: string) {
   const normalized = normalizeVolume(volume);
   const notional = normalized?.match(/^(\d{1,16})(?:\.(\d{1,8}))?$/);
-  const factor = /^(?:0(?:\.\d{1,10})?|1(?:\.0{1,10})?)$/.test(commissionVolumeRate) ? commissionVolumeRate.split(".") : null;
   const share = /^(?:0(?:\.\d{1,4})?|1(?:\.0{1,4})?)$/.test(cashbackRate) ? cashbackRate.split(".") : null;
-  if (!notional || !factor || !share) return null;
+  if (!notional || !share) return null;
   const volumeUnits = BigInt(notional[1]!) * SCALE + BigInt((notional[2] ?? "").padEnd(8, "0"));
-  const rateUnits = BigInt(factor[0]!) * 10_000_000_000n + BigInt((factor[1] ?? "").padEnd(10, "0"));
   const shareUnits = BigInt(share[0]!) * 10_000n + BigInt((share[1] ?? "").padEnd(4, "0"));
-  const combinedRate = rateUnits * shareUnits;
-  const numerator = volumeUnits * combinedRate;
-  const percentScale = 10n ** 12n;
-  const percentFraction = String(combinedRate % percentScale).padStart(12, "0").replace(/0+$/, "");
-  return { volume: formatVolume(normalized!), ratePercent: `${combinedRate / percentScale}${percentFraction ? `.${percentFraction}` : ""}`,
-    monthly: money(numerator, 10n ** 22n), annual: money(numerator * 12n, 10n ** 22n), zero: numerator === 0n };
+  const feeDenominator = 1_000n;
+  const denominator = SCALE * feeDenominator * 10_000n;
+  const numerator = volumeUnits * shareUnits;
+  const percentScale = feeDenominator * 100n;
+  const percentFraction = String(shareUnits % percentScale).padStart(5, "0").replace(/0+$/, "");
+  return { volume: formatVolume(normalized!), ratePercent: `${shareUnits / percentScale}${percentFraction ? `.${percentFraction}` : ""}`,
+    monthly: money(numerator, denominator), annual: money(numerator * 12n, denominator), zero: numerator === 0n };
 }

@@ -1,8 +1,8 @@
 # Implementation Plan — Cashback Affiliate Platform
 
 - **Status:** Draft v2.3 (UID-first: no customer accounts; cashback lookup by exchange + UID;
-  lookup công khai, tự trả về UID sàn; Task 44 chưa triển khai)
-- **Last updated:** 2026-10-30
+  lookup công khai, tự trả về UID sàn; code cũ 44.1 đã có, Task 45 chưa triển khai)
+- **Last updated:** 2026-11-03
 - **Derives from:** `requirements.md` (Draft v0.9), `design.md` (Draft v1.0)
 
 ## Mandatory: follow `.claude/rules/` before every task
@@ -49,9 +49,9 @@ numbers are stable identifiers cited in code and docs, not an execution order.
   payout Task 39. #23–24 đã chốt theo plan; 40.1–40.4 đã có code và checks Docker đạt.
   40.5 còn chờ visual QA; đổi tên (#22) không chặn UI.
 
-### Current status (2026-10-30)
+### Current status (2026-11-03)
 
-Task 43 có code/bằng chứng lịch sử nhưng công thức calculator, ngày lookup và việc giữ truy cập khách riêng tư đã bị thay thế bởi quyết định 30/10. Task 44 chưa triển khai/kiểm chứng. Khách chỉ lookup công khai theo sàn + UID và nhận chi tự động; admin queue legacy/payables giữ nguyên. Task đã hoàn thành trước đây không chứng minh đáp ứng spec mới.
+Task 43 có code/bằng chứng lịch sử nhưng công thức calculator, ngày lookup và việc giữ truy cập khách riêng tư đã bị thay thế bởi quyết định 30/10. Code calculator cũ của 44.1 đã có qua đối chiếu helper/schema/contracts/DTO/form admin; chưa xác nhận browser. Quyết định phí chung ngày 03/11 thuộc Task 45 chưa triển khai/kiểm chứng; trạng thái 44.2–44.4 không đổi. Khách chỉ lookup công khai theo sàn + UID và nhận chi tự động; admin queue legacy/payables giữ nguyên. Task đã hoàn thành trước đây không chứng minh đáp ứng spec mới.
 
 Open:
 - **Import (Tasks 10.2, 10.8, 10.9, 11.1):** The shared envelope and MEXC Referral Data
@@ -1060,12 +1060,18 @@ flowchart TD
     - Kiểm tra trạng thái 2026-10-22: Docker API không kết nối được; chưa xác nhận web local đang chạy. Kết quả PASS ở 43.4a là bằng chứng lần chạy trước, không phải lần kiểm tra hiện tại.
   - Phạm vi để sau: domain/brand mới, tỷ lệ thật/holding và tài khoản affiliate/API, adapter chi trả thật/cutover, BingX, dashboard nhiều UID, campaign marketing. Không tự chọn hay bật các phần đó.
 
-- [ ] 44. Triển khai quyết định 30/10/2026 (Req 14/19/20; Req 15/16 removed) — **chưa làm**
-  - Tài liệu đã cập nhật trong Bước 1; không tính là đã triển khai Task 44. Không migrate/DB, stage/commit hoặc deploy trong bước này.
-  - [ ] 44.1 Calculator volume-only: thêm Exchange.commissionVolumeRate Decimal(12,10) NOT NULL DEFAULT 0.01 và migration `202610300002_exchange_commission_volume_rate` idempotent sau `202610300001_offer_volume_estimate` (CHECK [0,1]); admin form sàn/validation tối đa 10 chữ số; public DTO decimal string; ước tính = volume × commissionVolumeRate × Offer.cashbackRate; form không bao giờ bị disable toàn bộ khi có offer; kiểm tra bằng browser; volume mặc định 1,000,000 USDT/nhóm nghìn, tháng/năm tính chính xác và chỉ round hiển thị. Mặc định đã chốt, có thể chỉnh sau trong code; không cần xác nhận lại.
+- [ ] 44. Triển khai quyết định 30/10/2026 (Req 14/19/20; Req 15/16 removed) — phần code calculator đã có; các mục còn lại giữ trạng thái chưa xác nhận
+  - Đối chiếu 03/11/2026: phần code calculator cũ đã có trong helper/schema/contracts/DTO/form admin; chưa có bằng chứng browser mới. Bước này chỉ sửa tài liệu, không chạy kiểm chứng runtime, migrate/DB hoặc deploy.
+  - [x] 44.1 [Phần code lịch sử; công thức được thay thế bởi Task 45 ngày 03/11/2026] Calculator volume-only theo cấu hình phí từng sàn đã tồn tại: `calculateVolumeEstimate` trong `apps/web/src/lib/opportunity.ts`, model Exchange trong `packages/db/prisma/schema.prisma`, contracts, DTO/SSR và admin form. Đây là xác nhận có code, không xác nhận runtime/browser đạt; kiểm chứng browser còn mở tại 44.4/45.4. Lịch sử field và hai migration cũ được ghi trong Changelog và design, không sửa/xoá migration đã push.
   - [ ] 44.2 Lookup latest reported day: helper latestReportedDay từ ImportBatch COMMISSION/PUBLISHED, full UTC day ≤ hôm qua, day detail và sourceAsOf không partial; index `(exchangeId, datasetKind, status, periodEnd)` và migration index; summaryPeriods { reportDay, rollingStart, end }, kỳ D và [D−29,D+1), hasData=false/cùng shape rỗng và message cho UID không tồn tại hoặc chưa có cashback attribution; chỉ hasData=true mới có REPORTED 0 khi có D nhưng UID không dòng trong kỳ, NO_DATA khi chưa D; giữ INSUFFICIENT_DETAIL, totalPaid=Wallet.withdrawn và privacy.
   - [ ] 44.3 Gỡ OTP/UID session/customer withdrawal UI: route/service/contract/env/SDK/cookie/guard và GET private wallet/history, bỏ luồng khách riêng tư; giữ `/withdraw` redirect và POST tạo/hủy retired 410 không mutation. Migration dự kiến `202610300002_drop_customer_otp` drop EmailOtp/UidSession/UidAccount.boundEmail/emailBoundAt và phụ thuộc; giữ Withdrawal.email/WithdrawalEvent.email, admin Session, UID/Wallet, queue admin legacy/payables/receipts/audit và lookup rate-limit; không thay gate hoặc bật sender.
-  - [ ] 44.4 Kiểm chứng spec mới: rà diff/traceability/privacy; calculator 0/null/1/10 chữ số, lỗi precision/range, nhiều offer, mặc định 1,000,000 USDT/grouping/chỉnh sửa và rounding năm độc lập; lookup coverage UTC, stale D, TRANSACTION nhiều ngày, sourceAsOf null/partial, sourceTz khác UTC, D tương lai, UID lạ và UID đã biết chưa có cashback cùng hasData=false/no-data shape/message; UID đã có cashback ngoài kỳ có hasData=true, có D/không dòng trong kỳ REPORTED zero, chưa D NO_DATA, kỳ cắt biên INSUFFICIENT_DETAIL, tổng >100 dòng và totalPaid không đếm đôi. Xác nhận API/phiên khách đã gỡ không lộ dữ liệu, route rút không mutation; admin queue/payables giữ nguyên. Ở bước triển khai sau: migration/integration trên schema Docker riêng, typecheck/lint/build và browser desktop/mobile/focus. Không dùng PASS Task 43 thay kiểm chứng Task 44.
+  - [ ] 44.4 Kiểm chứng spec mới: rà diff/traceability/privacy; calculator theo Task 45: phí chung 0.001, cashbackRate 0/1/4 chữ số, lỗi volume precision/range, nhiều offer, mặc định 1,000,000 USDT/grouping/chỉnh sửa và rounding năm độc lập; lookup coverage UTC, stale D, TRANSACTION nhiều ngày, sourceAsOf null/partial, sourceTz khác UTC, D tương lai, UID lạ và UID đã biết chưa có cashback cùng hasData=false/no-data shape/message; UID đã có cashback ngoài kỳ có hasData=true, có D/không dòng trong kỳ REPORTED zero, chưa D NO_DATA, kỳ cắt biên INSUFFICIENT_DETAIL, tổng >100 dòng và totalPaid không đếm đôi. Xác nhận API/phiên khách đã gỡ không lộ dữ liệu, route rút không mutation; admin queue/payables giữ nguyên. Ở bước triển khai sau: migration/integration trên schema Docker riêng, typecheck/lint/build và browser desktop/mobile/focus. Không dùng PASS Task 43 thay kiểm chứng Task 44.
+
+- [ ] 45. Cập nhật Opportunity Calculator theo quyết định 03/11/2026 (Req 19.2/19.3/19.6, 20.2) — chưa triển khai
+  - [ ] 45.1 Logic: thay phí theo sàn bằng hằng số 0.001 trong code cho mọi sàn; volume scale 10^8 × phí 1/1000 × Offer.cashbackRate scale 10^4 bằng BigInt, không float/round trung gian; năm nhân 12 trước round half-up 2 chữ số ở hiển thị cuối. Giữ volume mặc định 1,000,000 USDT/grouping và chọn offer; khách chỉ thấy tiền nhận, tỷ lệ hoàn ước tính, giả định/điều kiện, không phí/hoa hồng.
+  - [ ] 45.2 Xoá hoàn toàn field phí từng sàn: Prisma schema, contracts/validation, GET /api/exchanges, DTO public/admin, select/serialize/SSR props, admin form và nhãn liên quan. Tạo migration mới idempotent `202611030001_drop_exchange_commission_volume_rate`, drop CHECK rồi cột bằng IF EXISTS; giữ nguyên hai migration 30/10 đã push được liệt kê ở design. Không để fallback field cũ.
+  - [ ] 45.3 UI spacing (sau 45.1): tách rõ nhóm preset volume, nút "Calculate my opportunity", thông báo lỗi và footnote trên mobile; cả trạng thái có/không lỗi, không chồng lấn/tràn ngang trong 360–1440px; dùng catalog tiếng Anh.
+  - [ ] 45.4 Kiểm chứng sau 45.1–45.3: test mọi sàn cùng phí 0.001; Bybit 30% với 1,000,000 USDT = 300.00/tháng, 3,600.00/năm; cashbackRate 0/1/4 chữ số, volume giới hạn/rỗng/sai, nhiều offer/props, half-up và năm không nhân từ tháng đã round. Kiểm tra schema/contracts/DTO/form không còn field phí theo sàn; migration trên schema Docker riêng từ chuỗi migration cũ và chạy lại idempotent. Chạy typecheck/lint/build/tests phù hợp trên Docker; browser 360/390/768/1024/1440px kiểm tra spacing khi có/không lỗi, overflow/focus. Ghi kết quả và giới hạn; PASS cũ không thay bằng chứng mới. Không Railway, không stage/commit/push hoặc bật sender/gate.
 
 ## Changelog
 
@@ -1125,3 +1131,4 @@ flowchart TD
 | 2026-10-21 | tasks.md | Thêm Task 43 triển khai và kiểm chứng các quyết định cuộc họp; đánh dấu Task 40.3–40.4 là bản đầu được thay thế | Truy vết spec/code/test, không tự mở phạm vi sender/cutover hoặc quyết định còn lại | added/updated |
 | 2026-10-30 | tasks.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |
 | 2026-10-30 | tasks.md | Task 44.1 đổi sang Exchange.commissionVolumeRate × cashbackRate, thêm yêu cầu kiểm tra browser | Quyết định người dùng 30/10 | updated |
+| 2026-11-03 | tasks.md | Đối chiếu code, ghi nhận 44.1 phần code lịch sử đã có và browser chưa xác nhận; thêm Task 45.1–45.4 cho logic, xoá Exchange.commissionVolumeRate + migration, spacing và kiểm chứng | Người dùng chốt phí chung 0.1%, khách chỉ thấy tiền nhận; sửa spacing mobile | updated/removed |

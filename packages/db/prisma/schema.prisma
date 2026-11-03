@@ -151,7 +151,6 @@ model Exchange {
   name                String
   logoUrl             String? // Root-relative path to a repo asset in /exchange-logos/.
   status              PublishStatus       @default(DRAFT)
-  commissionVolumeRate Decimal             @default(0.01) @db.Decimal(12, 10)
   defaultCashbackRate Decimal?            @db.Decimal(6, 4)
   i18n                Json?
   uidAccounts         UidAccount[]
