@@ -58,6 +58,7 @@ All workspace scripts load the root `.env` via `scripts/with-root-env.mjs`; exis
 - Every task prompt must state: follow `CLAUDE.md` + `.claude/rules/*`, stay within the step's scope, no git stage/commit/push, no Railway, Docker DB only.
 - Keep earlier work staged (or otherwise separated) before delegating, so the delegated agent's changes are reviewable as an isolated `git diff`.
 - The user can watch Codex sessions with `codex resume` in this folder.
+- Delegation mechanics (session strategy, token economy, fallback, review loop) follow the user-level skill `/delegate-to-agents`; this file's rules win where they differ. Repo specifics: Codex `workspace-write` cannot reach Docker on this Windows host, so DB/Docker steps use `-s danger-full-access` (user-approved 2026-11-03) or `agy`; never stop `cashback-test-postgres-1`; `scripts/test-payables.mjs` currently fails on a fixed 2026-11-01 payout slot (known, separate fix).
 - `AGENTS.md` is the implementer brief that Codex/agy auto-load; keep it in sync when commands, rules or architecture here change. To save re-reading: continue related steps with `resume`, and paste the relevant spec excerpts/signatures into the prompt instead of only pointing at line numbers.
 
 ## Database & environment rules (mandatory — from `.claude/rules/`)

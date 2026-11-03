@@ -736,15 +736,15 @@ tab) to do several jobs without losing my place.
 
 ### Requirement 19: Bảng tính tiền hoàn phí bị bỏ lỡ
 
-**User Story:** Là khách truy cập, tôi muốn chỉ nhập volume giao dịch mỗi tháng để ước tính tiền hoàn theo sàn/offer.
+**User Story:** Là khách truy cập, tôi muốn chọn sàn và nhập volume giao dịch mỗi tháng để ước tính tiền hoàn theo cùng một công thức cho mọi sàn.
 
 #### Acceptance Criteria
 1. WHEN mở calculator, THE SYSTEM SHALL chỉ cung cấp một đầu vào số cho khách là volume giao dịch/tháng bằng USDT, có giá trị mặc định `1,000,000 USDT` (giá trị số 1000000, có thể chỉnh mặc định sau trong code) và dấu phân tách hàng nghìn; THE SYSTEM SHALL không cung cấp ô phần trăm phí giao dịch hoặc phần trăm hoa hồng affiliate.
-2. WHEN tính ước tính cho bất kỳ sàn nào, THE SYSTEM SHALL dùng hằng số phí chung `0.1% (0.001)` của volume trong code, không cấu hình qua admin hoặc theo từng sàn. Tỷ lệ chia khách SHALL dùng `Offer.cashbackRate` hiện có (ví dụ Bybit 30%).
-3. WHEN khách chọn offer, THE SYSTEM SHALL tính `tháng = volume × 0.001 × Offer.cashbackRate`, `năm = tháng × 12` chính xác, chỉ round half-up đến 2 chữ số thập phân ở hiển thị cuối; không làm tròn tháng rồi nhân năm. Ví dụ Bybit 30%: 1,000,000 USDT × 0.1% × 30% = **300.00 USDT/tháng, 3,600.00 USDT/năm**.
+2. WHEN tính ước tính cho bất kỳ sàn/offer nào, THE SYSTEM SHALL dùng tỷ lệ hoàn ước tính cố định `0.1% (0.001)` của volume trong code, không cấu hình qua admin hoặc theo từng sàn/offer; calculator SHALL không đọc hoặc dùng `Offer.cashbackRate` / `Exchange.defaultCashbackRate` để tính. Hai trường này SHALL giữ nguyên vai trò tỷ lệ chia thật cho attribution/payout.
+3. WHEN khách chọn sàn và nhập volume hợp lệ, THE SYSTEM SHALL tính `tháng = volume × 0.001`, `năm = tháng × 12` chính xác, chỉ round half-up đến 2 chữ số thập phân ở hiển thị cuối từng kết quả; không làm tròn tháng rồi nhân năm. Ví dụ 1,000,000 USDT → **1,000.00 USDT/tháng, 12,000.00 USDT/năm** cho mọi sàn/offer.
 4. IF volume trống, không hợp lệ, âm, vượt 16 chữ số nguyên hoặc 8 chữ số thập phân, THE SYSTEM SHALL báo lỗi và không hiển thị kết quả tiền hợp lệ.
-5. WHEN có ít nhất một published offer, THE SYSTEM SHALL luôn cho chọn sàn và nhập volume; calculator SHALL không bị vô hiệu hóa toàn bộ chỉ vì dữ liệu hệ số. Hệ số 0 SHALL hợp lệ. IF không có published offer nào, THE SYSTEM SHALL hiển thị trạng thái không có ước tính.
-6. WHEN có nhiều offer cùng sàn, THE SYSTEM SHALL cho chọn offer và gắn kết quả/CTA với cùng offer; UI SHALL chỉ hiển thị tiền khách nhận theo tháng/năm kèm đơn vị, tỷ lệ hoàn ước tính trên volume (ví dụ Bybit 0.03%), giả định volume/tỷ lệ không đổi và điều kiện referral; THE SYSTEM SHALL không hiển thị phí hoặc hoa hồng sàn/nền tảng.
+5. WHEN có ít nhất một published offer, THE SYSTEM SHALL luôn cho chọn sàn có published offer và nhập volume. IF không có published offer nào, THE SYSTEM SHALL hiển thị trạng thái không có ước tính.
+6. WHEN hiển thị calculator, THE SYSTEM SHALL chỉ cho chọn sàn và nhập volume, không có ô chọn offer; CTA "Check my cashback" SHALL dẫn tới offer đầu tiên theo thứ tự published offers hiện có của sàn đã chọn. UI SHALL chỉ hiển thị tiền khách nhận theo tháng/năm kèm đơn vị, tỷ lệ hoàn ước tính trên volume **0.1%**, giả định volume/tỷ lệ không đổi và điều kiện referral; THE SYSTEM SHALL không hiển thị phí hoặc hoa hồng sàn/nền tảng.
 7. WHEN khách thay volume, THE SYSTEM SHALL tính trên trình duyệt, không gửi/lưu đầu vào lên server, không tạo tiền ghi có và không làm chậm nội dung offer SSR.
 8. WHEN hiển thị ước tính, THE SYSTEM SHALL phân biệt với cashback thực tế và không cam kết được thanh toán.
 
@@ -901,7 +901,7 @@ tab) to do several jobs without losing my place.
 
 | Endpoint | Responsibility | Access |
 |----------|----------------|--------|
-| `GET /api/exchanges` | Sàn và offers đã công bố, gồm `Offer.cashbackRate`; không trả cấu hình phí theo sàn. | Public |
+| `GET /api/exchanges` | Sàn và offers đã công bố, gồm `Offer.cashbackRate` cho nội dung offer, không dùng để tính calculator; thứ tự published offers dùng cho CTA đầu tiên. Không trả cấu hình phí theo sàn. | Public |
 | `GET /go/:linkId` | Resolve link, record click, redirect. | Public |
 | `POST /api/lookup` | Theo sàn + UID: cashback ngày báo cáo D/30 ngày, summaryPeriods với reportDay nullable, tổng đã trả, freshness và bảng kỳ/tài sản/UID/cashback; không commission/rate/volume; IP rate-limited. | Public |
 | `POST /api/admin/auth/*` | Admin login/logout/session. | Public → admin session |
@@ -932,7 +932,7 @@ tab) to do several jobs without losing my place.
 ## Data model (conceptual groups, not final schema)
 
 - **Exchange** — name, slug, description, status, default cashback rate, i18n fields.
-- **Offer** — content, conditions, cashback_rate, status, verified-at, exchange ref. Calculator dùng phí chung 0.001 trong code; Exchange không có cột cấu hình phí theo sàn.
+- **Offer** — content, conditions, cashback_rate, status, verified-at, exchange ref. cashback_rate và Exchange.defaultCashbackRate giữ vai trò tỷ lệ chia thật cho attribution/payout, không dùng cho calculator. Calculator dùng tỷ lệ hoàn ước tính cố định 0.001 trong code; Exchange không có cột cấu hình phí theo sàn.
 - **ReferralLink** — id, exchange ref, optional offer ref, destination URL, active status.
 - **Guide** — title, slug, content, status, optional exchange ref, i18n fields.
 - **ClickEvent** — link ref, timestamp.
@@ -984,8 +984,8 @@ tab) to do several jobs without losing my place.
 | — | Bybit key IP binding | Current key: read-only, Affiliate only, IP `*`, expires 2026-12-26 | Provide stable Railway egress IP and rebind before production sync (Req 13.12). |
 | — | Enabling a second locale | English-only decided; Vietnamese excluded | If a market is ever requested, confirm the locale plus who supplies translated UI copy and content. |
 | 22 | Tên tiếng Anh (Req 20) | Đang mở | Đề xuất `RebateFlow`; chưa được người dùng duyệt. Trước khi chốt: kiểm tra tên miền và trùng thương hiệu/nhãn hiệu |
-| 23 | Đầu vào calculator (Req 19) | **Chốt 2026-11-03** | Chỉ volume/tháng, mặc định **1,000,000 USDT**, nhóm nghìn; phí chung **0.1% (0.001)** trong code cho mọi sàn, không cấu hình admin. Dùng `Offer.cashbackRate`; khách chỉ thấy tiền nhận, tỷ lệ hoàn ước tính và điều kiện, không phí/hoa hồng. |
-| 24 | Kỳ ước tính (Req 19) | **Chốt 2026-11-03** | Tháng = volume × 0.001 × Offer.cashbackRate; năm = tháng × 12 chính xác, chỉ round half-up 2 chữ số ở hiển thị cuối. Bybit 30%, volume 1,000,000 USDT → 300.00 USDT/tháng và 3,600.00 USDT/năm. |
+| 23 | Đầu vào calculator (Req 19) | **Chốt 2026-11-03** | Chỉ chọn sàn và nhập volume/tháng, mặc định **1,000,000 USDT**, nhóm nghìn; bỏ ô chọn offer, CTA "Check my cashback" tới offer đầu tiên theo thứ tự published offers hiện có của sàn đã chọn. Tỷ lệ hoàn ước tính **0.1% (0.001)** cố định cho mọi sàn/offer, độc lập tỷ lệ chia attribution/payout, không cấu hình admin. Chỉ hiện tiền nhận, tỷ lệ 0.1% và điều kiện, không phí/hoa hồng. |
+| 24 | Kỳ ước tính (Req 19) | **Chốt 2026-11-03** | Tháng = volume × 0.001; năm = tháng × 12 chính xác, chỉ round half-up 2 chữ số ở hiển thị cuối từng kết quả. Mọi sàn/offer, volume 1,000,000 USDT → 1,000.00 USDT/tháng và 12,000.00 USDT/năm. |
 | 25 | Hướng giao diện (Req 20) | Đã chốt: Dark Aurora | Giữ hero/hình ví cũ; Opportunity Check nổi bật ngay bên dưới; logo Bybit, Binance, MEXC; UI tiếng Anh. Đã triển khai Docker local; mô hình tính theo #23–24 đã chốt, tên mới vẫn thuộc #22. |
 | 26 | Lịch chi (Req 22; Req 21 on-chain riêng) | **Lịch/cutoff/retry USDT nội bộ đã chốt; lịch on-chain riêng** | Câu 3 gộp theo sàn + UID + USDT; câu 5 approve sau đợt không gửi ngay; câu 6 bỏ lỡ đợt thì chờ 23:00 UTC kế tiếp, gộp các khoản còn đủ điều kiện, không chạy bù lúc khôi phục. UNPAID + WAITING_SCHEDULE, approval chỉ dùng khi snapshot còn hợp lệ; UNKNOWN vẫn đối soát. Câu 8 chốt cutoff 23:00 UTC, nguồn mới sau đó để đợt sau. Câu 9 lỗi chắc chắn chưa chuyển chờ đợt 23:00 UTC ngày sau; UNKNOWN chỉ đối soát. Lịch on-chain Req 21 riêng. |
 | 27 | Ngưỡng và hạn mức USD (Req 9/21/22) | **USDT nội bộ: >0.5 đến <=20 auto, >20 duyệt; không daily cap riêng, theo nguồn thực** | Xét tổng principal execution sau gộp; đúng 20 USD đủ điều kiện tự trả khi các gate khác đạt. Khoản >20 giữ UNPAID + AWAITING_APPROVAL, không dùng ngưỡng asset hay xét từng allocation/chia nhỏ để né duyệt. Câu 11 chốt operator chịu phí USDT nội bộ, khách nhận đủ principal; câu 12 chốt fixed 1:1/20 USDT không market quote; câu 14 chốt minimum strict >0.5 USDT sau gộp; câu 15 chốt không daily cap riêng, chi theo nguồn đủ principal+phí, thiếu funds chờ đợt ngày sau. Câu 16 chốt skip nhóm thiếu funds, tiếp tục nhóm sau; còn thứ tự ưu tiên ban đầu và kiểm chứng quyền/giới hạn/phí provider; quote tài sản khác riêng. Chưa đủ gate bắt buộc thì giữ blocked. Câu 13 đã loại customer withdrawal/partial; grain và mapping vật lý còn review ở #34. |
@@ -1108,3 +1108,4 @@ tab) to do several jobs without losing my place.
 | 2026-10-30 | requirements.md | Chuyển spec từ `.kiro/specs/` sang `docs/specs/`, steering sang `.claude/rules/`; cập nhật đường dẫn và tên agent (Claude/Codex/agy), không đổi nghiệp vụ | Chuyển từ Kiro sang Claude quản lý knowledge | updated |
 | 2026-10-30 | requirements.md | Req 19: thay Offer.estimatedVolumeRate bằng Exchange.commissionVolumeRate (mặc định 1%) × Offer.cashbackRate; calculator không bị khoá toàn bộ | Người dùng chốt khách nhận 30% của 1% volume; UI bị khoá khi offer thiếu hệ số | updated |
 | 2026-11-03 | requirements.md | Req 19.2/19.3/19.6 và #23–24 dùng phí chung 0.001; ví dụ 300.00/3,600.00; bỏ Exchange.commissionVolumeRate khỏi API/data model; Req 20.2 thêm khoảng cách mobile. Quyết định ngày 2026-10-30 được thay thế, giữ lịch sử ngày chốt cũ trong Changelog | Người dùng chốt phí chung 0.1%, khách chỉ thấy tiền nhận; sửa spacing mobile | updated/removed |
+| 2026-11-03 | requirements.md | Đồng bộ Req 19, #23–24 và API/data model; ví dụ 1,000.00/12,000.00, bỏ chọn offer và CTA offer đầu tiên | Người dùng chốt: mọi sàn tính volume × 0.1%, bỏ cashbackRate khỏi calculator | updated/removed |
